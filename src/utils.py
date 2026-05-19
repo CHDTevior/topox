@@ -23,7 +23,6 @@ Contents:
     assert_name_policy            (verbatim source 682-707)
 """
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -88,8 +87,8 @@ def _ddp_barrier():
 def _ddp_abort_if_any_rank_failed(local_ok, where):
     """All-rank consensus abort: if ANY rank's local_ok is False, EVERY rank
     raises SystemExit (no rank may proceed past a guard that another rank
-    failed). Used to wrap rank0-only preflight writes so a rank0 abort halts
-    every rank deterministically. No-op (returns) in single-GPU."""
+    failed). Used to wrap the rank0-only preflight writes so a rank0 abort
+    halts every rank deterministically. No-op (returns) in single-GPU."""
     if not _ddp_is_active():
         if not local_ok:
             raise SystemExit(f'PREFLIGHT ABORT (single-GPU): {where}')
@@ -130,9 +129,9 @@ def fps_of(batch):
 # =========================================================================== #
 def assert_no_crop_for_ik(ds, max_frames, label):
     """codex ③ VERBATIM: offline ik_rot6d aligns row-for-row with pred_r6
-    ONLY if no random crop (unified_dataset:150 random-crops train clips with
-    T>max_frames). Fail-fast makes the alignment precondition explicit so it
-    cannot silently become a false-PASS later."""
+    ONLY if no random crop (unified_dataset:150 random-crops train clips
+    with T>max_frames). Fail-fast makes the alignment precondition explicit
+    so it cannot silently become a false-PASS later."""
     bad = []
     for s in ds.samples:
         path = s['motion_path']
@@ -185,6 +184,7 @@ def build_non_leaf(parents_list, Jpad, joint_mask, dev):
 # specific assertions); assert_name_policy verbatim source 682-707.
 # =========================================================================== #
 def _sha256(path):
+    import hashlib
     h = hashlib.sha256()
     with open(path, 'rb') as f:
         for chunk in iter(lambda: f.read(1 << 20), b''):
@@ -288,24 +288,34 @@ def write_preflight_manifest_nokslot(out_dir, src_dir, tgt_dir, src_tr, tgt_tr,
 
 def assert_name_policy(src_tr, tgt_tr, src_va, tgt_va):
     """codex checklist #4 name-policy assertion. The name-hash descriptor
-    must be applied IDENTICALLY for train and held-out (no held-out-derived
-    correspondence). The dataset hashes canonical_names -> %1024
-    deterministically and identically regardless of split, so we assert the
-    val species genuinely carry name_hashes (the SAME mechanism) and that
-    nothing has special-cased the split. Fail-fast if a val target clip has
-    all-zero name_hashes (would mean the name anchor is silently absent only
-    for val -> asymmetric policy)."""
-    for ds, lab in ((tgt_va, 'val'), (tgt_tr, 'train')):
+    must be applied IDENTICALLY for train and held-out (no held-out-
+    derived correspondence). The dataset hashes canonical_names -> %1024
+    deterministically and identically regardless of split, so we assert
+    the held-out species genuinely carry name_hashes (the SAME mechanism)
+    and that nothing has special-cased the split. Fail-fast if a held-out
+    target clip has all-zero name_hashes (would mean the name anchor is
+    silently absent only for held-out -> asymmetric policy).
+
+    Verbatim port note: in the noKslot baseline (src==tgt same-skeleton
+    self-recon) the val split is a clip-level holdout of the SAME species
+    used in train, so 'held-out' wording in this docstring + error strings
+    means 'val clips' rather than 'held-out species'. The mechanism check
+    is identical regardless.
+    """
+    import numpy as _np
+    for ds, lab in ((tgt_va, 'val/held-out'), (tgt_tr, 'train')):
         sample = collate_fn([ds[0]])
         nh = sample.get('name_hashes')
         if nh is None:
             raise SystemExit(
                 f'PREFLIGHT ABORT (name policy): {lab} produced no '
                 f'name_hashes — the name anchor (#4) must be present and '
-                f'identical for train AND val.')
+                f'identical for train AND held-out.')
         if int((nh != 0).sum()) == 0:
             raise SystemExit(
                 f'PREFLIGHT ABORT (name policy): {lab} clip 0 has all-zero '
-                f'name_hashes — asymmetric name policy is forbidden.')
+                f'name_hashes — asymmetric name policy (held-out missing '
+                f'the anchor) is forbidden (Gate-3 v2 §4).')
     print('PREFLIGHT name-policy: name_hashes present & non-trivial for '
-          'BOTH train and val (identical hash mechanism) — OK', flush=True)
+          'BOTH train and held-out (identical hash mechanism) — OK',
+          flush=True)
