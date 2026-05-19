@@ -1,0 +1,34 @@
+Step 3d-i codex review — src/models/motion_decoder.py (byte-identical cp of source src/models/decoder.py)
+========================================================================================================
+threadId: 019e427e-d0f1-7002-9169-eece1d83700b (continued)
+model: gpt-5.5  effort: xhigh  sandbox: none
+date: 2026-05-19 UTC ~23:15
+reviewer entrypoint: mcp__codex__codex-reply
+target commit: 1e4f5a2
+
+VERDICT: PASS
+
+A (byte-identical): YES
+B (hidden deps): YES
+C (rename safe): YES
+D (forward signature ok for return_features=True): YES
+
+Plan-revision concur: YES
+
+Critical findings: None.
+- motion_decoder.py matches source src/models/decoder.py: md5 ca2642f6120384d886f74b9506d089d8,
+  204 lines, 7779 bytes; `diff -q` clean.
+- Imports are only math, torch, torch.nn, torch.nn.functional, typing.Optional;
+  no sibling/internal deps found.
+- No runtime references to old src.models.decoder / decoder.py module name.
+- MotionDecoder.forward(..., return_features=False) supports return_features=True
+  and returns masked pre-output features [B,T,J,D], matching
+  TopoFKTreeIKDecoder.base(..., return_features=True).
+
+Advisory:
+- Step 4 instantiation needs MotionDecoder(d_model, n_heads, n_cross_layers,
+  n_temporal_layers, motion_feat_dim, temporal_kernel, dropout). Optional is
+  imported but unused — byte-identical source carryover.
+
+Next step: Step 3d-i done; Step 3d-ii may proceed with treeik_decoder.py
+surgical extraction from scripts/topofk_decoder.py lines 16-277.
