@@ -1,0 +1,28 @@
+Step 3b codex review — src/models/encoder.py (renamed copy of skeleton_encoder.py)
+=================================================================================
+threadId: 019e427e-d0f1-7002-9169-eece1d83700b (continued from step 3a)
+model: gpt-5.5  effort: xhigh  sandbox: none
+date: 2026-05-19 UTC ~22:55
+reviewer entrypoint: mcp__codex__codex-reply
+target commit: fde3c77
+
+VERDICT: PASS
+
+A (byte-identical): YES
+B (hidden deps): YES
+C (rename safe): YES
+
+Critical findings: None.
+- encoder.py md5/size matches source: d0e328b3bcd71087933092baa60de722, 10633 bytes; `diff -q` clean.
+- Imports are only math, torch, torch.nn, torch.nn.functional, typing.Optional.
+- No sibling/module deps found: no slot_assignment, decoder, src.data, importlib,
+  __import__, sys.modules, exec, or eval.
+- No runtime references to old `skeleton_encoder` module name found.
+
+Advisory:
+- File docstrings/comments still say TopoSlots / slot assignment, but this is cosmetic for Step 3b.
+- Forward-compat note stands: Step 4 should import `from src.models.encoder import SkeletonEncoder`;
+  do not preserve source SlotAE import routing.
+
+Next step: Step 3b done; Step 3c may proceed with SlotNorm surgical extraction
+from src/models/slot_assignment.py.
