@@ -1,0 +1,37 @@
+Step 3a codex review — src/data/ copy + minimal __init__.py
+============================================================
+threadId: 019e427e-d0f1-7002-9169-eece1d83700b
+model: gpt-5.5  effort: xhigh  sandbox: none
+date: 2026-05-19 UTC ~22:50
+reviewer entrypoint: mcp__codex__codex
+target commit: 15fc846 (on top of 1ff5e35 gitignore fix + 1ffe626 init skeleton)
+
+VERDICT: PASS
+
+A (byte-identical): YES
+B (hidden deps complete): YES
+C (__init__.py exports): YES
+
+Critical findings (block PASS):
+- None.
+- A: src/data/unified_dataset.py and src/data/skeleton_graph.py match source byte-for-byte;
+  md5s are d920e9fc8b4590e3fb5a7162b123e97c and cc3dc8afdf8c5aaf595350365b517d96.
+- B: only sibling dependency found is unified_dataset.py:187 lazy import
+  `from .skeleton_graph import SkeletonGraph`; it is present. No bvh_parser, fbx_reader,
+  humanml3d_converter, canonical_names, zoo_canonical_names, importlib, __import__,
+  sys.modules, exec, or eval dependency found.
+- C: source no_k_slot path imports only `UnifiedMotionDataset, collate_fn` via
+  `from src.data.unified_dataset import ...` in train_paired_gate.py:43,369,
+  eval_paired_gate.py:32, _qa_gate_animate.py:33. No `from src.data import Y`
+  package-level dependency found. Current __init__.py reexports are sufficient.
+
+Advisory (don't block):
+- skeleton_graph.py and unified_dataset.py still contain TopoSlots/K-slot wording
+  in comments/docstrings, but no runtime slot_features or K=24-coupled data
+  dependency was found. Defer cleanup to Step 4 (train.py rewrite) when the
+  surrounding scripts are reduced to the single no_k_slot path.
+- New __init__.py is minimal and clear; no blocking lint/style issue.
+
+Next step gate: PASS; Step 3b can proceed to copy/isolate the model/runtime
+pieces needed by the no_k_slot train/eval path, with the same byte-identity
+and hidden-dependency audit.
