@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+
+# 训练产物 (不进 git, 太大)
+runs/
+*.pt
+*.ckpt
+*.log
+
+# 数据 (data/ 是软链或本地复制, 不进 git)
+data/
+
+# OS / 编辑器
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# matplotlib / 渲染产物
+*.gif
+*.mp4
+*_sheet_*.png
