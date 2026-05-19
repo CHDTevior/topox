@@ -6,13 +6,13 @@ __pycache__/
 .env
 
 # 训练产物 (不进 git, 太大)
-runs/
+/runs/
 *.pt
 *.ckpt
 *.log
 
 # 数据 (data/ 是软链或本地复制, 不进 git)
-data/
+/data/
 
 # OS / 编辑器
 .DS_Store
