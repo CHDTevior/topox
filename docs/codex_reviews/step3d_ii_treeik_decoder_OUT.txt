@@ -1,0 +1,36 @@
+Step 3d-ii codex review — src/models/treeik_decoder.py (surgical extract from source scripts/topofk_decoder.py:16-277)
+====================================================================================================================
+threadId: 019e427e-d0f1-7002-9169-eece1d83700b (continued)
+model: gpt-5.5  effort: xhigh  sandbox: none
+date: 2026-05-19 UTC ~23:30
+reviewer entrypoint: mcp__codex__codex-reply
+target commit: 62b2073 (correction of bug in e4f0c5b)
+
+VERDICT: PASS
+
+A (9 symbols verbatim): YES
+B (completeness + correct exclusion): YES
+C (intra-file deps closed): YES
+D (cross-file motion_decoder.forward signature compat): YES
+
+Critical findings: None.
+- Body-level diff passed for all extracted code symbols: rot6d_to_matrix,
+  validate_fk_tree, fk_one, fk_persample, TopoFKDecoder, RestFiLM,
+  TreeGraphAttention, TreeIKBlock, TopoFKTreeIKDecoder, rot_geodesic_loss.
+- The "② TopoFK-TreeIK" divider block is preserved.
+- Excluded class names appear only in the provenance docstring, not as
+  definitions/runtime references.
+- MotionDecoder.forward(..., return_features=False) accepts the TreeIK
+  call shape and return_features=True.
+
+Advisory (incl. disclosure):
+- Audit trail note recorded: commit e4f0c5b was misleadingly labeled
+  ("step 3d-i codex review PASS + step 3d-ii: treeik_decoder.py surgical
+  extract") but treeik_decoder.py did NOT land then because the Write tool
+  call was rejected by malformed args without my noticing. src/models/
+  treeik_decoder.py actually lands in commit 62b2073 (correction).
+- py_compile passes for treeik_decoder.py AND motion_decoder.py.
+
+Next step: Step 3d done (3d-i motion_decoder.py byte-identical cp + 3d-ii
+treeik_decoder.py surgical extract); Step 4 may proceed with the focused
+scripts/train.py rewrite keeping only the no_k_slot path.
