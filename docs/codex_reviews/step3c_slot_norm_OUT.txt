@@ -1,0 +1,29 @@
+Step 3c codex review — src/models/slot_norm.py (SlotNorm surgical extract)
+===========================================================================
+threadId: 019e427e-d0f1-7002-9169-eece1d83700b (continued from step 3a/3b)
+model: gpt-5.5  effort: xhigh  sandbox: none
+date: 2026-05-19 UTC ~23:05
+reviewer entrypoint: mcp__codex__codex-reply
+target commit: 31b301f
+
+VERDICT: PASS
+
+A (class body byte-identical to src lines 256-265): YES
+B (imports sufficient): YES
+C (clean island, no source-file deps beyond nn.LayerNorm): YES
+D (forward accepts no_k_slot path's [B,T,Jpad,D] input): YES
+
+Critical findings: None.
+- Class block src/models/slot_norm.py:22-31 matches source slot_assignment.py:256-265 exactly.
+- Imports are sufficient: torch covers torch.Tensor annotation; torch.nn as nn covers
+  nn.Module and nn.LayerNorm.
+- No runtime dependency on SlotAssignment, sinkhorn_normalization, assign_anchor_loss,
+  F, or Optional.
+- Smoke check passed: SlotNorm(16)(torch.randn(2,3,7,16)) -> (2,3,7,16).
+
+Advisory:
+- Docstring accurately describes provenance and excluded symbols. Includes
+  project-decision context, but no factual issue for Step 3c.
+
+Next step: Step 3c done; Step 3d may proceed with TreeIK series surgical extraction
+from scripts/topofk_decoder.py to src/models/decoder.py.
