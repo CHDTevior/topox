@@ -15,7 +15,7 @@ KEPT (verbatim source spec, modulo declared substitutions below):
        absent.
 
 NEW (not in source, ADDITIVE):
-  (1b) Full forward + recon backward through NoKslotModel + TopoFKTreeIKDecoder
+  (1b) Full forward + recon backward through Model + TopoFKTreeIKDecoder
        on the synthetic batch; asserts finite loss. Catches wiring
        regressions in fk_persample / TopoFKTreeIKDecoder.forward / recon_loss
        that source test (2)'s tripwire would have caught indirectly.
@@ -29,10 +29,10 @@ DROPPED (N/A in noKslot_clean):
 
 Declared substitutions from source (the ONLY non-verbatim changes besides
 NEW test 1b and the dropped test 2 print line):
-  - `SlotAE(...)` -> `NoKslotModel(...)` (drops n_slots arg)
+  - `SlotAE(...)` -> `Model(...)` (drops n_slots arg)
   - `from scripts.topofk_decoder import TopoFKTreeIKDecoder` -> module-level
     `from src.models.treeik_decoder import TopoFKTreeIKDecoder`
-  - `encode_decode(model, src, tgt, no_k_slot=True)` -> `encode_decode_nok(model, src, tgt)`
+  - `encode_decode(model, src, tgt, no_k_slot=True)` -> `encode_decode(model, src, tgt)`
   - `_NOK_DIR = 'data/processed/cs_sparse2full_tgt'` -> `'data/cs_sparse2full_tgt'`
 
 Run examples:
@@ -48,10 +48,10 @@ import torch
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.models.noKslot_model import NoKslotModel  # noqa: E402
+from src.models.model import Model  # noqa: E402
 from src.models.treeik_decoder import TopoFKTreeIKDecoder  # noqa: E402
 from src.utils import recon_loss  # noqa: E402
-from scripts.train import encode_decode_nok  # noqa: E402
+from scripts.train import encode_decode  # noqa: E402
 
 
 def run_self_test():
@@ -60,7 +60,7 @@ def run_self_test():
     torch.manual_seed(0)
     dev = torch.device('cpu')
     D, B, T, J = 32, 2, 5, 7        # tiny; J incl. padded joints below
-    model = NoKslotModel(d_model=D, n_heads=4, d_ff=4 * D,
+    model = Model(d_model=D, n_heads=4, d_ff=4 * D,
                    n_graph_layers=2, n_enc_temporal_layers=1,
                    n_cross_layers=2, n_dec_temporal_layers=1,
                    motion_feat_dim=6, joint_feat_dim=9,
@@ -97,7 +97,7 @@ def run_self_test():
     src = tgt = batch                          # same-topo (in-distribution)
 
     # ---- (1) identity-unpool equality ------------------------------------
-    slot, s_j, asg = encode_decode_nok(model, src, tgt)
+    slot, s_j, asg = encode_decode(model, src, tgt)
     Js = src['joint_mask'].shape[1]
     assert slot.shape == (B, T, Js, D), f'slot {tuple(slot.shape)}'
     assert asg.shape == (B, Js, Js), f'A_id {tuple(asg.shape)}'
@@ -124,7 +124,7 @@ def run_self_test():
                                  n_heads=4).to(dev)
     for p in model.parameters():
         p.grad = None
-    slot, s_j, asg = encode_decode_nok(model, src, tgt)
+    slot, s_j, asg = encode_decode(model, src, tgt)
     par = [[int(x) for x in pl] for pl in tgt['parent_indices']]
     pred, _r6 = topofk(slot, s_j, asg, tgt['joint_mask'],
                        src['frame_mask'], par,
@@ -144,7 +144,7 @@ def run_self_test():
     # tgt_dir (the same-topo config the fixed launcher uses), prove the real
     # batch has src joint_mask == tgt joint_mask bitwise, and prove the
     # identity unpool recovers slot_norm(h_tj) BITWISE on the REAL data path
-    # through encode_decode_nok() (not just synthetic shapes). CPU
+    # through encode_decode() (not just synthetic shapes). CPU
     # only, no GPU/training/Slurm; SKIPPED (warn) if the data dir is absent.
     _NOK_DIR = 'data/cs_sparse2full_tgt'
     _smoke = 'SKIPPED (data dir absent)'
@@ -173,7 +173,7 @@ def run_self_test():
             _src = {k: (v if torch.is_tensor(v) else v)
                     for k, v in _b.items()}
             with torch.no_grad():
-                _slot, _sj, _asg = encode_decode_nok(model, _src, _src)
+                _slot, _sj, _asg = encode_decode(model, _src, _src)
                 _Js = _src['joint_mask'].shape[1]
                 _unp = torch.einsum('bjk,btkd->btjd', _asg, _slot)
                 _vm = _src['joint_mask'][:, None, :, None].to(_slot.dtype)

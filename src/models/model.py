@@ -1,4 +1,4 @@
-"""noKslot_clean / src.models.noKslot_model — minimal model wrapper for the
+"""noKslot_clean / src.models.model — minimal model wrapper for the
 no_k_slot training / eval / animate path.
 
 Wraps three subcomponents that the no_k_slot forward pass uses (see source
@@ -46,7 +46,7 @@ from .motion_decoder import MotionDecoder
 from .slot_norm import SlotNorm
 
 
-class NoKslotModel(nn.Module):
+class Model(nn.Module):
     """Minimal model: encoder + slot_norm + decoder. No SlotAssignment.
 
     Constructor args mirror source SlotAE.__init__ for L6 ckpt parameter-key

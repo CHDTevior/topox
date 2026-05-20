@@ -1,7 +1,7 @@
 """noKslot_clean / scripts/eval.py — single-path eval entry for the noKslot
 reproducible baseline.
 
-Loads a NoKslotModel + TopoFKTreeIKDecoder ckpt (from this repo's train.py OR
+Loads a Model + TopoFKTreeIKDecoder ckpt (from this repo's train.py OR
 the source-produced `runs/baseline_noKslot_ep399/last_model.pt`), runs gate
 metrics + REACH metrics + per-species breakdown, optionally auto-chains
 scripts/animate.py for forced GT-vs-pred multi-frame gif + dual-view contact
@@ -56,18 +56,18 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.unified_dataset import UnifiedMotionDataset, collate_fn  # noqa: E402
-from src.models.noKslot_model import NoKslotModel  # noqa: E402
+from src.models.model import Model  # noqa: E402
 from src.models.treeik_decoder import TopoFKTreeIKDecoder  # noqa: E402
 from src.utils import fps_of, to_dev  # noqa: E402
-from scripts.train import encode_decode_nok  # noqa: E402
+from scripts.train import encode_decode  # noqa: E402
 
 
 # =========================================================================== #
 # THRESH constants — verbatim values from source THRESH_TREX (which source eval
 # used for the noKslot diagnostic baseline since `'cs_sparse2full' in tgt_dir`).
-# Renamed THRESH_NOKSLOT_BASELINE here to make the application context explicit.
+# Renamed THRESH here to make the application context explicit.
 # =========================================================================== #
-THRESH_NOKSLOT_BASELINE = {
+THRESH = {
     'pos_nrmse_extent': ('<', 0.10),
     'bone_len_rel_mean_pct': ('<', 5.0),
     'bone_len_rel_p95_pct': ('<', 10.0),
@@ -364,7 +364,7 @@ def main():
                             'runs/L6_anchor_h100_seed42/best_model.pt')
     base = torch.load(init_ckpt_path, map_location=dev, weights_only=False)
     bm = base['args']; bm = bm if isinstance(bm, dict) else vars(bm)
-    model = NoKslotModel(
+    model = Model(
         d_model=bm['d_model'], n_heads=bm['n_heads'], d_ff=bm['d_ff'],
         n_graph_layers=bm['n_graph_layers'],
         n_enc_temporal_layers=bm['n_enc_temporal_layers'],
@@ -407,7 +407,7 @@ def main():
         for i in range(n):
             s = to_dev(collate_fn([src_va[i]]), dev)
             t = to_dev(collate_fn([tgt_va[i]]), dev)
-            slot, s_j, asg = encode_decode_nok(model, s, t)
+            slot, s_j, asg = encode_decode(model, s, t)
             parents_list = [[int(x) for x in pl]
                             for pl in t['parent_indices']]
             pred, pred_r6 = topofk(
@@ -544,7 +544,6 @@ def main():
                               if rot_sm_all else None),
         'rot_n_clips': len(rot_all),
     }
-    THRESH = THRESH_NOKSLOT_BASELINE
     verdict = {}
     for k, (op_, thr) in THRESH.items():
         v = metrics.get(k)

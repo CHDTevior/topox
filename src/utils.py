@@ -1,7 +1,7 @@
 """noKslot_clean / src.utils — shared utilities for the no_k_slot training,
 eval, and animate pipeline. Verbatim ports from source repo's
 scripts/train_paired_gate.py where noted, with K-slot-only assertions trimmed
-out of write_preflight_manifest_nokslot.
+out of write_preflight_manifest.
 
 Contents:
   DDP helpers (verbatim source 55-117):
@@ -17,7 +17,7 @@ Contents:
 
   Preflight (PARTIALLY REVISED for noKslot baseline, source 575-707):
     _sha256                       (verbatim source 575-582)
-    write_preflight_manifest_nokslot  (SIMPLIFIED from source 584-680:
+    write_preflight_manifest  (SIMPLIFIED from source 584-680:
         REMOVED K-slot multi-topology protocol assertions that don't apply
         to same-skeleton self-recon — see function docstring for diff)
     assert_name_policy            (verbatim source 682-707)
@@ -179,7 +179,7 @@ def build_non_leaf(parents_list, Jpad, joint_mask, dev):
 
 
 # =========================================================================== #
-# Preflight — _sha256 verbatim source 575-582; write_preflight_manifest_nokslot
+# Preflight — _sha256 verbatim source 575-582; write_preflight_manifest
 # SIMPLIFIED from source 584-680 (see docstring for the trimmed-out K-slot-
 # specific assertions); assert_name_policy verbatim source 682-707.
 # =========================================================================== #
@@ -192,7 +192,7 @@ def _sha256(path):
     return h.hexdigest()
 
 
-def write_preflight_manifest_nokslot(out_dir, src_dir, tgt_dir, src_tr, tgt_tr,
+def write_preflight_manifest(out_dir, src_dir, tgt_dir, src_tr, tgt_tr,
                                      src_va, tgt_va, args):
     """Simplified preflight manifest for the no_k_slot same-skeleton self-
     reconstruction baseline.

@@ -1,7 +1,7 @@
 """noKslot_clean / scripts/train.py — single-path training entry for the
 no_k_slot reproducible baseline.
 
-Trains: NoKslotModel (encoder + slot_norm + decoder, NO SlotAssignment)
+Trains: Model (encoder + slot_norm + decoder, NO SlotAssignment)
   + TopoFKTreeIKDecoder (TreeIK rot head + hard FK + IK rot supervision)
 on the same-skeleton self-reconstruction task (src==tgt full->full).
 
@@ -13,7 +13,7 @@ contract.
 
 Architecture is a surgical extract of the no_k_slot path from source
 motion_representation_study/scripts/train_paired_gate.py:
-  - encode_decode_nok    : single-path version of source 191-231
+  - encode_decode    : single-path version of source 191-231
                            (no_k_slot=True branch only; SlotAssignment K=24
                            Sinkhorn bottleneck is bypassed by masked-identity
                            assignment from _nok_identity_assignment).
@@ -21,7 +21,7 @@ motion_representation_study/scripts/train_paired_gate.py:
                            DDP-wraps it once (shared decoder registered once).
   - main()               : argparse + DDP setup + paired dataset load + IK
                            retained filter + L6 init (strict=False) +
-                           NoKslotModel + TopoFKTreeIKDecoder instantiation +
+                           Model + TopoFKTreeIKDecoder instantiation +
                            freeze encoder.name_embedding + preflight (split
                            manifest + name policy + raw-rotation AST ban +
                            IK coverage + noK same-topo bitwise check) +
@@ -57,7 +57,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.unified_dataset import UnifiedMotionDataset, collate_fn  # noqa: E402
-from src.models.noKslot_model import NoKslotModel  # noqa: E402
+from src.models.model import Model  # noqa: E402
 from src.models.treeik_decoder import (TopoFKTreeIKDecoder,  # noqa: E402
                                        rot_geodesic_loss)
 from src.utils import (  # noqa: E402
@@ -77,13 +77,13 @@ from src.utils import (  # noqa: E402
     load_ik_batch,
     recon_loss,
     to_dev,
-    write_preflight_manifest_nokslot,
+    write_preflight_manifest,
 )
 
 
 # =========================================================================== #
 # no_k_slot bypass helpers — _nok_identity_assignment is verbatim from source
-# train_paired_gate.py:173-188; encode_decode_nok is a single-path
+# train_paired_gate.py:173-188; encode_decode is a single-path
 # simplification of source 191-231 keeping only the no_k_slot=True branch.
 # =========================================================================== #
 def _nok_identity_assignment(joint_mask):
@@ -102,7 +102,7 @@ def _nok_identity_assignment(joint_mask):
     return eye * m[:, :, None] * m[:, None, :]
 
 
-def encode_decode_nok(model, src, tgt):
+def encode_decode(model, src, tgt):
     """Single-path simplification of source train_paired_gate.py:191-231
     encode_decode(no_k_slot=True branch). Bypasses SlotAssignment entirely:
     encoder h_tj is normalized by slot_norm and a masked-identity assignment
@@ -317,7 +317,7 @@ def main():
                          (tgt_va, 'tgt_va'), (src_va, 'src_va')):
             assert_no_crop_for_ik(_ds, args.max_frames, _lb)
 
-    # ----- model: load L6 init (strict=False) + instantiate NoKslotModel -----
+    # ----- model: load L6 init (strict=False) + instantiate Model -----
     if args.from_scratch:
         model_kwargs = dict(
             d_model=args.d_model, n_heads=args.n_heads, d_ff=args.d_ff,
@@ -327,7 +327,7 @@ def main():
             n_dec_temporal_layers=args.n_dec_temporal_layers,
             temporal_kernel=args.temporal_kernel, dropout=args.dropout,
         )
-        model = NoKslotModel(**model_kwargs).to(dev)
+        model = Model(**model_kwargs).to(dev)
         d_model_actual = args.d_model
         use_name_embed = True
         if _ddp_is_main():
@@ -345,7 +345,7 @@ def main():
             temporal_kernel=ma.get('temporal_kernel', 9),
             dropout=args.dropout,
         )
-        model = NoKslotModel(**model_kwargs).to(dev)
+        model = Model(**model_kwargs).to(dev)
         # strict=False because L6 ckpt contains slot_assignment.* keys that
         # this minimal model intentionally drops.
         load_result = model.load_state_dict(
@@ -368,7 +368,7 @@ def main():
                     f'PREFLIGHT ABORT (ckpt load): unexpected non-'
                     f'slot_assignment keys in {args.init_ckpt}: '
                     f'{unexp_other}. The L6 ckpt schema must match '
-                    f'NoKslotModel except for slot_assignment.* keys.')
+                    f'Model except for slot_assignment.* keys.')
     model.encoder.use_name_embed = use_name_embed
 
     # ----- TreeIK head -----
@@ -399,7 +399,7 @@ def main():
     _preflight_where = 'preflight (not run)'
     if _ddp_is_main():
         try:
-            write_preflight_manifest_nokslot(
+            write_preflight_manifest(
                 args.out, args.src_dir, args.tgt_dir,
                 src_tr, tgt_tr, src_va, tgt_va, args)
             assert_name_policy(src_tr, tgt_tr, src_va, tgt_va)
@@ -462,7 +462,7 @@ def main():
             self.topofk = tf
 
         def forward(self, s, t):
-            slot, s_j, asg = encode_decode_nok(self.model, s, t)
+            slot, s_j, asg = encode_decode(self.model, s, t)
             parents_list = [[int(x) for x in pl]
                             for pl in t['parent_indices']]
             pred, r6 = self.topofk(

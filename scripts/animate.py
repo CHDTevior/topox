@@ -7,7 +7,7 @@ same scale.
 Source: motion_representation_study/scripts/_qa_gate_animate.py (322 lines).
 This version drops K-slot-only branching (no --head arg, locked to
 topofk_treeik; no ckpt_args.no_k_slot sniff, always True) and uses
-NoKslotModel + strict=False ckpt load (tolerant of source-produced baseline
+Model + strict=False ckpt load (tolerant of source-produced baseline
 ckpts with slot_assignment.* keys + fk_state_dict: None).
 
 Helpers (animate_clip / contact_sheet) are VERBATIM from source 128-202.
@@ -48,14 +48,14 @@ os.chdir(PROJECT_ROOT)   # self-anchor: ckpt args store RELATIVE init_ckpt;
                          # on caller cwd for this QA script.
 
 from src.data.unified_dataset import UnifiedMotionDataset, collate_fn  # noqa: E402
-from src.models.noKslot_model import NoKslotModel  # noqa: E402
+from src.models.model import Model  # noqa: E402
 from src.models.treeik_decoder import TopoFKTreeIKDecoder  # noqa: E402
 from src.utils import fps_of, to_dev  # noqa: E402
-from scripts.train import encode_decode_nok  # noqa: E402
+from scripts.train import encode_decode  # noqa: E402
 from scripts.eval import reach_metrics  # noqa: E402  same reach logic as eval
 
 
-def load_model_head_nok(ckpt_path, dev):
+def load_model_head(ckpt_path, dev):
     """noKslot single-path model+head load. Tolerant of source-produced
     baseline ckpt that has slot_assignment.* keys (strict=False) and may
     have fk_state_dict: None (ignored)."""
@@ -65,7 +65,7 @@ def load_model_head_nok(ckpt_path, dev):
                               'runs/L6_anchor_h100_seed42/best_model.pt'),
                       map_location=dev, weights_only=False)
     bm = base['args']; bm = bm if isinstance(bm, dict) else vars(bm)
-    model = NoKslotModel(
+    model = Model(
         d_model=bm['d_model'], n_heads=bm['n_heads'], d_ff=bm['d_ff'],
         n_graph_layers=bm['n_graph_layers'],
         n_enc_temporal_layers=bm['n_enc_temporal_layers'],
@@ -87,11 +87,11 @@ def load_model_head_nok(ckpt_path, dev):
     return model, topofk
 
 
-def forward_clip_nok(model, topofk, s, t, dev):
-    """Single-path forward for noKslot animation: encode_decode_nok +
+def forward_clip(model, topofk, s, t, dev):
+    """Single-path forward for noKslot animation: encode_decode +
     TopoFKTreeIKDecoder. Mirrors scripts/eval.py forward exactly so the
     animation shows the SAME predictions the gate scores."""
-    slot, s_j, asg = encode_decode_nok(model, s, t)
+    slot, s_j, asg = encode_decode(model, s, t)
     parents_list = [[int(x) for x in pl] for pl in t['parent_indices']]
     pred = topofk(
         slot, s_j, asg, t['joint_mask'], s['frame_mask'], parents_list,
@@ -212,7 +212,7 @@ def main():
     src_va, tgt_va = mk(args.src_dir), mk(args.tgt_dir)
     assert len(src_va) == len(tgt_va), 'pair len mismatch'
 
-    model, topofk = load_model_head_nok(args.ckpt, dev)
+    model, topofk = load_model_head(args.ckpt, dev)
 
     picked = {sp: 0 for sp in want}
     summary = []
@@ -223,7 +223,7 @@ def main():
                 continue
             s = to_dev(collate_fn([src_va[i]]), dev)
             t = to_dev(collate_fn([tgt_va[i]]), dev)
-            pred = forward_clip_nok(model, topofk, s, t, dev)
+            pred = forward_clip(model, topofk, s, t, dev)
             gt = t['motion_features']
             jm = t['joint_mask'].float(); fm = t['frame_mask'].float()
             Jv = int(jm[0].sum().item()); Tv = int(fm[0].sum().item())
