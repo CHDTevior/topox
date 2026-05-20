@@ -1,0 +1,51 @@
+Step 5 codex review — scripts/eval.py (single-path noKslot eval)
+=================================================================
+threadId: 019e427e-d0f1-7002-9169-eece1d83700b (continued)
+model: gpt-5.5  effort: xhigh  sandbox: none
+date: 2026-05-20 UTC ~00:10
+reviewer entrypoint: mcp__codex__codex-reply (2 rounds)
+target commits: 28d6262 (Step 5) + 28a2a28 (NEEDS-FIX correction)
+
+Round 1 verdict: NEEDS-FIX (A only; B/C/D/E/F/G PASS)
+  A failures (verbatim drift in helpers):
+    - reach_metrics: 4 inline comments dropped/shortened from source 93-170
+    - reach_aggregate: docstring line wrap differed
+    - _rot_angle_deg: docstring differed; source-local import moved to module
+      scope (only allowed diff was import target swap, not restructure)
+
+Round 2 (commit 28a2a28): NEEDS-FIX correction applied
+  All 3 verbatim drifts restored:
+    1. reach_metrics 4 comments back: 'non-adjacent collapse', 'raw moments
+       for species-POOLED corr' 2-line block, 'all per-distal-joint ratios',
+       'pooled-corr accumulators', 'per-clip scalars: DIAGNOSTIC ONLY' (before
+       'frozen_rate_clip')
+    2. reach_aggregate docstring line wrap restored
+    3. _rot_angle_deg: docstring restored verbatim ('head-to-head vs
+       MoCapAnything V2 unseen 6.54deg' back); rot6d_to_matrix import
+       moved back inside function body (only allowed diff: import target
+       src.models.treeik_decoder instead of scripts.topofk_decoder); module-
+       level import of TopoFKTreeIKDecoder kept (still needed by main).
+
+Round 2 verdict: PASS
+  A (helpers verbatim): YES — all helper bodies match source with only the
+  allowed _rot_angle_deg import-target change.
+
+Other PASS criteria from Round 1:
+  B (THRESH constants verbatim values): YES — THRESH_NOKSLOT_BASELINE equals
+    source THRESH_TREX values exactly; REACH_THRESH / REACH_THRESH_STR
+    verbatim.
+  C (forward signature compat with train.py + TopoFKTreeIKDecoder): YES —
+    encode_decode_nok import from scripts.train works; topofk call signature
+    matches.
+  D (ckpt load tolerance verified): YES — source noKslot ckpt has
+    fk_state_dict: None; model.load_state_dict(strict=False) gives
+    missing=[], unexpected=6 slot_assignment.* only; topofk strict load OK.
+  E (animate.py subprocess CLI contract sensible): YES — Step 6 must
+    implement: --ckpt --src_dir --tgt_dir --max_frames --max_joints --split
+    --species --n_per --stride --out --device.
+  F (py_compile + imports resolve): YES.
+  G (gate_type literal + reach not-enforced sound for noKslot): YES —
+    src==tgt same-skeleton -> reach trivially empty; computed + reported as
+    diagnostic record.
+
+Next step: Step 5 done; Step 6 (animate.py) and Step 7 (self_test.py) remain.
