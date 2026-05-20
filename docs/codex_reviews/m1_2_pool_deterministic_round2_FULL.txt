@@ -1,0 +1,222 @@
+Fresh-thread round-2 code review: DeterministicGraphPool
+Repo: /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+Scope reviewed:
+  - src/models/graph_salad/pool_deterministic.py
+  - tests/test_pool_deterministic.py
+  - src/models/graph_salad/pool_dynamic.py as sealed parity oracle
+
+Procedure note:
+  - Read deterministic module and deterministic tests end-to-end.
+  - Diffed key invariants against DynamicGraphPool: aux_losses schema, dtype
+    contract, and valid-pair geodesic/Floyd scoping.
+  - Did not execute tests, per user instruction. User reports 17/17 PASS.
+
+Verdict: PASS
+Unblock decision for M1.2 step 4 unpool.py: GO
+
+================================================================================
+Round-1 item closure
+================================================================================
+
+1. Hop-bound check scoped to joint_mask=True pairs only: SEALED.
+
+Evidence:
+  - Deterministic now builds both_valid_jj from joint_mask and applies the
+    finite > J-1 hop-bound check only under that mask:
+    src/models/graph_salad/pool_deterministic.py:354
+    src/models/graph_salad/pool_deterministic.py:356
+    src/models/graph_salad/pool_deterministic.py:357
+    src/models/graph_salad/pool_deterministic.py:358
+    src/models/graph_salad/pool_deterministic.py:359
+  - Its Floyd cross-consistency check also masks both actual and expected
+    reachability to valid-valid joint pairs:
+    src/models/graph_salad/pool_deterministic.py:423
+    src/models/graph_salad/pool_deterministic.py:424
+    src/models/graph_salad/pool_deterministic.py:425
+    src/models/graph_salad/pool_deterministic.py:426
+    src/models/graph_salad/pool_deterministic.py:427
+    src/models/graph_salad/pool_deterministic.py:430
+    src/models/graph_salad/pool_deterministic.py:431
+  - DynamicGraphPool's sealed oracle uses the same valid-pair Floyd comparison
+    semantics:
+    src/models/graph_salad/pool_dynamic.py:629
+    src/models/graph_salad/pool_dynamic.py:630
+    src/models/graph_salad/pool_dynamic.py:631
+    src/models/graph_salad/pool_dynamic.py:632
+    src/models/graph_salad/pool_dynamic.py:633
+    src/models/graph_salad/pool_dynamic.py:638
+    src/models/graph_salad/pool_dynamic.py:640
+  - The new padded-geodesic test constructs J_max=10 / J_valid=6 and fills
+    padded rows/cols with finite 999.0; this would trip a global hop-bound
+    check, but is now accepted:
+    tests/test_pool_deterministic.py:138
+    tests/test_pool_deterministic.py:143
+    tests/test_pool_deterministic.py:150
+    tests/test_pool_deterministic.py:151
+    tests/test_pool_deterministic.py:155
+    tests/test_pool_deterministic.py:157
+    tests/test_pool_deterministic.py:162
+
+Review result:
+  - Correctly sealed. Padded finite geodesic pollution is ignored for hop-bound
+    and Floyd parity, while valid-valid bad finite geodesics still fail loudly.
+
+
+2. aux_losses adds mincut_cut and mincut_ortho zero keys: SEALED.
+
+Evidence:
+  - DynamicGraphPool returns five aux keys:
+    src/models/graph_salad/pool_dynamic.py:404
+    src/models/graph_salad/pool_dynamic.py:405
+    src/models/graph_salad/pool_dynamic.py:406
+    src/models/graph_salad/pool_dynamic.py:407
+    src/models/graph_salad/pool_dynamic.py:408
+    src/models/graph_salad/pool_dynamic.py:409
+  - DeterministicGraphPool now returns the same five keys in the same semantic
+    order:
+    src/models/graph_salad/pool_deterministic.py:264
+    src/models/graph_salad/pool_deterministic.py:267
+    src/models/graph_salad/pool_deterministic.py:268
+    src/models/graph_salad/pool_deterministic.py:269
+    src/models/graph_salad/pool_deterministic.py:270
+    src/models/graph_salad/pool_deterministic.py:271
+  - The deterministic test now compares aux key sets and top-level output key
+    sets against a live DynamicGraphPool instance:
+    tests/test_pool_deterministic.py:114
+    tests/test_pool_deterministic.py:116
+    tests/test_pool_deterministic.py:121
+    tests/test_pool_deterministic.py:122
+    tests/test_pool_deterministic.py:123
+    tests/test_pool_deterministic.py:126
+
+Review result:
+  - Correctly sealed. Downstream M1.3 loss/logger code can consume either pool
+    without special-casing aux key presence.
+
+
+3. aux_losses zero constants use dtype=P.dtype: SEALED.
+
+Evidence:
+  - Deterministic zero aux constants are explicitly created on P.device with
+    dtype=P.dtype:
+    src/models/graph_salad/pool_deterministic.py:259
+    src/models/graph_salad/pool_deterministic.py:260
+    src/models/graph_salad/pool_deterministic.py:261
+    src/models/graph_salad/pool_deterministic.py:262
+  - The zero constant is used for mincut_cut, mincut_ortho, and mincut:
+    src/models/graph_salad/pool_deterministic.py:267
+    src/models/graph_salad/pool_deterministic.py:268
+    src/models/graph_salad/pool_deterministic.py:269
+  - Entropy uses the same explicit dtype path:
+    src/models/graph_salad/pool_deterministic.py:261
+    src/models/graph_salad/pool_deterministic.py:271
+  - Forward still enforces float32 for all input float tensors, so P is float32
+    in the current public contract:
+    src/models/graph_salad/pool_deterministic.py:320
+    src/models/graph_salad/pool_deterministic.py:321
+    src/models/graph_salad/pool_deterministic.py:327
+    src/models/graph_salad/pool_deterministic.py:328
+  - The new dtype test checks every aux value is float32 for float32 inputs:
+    tests/test_pool_deterministic.py:129
+    tests/test_pool_deterministic.py:133
+    tests/test_pool_deterministic.py:135
+    tests/test_pool_deterministic.py:136
+
+Review result:
+  - Correctly sealed in implementation. The test does not explicitly wrap
+    torch.set_default_dtype(torch.float64), but the code no longer depends on
+    torch's global default dtype for zero aux constants.
+
+
+4. Three new tests added: SEALED.
+
+Evidence:
+  - schema_parity_with_dynamic:
+    tests/test_pool_deterministic.py:114
+    tests/test_pool_deterministic.py:123
+    tests/test_pool_deterministic.py:126
+  - aux_dtype_matches_input:
+    tests/test_pool_deterministic.py:129
+    tests/test_pool_deterministic.py:135
+    tests/test_pool_deterministic.py:136
+  - padded_geodesic_finite_accepted:
+    tests/test_pool_deterministic.py:138
+    tests/test_pool_deterministic.py:150
+    tests/test_pool_deterministic.py:162
+
+Review result:
+  - Correctly added. The three tests target the actual round-1 regressions.
+
+================================================================================
+Parity diff table
+================================================================================
+
+Invariant                         Dynamic oracle                  Deterministic round 2             Status
+--------------------------------  ------------------------------  -------------------------------  ------
+Top-level output keys             pool_dynamic.py:863-874         pool_deterministic.py:503-514     MATCH
+aux_losses keys                   pool_dynamic.py:404-410         pool_deterministic.py:264-272     MATCH
+Padded geodesic Floyd comparison  pool_dynamic.py:629-640         pool_deterministic.py:423-433     MATCH
+Hop-bound handling                no global padded-pair reject;   pool_deterministic.py:354-359     MATCH in behavior
+                                  Floyd scoped to both_valid      scopes explicit hop-bound
+Zero aux dtype                    computed from float32 graph     pool_deterministic.py:261-262     MATCH
+No-candidate behavior             pool_dynamic.py:243-253         pool_deterministic.py:164-173     MATCH fail-loud
+
+================================================================================
+New R12 / R7 review
+================================================================================
+
+New R12 fail-loud findings: none.
+
+Checked points:
+  - No silent fallback when a valid joint has no in-radius anchor:
+    src/models/graph_salad/pool_deterministic.py:164
+    src/models/graph_salad/pool_deterministic.py:165
+    src/models/graph_salad/pool_deterministic.py:166
+    src/models/graph_salad/pool_deterministic.py:169
+  - Anchor source XOR and partial override checks remain loud:
+    src/models/graph_salad/pool_deterministic.py:387
+    src/models/graph_salad/pool_deterministic.py:388
+    src/models/graph_salad/pool_deterministic.py:389
+    src/models/graph_salad/pool_deterministic.py:394
+    src/models/graph_salad/pool_deterministic.py:396
+  - Parent/adjaency mismatch remains exact and loud:
+    src/models/graph_salad/pool_deterministic.py:412
+    src/models/graph_salad/pool_deterministic.py:419
+    src/models/graph_salad/pool_deterministic.py:420
+  - Override anchor sentinel/range/prefix/root checks remain loud:
+    src/models/graph_salad/pool_deterministic.py:448
+    src/models/graph_salad/pool_deterministic.py:452
+    src/models/graph_salad/pool_deterministic.py:454
+    src/models/graph_salad/pool_deterministic.py:458
+    src/models/graph_salad/pool_deterministic.py:461
+    src/models/graph_salad/pool_deterministic.py:468
+    src/models/graph_salad/pool_deterministic.py:472
+    src/models/graph_salad/pool_deterministic.py:474
+
+New R7 surface-conflict findings: none.
+
+Checked points:
+  - No aux-loss schema conflict remains; key set matches DynamicGraphPool.
+  - No dtype conflict remains for deterministic zero aux losses.
+  - No padded-pair geodesic conflict remains for legal padded batches.
+  - No phantom check found: the extra explicit valid-pair hop-bound is
+    redundant with Floyd on valid pairs, but it is scoped correctly and fails
+    loudly only on invalid valid-node distances.
+
+Karpathy R3 surgical-change spot-check:
+  - Scoped review found the round-2 changes limited to the previously reported
+    parity surface: geodesic valid-pair scoping, aux schema/dtype, and focused
+    tests. No unrelated behavior expansion found in the reviewed files.
+
+================================================================================
+Step 4 decision
+================================================================================
+
+GO for M1.2 step 4 (unpool.py).
+
+Reason:
+  - All four round-1 items are sealed.
+  - DeterministicGraphPool now matches the sealed DynamicGraphPool contract for
+    the relevant downstream surfaces: output schema, aux nested schema, dtype,
+    valid-pair geodesic/Floyd semantics, and fail-loud anchor handling.
+  - No new R12/R7 blocker was found in round 2.

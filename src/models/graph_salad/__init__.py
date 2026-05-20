@@ -10,6 +10,7 @@ See docs/PLAN_GAP_REPORT.md for design decisions and acceptance gates.
 from .attention import GraphAttentionBlock
 from .batch import GraphMotionBatch
 from .denoiser_stub import GraphSaladDenoiserStub
+from .pool_deterministic import DeterministicGraphPool
 from .pool_dynamic import DynamicGraphPool
 from .graph_utils import (
     floyd_shortest_path,
@@ -24,6 +25,7 @@ __all__ = [
     # M1.2 core modules
     "GraphAttentionBlock",
     "DynamicGraphPool",
+    "DeterministicGraphPool",
     # M1.1 scaffolding
     "GraphMotionBatch",
     "GraphSaladDenoiserStub",

@@ -1,0 +1,528 @@
+Fresh-thread round-1 code review: DeterministicGraphPool
+Repo: /scratch/ts1v23/workspace/noKslot_clean
+Scope reviewed:
+  - src/models/graph_salad/pool_deterministic.py
+  - tests/test_pool_deterministic.py
+  - src/models/graph_salad/pool_dynamic.py only as sealed schema/R12 oracle
+
+Verdict: NEEDS-FIX
+Unblock decision for M1.2 step 4 unpool.py: NO-GO until the two blocker parity fixes below land.
+
+================================================================================
+Executive findings
+================================================================================
+
+BLOCKER 1 - Deterministic validation violates "padding nodes ignored" and
+DynamicGraphPool R12 parity for padded geodesic values.
+
+Evidence:
+  - Deterministic computes finite_geo over the entire geodesic tensor and rejects
+    any finite value > J-1:
+    src/models/graph_salad/pool_deterministic.py:345
+    src/models/graph_salad/pool_deterministic.py:348
+    src/models/graph_salad/pool_deterministic.py:349
+  - The sealed oracle only rejects negative finite geodesics globally, then
+    restricts Floyd consistency to both-valid nodes:
+    src/models/graph_salad/pool_dynamic.py:559
+    src/models/graph_salad/pool_dynamic.py:560
+    src/models/graph_salad/pool_dynamic.py:629
+    src/models/graph_salad/pool_dynamic.py:630
+    src/models/graph_salad/pool_dynamic.py:631
+    src/models/graph_salad/pool_dynamic.py:638
+    src/models/graph_salad/pool_dynamic.py:640
+  - Dynamic tests deliberately tolerate polluted padded geodesic rows/cols:
+    tests/test_pool_dynamic.py:714
+    tests/test_pool_dynamic.py:717
+    tests/test_pool_dynamic.py:718
+    tests/test_pool_dynamic.py:719
+    tests/test_pool_dynamic.py:720
+
+Concrete repro run in this review:
+  - Batch with J_max=10, joint_mask valid only first 6 joints, valid-valid
+    geodesic correct, padded rows/cols filled with finite sentinel 100.
+  - DynamicGraphPool: OK and padded assignment rows sum to 0.
+  - DeterministicGraphPool: raises "geodesic_dist has finite entries > 9".
+
+Impact:
+  - This is not just a diagnostic-message difference. It rejects legal padded
+    batches that DynamicGraphPool accepts, so deterministic vs dynamic is not an
+    apples-to-apples ablation input contract.
+  - It also makes the fixed argmin sentinel appear safer by forbidding large
+    finite values globally, but that forbids padding pollution that R12 expects
+    to be ignored.
+
+Required fix:
+  - Remove the global finite_geo > J-1 check, or scope it to valid-valid pairs:
+      both_valid = joint_mask.unsqueeze(-1) & joint_mask.unsqueeze(1)
+      finite_valid_geo = geodesic_dist[torch.isfinite(geodesic_dist) & both_valid]
+    The Floyd cross-check already validates valid-valid hop counts against the
+    adjacency at src/models/graph_salad/pool_deterministic.py:412-423.
+
+
+BLOCKER 2 - aux_losses nested schema is not parity with DynamicGraphPool.
+
+Evidence:
+  - Dynamic returns five aux keys:
+    src/models/graph_salad/pool_dynamic.py:404
+    src/models/graph_salad/pool_dynamic.py:405
+    src/models/graph_salad/pool_dynamic.py:406
+    src/models/graph_salad/pool_dynamic.py:407
+    src/models/graph_salad/pool_dynamic.py:408
+    src/models/graph_salad/pool_dynamic.py:409
+    src/models/graph_salad/pool_dynamic.py:410
+    Keys: mincut_cut, mincut_ortho, mincut, locality, entropy.
+  - Deterministic returns only three:
+    src/models/graph_salad/pool_deterministic.py:262
+    src/models/graph_salad/pool_deterministic.py:263
+    src/models/graph_salad/pool_deterministic.py:264
+    src/models/graph_salad/pool_deterministic.py:265
+    src/models/graph_salad/pool_deterministic.py:266
+    Keys: mincut, locality, entropy.
+  - Deterministic tests only assert entropy and mincut, so the missing keys are
+    not covered:
+    tests/test_pool_deterministic.py:102
+    tests/test_pool_deterministic.py:108
+    tests/test_pool_deterministic.py:110
+
+Concrete schema diff run in this review:
+  - DynamicGraphPool top-level keys:
+    anchor_indices, assignment, aux_losses, frame_mask_down, hard_assignment,
+    pooled_adjacency, pooled_features, pooled_geodesic, pooled_mask,
+    pooled_skeleton_embeddings.
+  - DeterministicGraphPool top-level keys: same.
+  - Dynamic aux keys: entropy, locality, mincut, mincut_cut, mincut_ortho.
+  - Deterministic aux keys: entropy, locality, mincut.
+
+Impact:
+  - Any downstream loss/logger expecting the sealed oracle aux schema can KeyError
+    on deterministic runs.
+  - This violates the stated "EXACT SAME dict keys/shapes/dtypes" review gate.
+
+Required fix:
+  - Return zero scalar tensors for "mincut_cut" and "mincut_ortho" as well as
+    "mincut", all on P.device and with dtype=P.dtype.
+
+
+MAJOR 1 - Constant aux-loss dtype depends on torch default dtype.
+
+Evidence:
+  - Deterministic creates zero scalar constants without dtype:
+    src/models/graph_salad/pool_deterministic.py:260
+    src/models/graph_salad/pool_deterministic.py:263
+  - Forward enforces all float inputs are torch.float32:
+    src/models/graph_salad/pool_deterministic.py:314
+    src/models/graph_salad/pool_deterministic.py:321
+    src/models/graph_salad/pool_deterministic.py:322
+  - Dynamic aux outputs are produced by float32 computations over P and module
+    weights:
+    src/models/graph_salad/pool_dynamic.py:381
+    src/models/graph_salad/pool_dynamic.py:391
+    src/models/graph_salad/pool_dynamic.py:402
+
+Concrete repro run in this review:
+  - After torch.set_default_dtype(torch.float64), with all pool inputs still
+    float32, deterministic aux dtypes were:
+      mincut: torch.float64
+      locality: torch.float32
+      entropy: torch.float64
+
+Impact:
+  - This violates exact dtype parity when global default dtype is nonstandard.
+  - It is easy to fix together with BLOCKER 2 by using dtype=P.dtype.
+
+Required fix:
+  - zero = torch.zeros((), device=P.device, dtype=P.dtype)
+  - Use zero for mincut_cut, mincut_ortho, mincut, entropy.
+
+
+MINOR 1 - Tests do not cover the two parity regressions above.
+
+Evidence:
+  - Deterministic test file has 14 tests and passes, but the validation sample is
+    intentionally a subset of DynamicGraphPool R12:
+    tests/test_pool_deterministic.py:122
+  - Existing deterministic tests cover no-params, shapes, one-hot, nearest
+    anchor, entropy/mincut zero, adjacency, selected validation errors, override,
+    and one Bat smoke:
+    tests/test_pool_deterministic.py:47
+    tests/test_pool_deterministic.py:55
+    tests/test_pool_deterministic.py:66
+    tests/test_pool_deterministic.py:79
+    tests/test_pool_deterministic.py:102
+    tests/test_pool_deterministic.py:112
+    tests/test_pool_deterministic.py:124
+    tests/test_pool_deterministic.py:164
+    tests/test_pool_deterministic.py:181
+
+Required tests:
+  - Add dynamic-vs-deterministic top-level and aux-loss schema parity test.
+  - Add padded finite geodesic sentinel test matching the dynamic accepted case.
+  - Add aux-loss dtype test under torch.set_default_dtype(torch.float64).
+  - Add padded joint/slot zero-output test mirroring tests/test_pool_dynamic.py:189-192
+    and tests/test_pool_dynamic.py:322-342.
+
+================================================================================
+Hard-assignment math review
+================================================================================
+
+Status: math is correct for valid forward inputs after the validation contract is
+fixed/aligned. Current issue is validation/sentinel policy, not the nearest-anchor
+argmin implementation itself.
+
+Implementation evidence:
+  - Geodesic-to-anchor gather:
+    src/models/graph_salad/pool_deterministic.py:152
+    src/models/graph_salad/pool_deterministic.py:153
+    src/models/graph_salad/pool_deterministic.py:154
+    src/models/graph_salad/pool_deterministic.py:155
+  - Candidate mask requires in-radius, active coarse slot, and valid joint:
+    src/models/graph_salad/pool_deterministic.py:157
+    src/models/graph_salad/pool_deterministic.py:158
+    src/models/graph_salad/pool_deterministic.py:159
+    src/models/graph_salad/pool_deterministic.py:160
+    src/models/graph_salad/pool_deterministic.py:161
+    src/models/graph_salad/pool_deterministic.py:162
+    src/models/graph_salad/pool_deterministic.py:163
+  - Valid joint with no candidate raises loudly:
+    src/models/graph_salad/pool_deterministic.py:164
+    src/models/graph_salad/pool_deterministic.py:165
+    src/models/graph_salad/pool_deterministic.py:166
+    src/models/graph_salad/pool_deterministic.py:169
+    src/models/graph_salad/pool_deterministic.py:170
+    src/models/graph_salad/pool_deterministic.py:171
+    src/models/graph_salad/pool_deterministic.py:172
+  - Non-candidates are replaced by a larger finite sentinel before argmin:
+    src/models/graph_salad/pool_deterministic.py:175
+    src/models/graph_salad/pool_deterministic.py:177
+    src/models/graph_salad/pool_deterministic.py:178
+    src/models/graph_salad/pool_deterministic.py:180
+    src/models/graph_salad/pool_deterministic.py:181
+    src/models/graph_salad/pool_deterministic.py:182
+  - One-hot P is written to a fresh tensor, then padded rows/cols are zeroed:
+    src/models/graph_salad/pool_deterministic.py:184
+    src/models/graph_salad/pool_deterministic.py:185
+    src/models/graph_salad/pool_deterministic.py:186
+    src/models/graph_salad/pool_deterministic.py:188
+    src/models/graph_salad/pool_deterministic.py:189
+
+Tie-break:
+  - torch.argmin(dim=-1) returns the first minimum along that dimension. I
+    verified this in review with:
+      torch.tensor([[2.,1.,1.,3.],[5.,5.,0.,0.]]).argmin(dim=1).tolist()
+      -> [1, 2]
+  - Rule-based anchors are returned sorted:
+    src/models/graph_salad/graph_utils.py:394
+    src/models/graph_salad/graph_utils.py:398
+    src/models/graph_salad/graph_utils.py:457
+  - Override anchors are forced strictly ascending and root-first:
+    src/models/graph_salad/pool_deterministic.py:455
+    src/models/graph_salad/pool_deterministic.py:460
+    src/models/graph_salad/pool_deterministic.py:461
+    src/models/graph_salad/pool_deterministic.py:462
+    src/models/graph_salad/pool_deterministic.py:463
+    src/models/graph_salad/pool_deterministic.py:464
+    src/models/graph_salad/pool_deterministic.py:465
+  - Therefore first-min column == lowest active slot index == lowest anchor joint
+    index under both anchor paths.
+
+Sentinel:
+  - Current _LARGE_FINITE_GEO_SENTINEL is 1e6:
+    src/models/graph_salad/pool_deterministic.py:47
+  - With the current forward path, real candidates have finite distance <=
+    local_radius and, after Floyd consistency, normal hop-count distances, so
+    2e6 non-candidate sentinel does not tie in realistic Graph-SALAD ranges.
+  - However, using the global finite_geo > J-1 validation to protect a fixed
+    sentinel is not R12-compatible for padded rows/cols. Prefer either:
+      score = torch.where(candidate, geo_jc, torch.full_like(geo_jc, float("inf")))
+    or a dynamic sentinel derived from valid candidate distances only. Since
+    no_candidate_for_valid is already checked, +inf non-candidates are safe for
+    argmin.
+
+================================================================================
+No-learnable-params contract
+================================================================================
+
+Status: PASS.
+
+Evidence:
+  - Module init calls super():
+    src/models/graph_salad/pool_deterministic.py:76
+  - The constructor stores scalar hparams only and explicitly registers no
+    nn.Parameters/submodules:
+    src/models/graph_salad/pool_deterministic.py:98
+    src/models/graph_salad/pool_deterministic.py:99
+    src/models/graph_salad/pool_deterministic.py:100
+    src/models/graph_salad/pool_deterministic.py:101
+    src/models/graph_salad/pool_deterministic.py:102
+    src/models/graph_salad/pool_deterministic.py:103
+  - Test asserts parameters() length and state_dict() length are zero:
+    tests/test_pool_deterministic.py:47
+    tests/test_pool_deterministic.py:49
+    tests/test_pool_deterministic.py:52
+
+Verification run in this review:
+  - param_count: 0
+  - param_list_len: 0
+  - state_dict_keys: []
+  - children: []
+
+No buffers are registered, and there are no nn.Linear/nn.Module children. That is
+correct for the deterministic ablation.
+
+================================================================================
+Output schema parity
+================================================================================
+
+Top-level schema: PASS.
+
+Dynamic oracle return keys:
+  - src/models/graph_salad/pool_dynamic.py:863
+  - src/models/graph_salad/pool_dynamic.py:864
+  - src/models/graph_salad/pool_dynamic.py:865
+  - src/models/graph_salad/pool_dynamic.py:866
+  - src/models/graph_salad/pool_dynamic.py:867
+  - src/models/graph_salad/pool_dynamic.py:868
+  - src/models/graph_salad/pool_dynamic.py:869
+  - src/models/graph_salad/pool_dynamic.py:870
+  - src/models/graph_salad/pool_dynamic.py:871
+  - src/models/graph_salad/pool_dynamic.py:872
+  - src/models/graph_salad/pool_dynamic.py:873
+  - src/models/graph_salad/pool_dynamic.py:874
+
+Deterministic return keys:
+  - src/models/graph_salad/pool_deterministic.py:493
+  - src/models/graph_salad/pool_deterministic.py:494
+  - src/models/graph_salad/pool_deterministic.py:495
+  - src/models/graph_salad/pool_deterministic.py:496
+  - src/models/graph_salad/pool_deterministic.py:497
+  - src/models/graph_salad/pool_deterministic.py:498
+  - src/models/graph_salad/pool_deterministic.py:499
+  - src/models/graph_salad/pool_deterministic.py:500
+  - src/models/graph_salad/pool_deterministic.py:501
+  - src/models/graph_salad/pool_deterministic.py:502
+  - src/models/graph_salad/pool_deterministic.py:503
+  - src/models/graph_salad/pool_deterministic.py:504
+
+Observed top-level dtypes in review:
+  - pooled_features: torch.float32
+  - assignment: torch.float32
+  - hard_assignment: torch.int64
+  - pooled_adjacency: torch.float32
+  - pooled_geodesic: torch.float32
+  - pooled_mask: torch.bool
+  - pooled_skeleton_embeddings: torch.float32
+  - frame_mask_down: torch.bool
+  - anchor_indices: torch.int64
+
+Aux-loss nested schema: FAIL; see BLOCKER 2.
+
+Note on user-provided example names:
+  - The sealed oracle does not return assignment_logits, assignment_probs,
+    slot_embeddings, slot_mask, or assignment_entropy as top-level keys. It
+    returns assignment, pooled_skeleton_embeddings, pooled_mask, and aux_losses
+    instead:
+    src/models/graph_salad/pool_dynamic.py:30
+    src/models/graph_salad/pool_dynamic.py:31
+    src/models/graph_salad/pool_dynamic.py:32
+    src/models/graph_salad/pool_dynamic.py:36
+    src/models/graph_salad/pool_dynamic.py:37
+    src/models/graph_salad/pool_dynamic.py:40
+  - Deterministic should mirror the oracle, not add alternate names.
+
+================================================================================
+R12 invariant parity checklist
+================================================================================
+
+1. Constructor strict-int and positive hparams: ENFORCED.
+   Evidence: src/models/graph_salad/pool_deterministic.py:77-96.
+
+2. super().__init__ and no accidental trainable module/parameter state:
+   ENFORCED.
+   Evidence: src/models/graph_salad/pool_deterministic.py:76 and
+   src/models/graph_salad/pool_deterministic.py:98-103.
+
+3. Input shape contracts for joint_features, skeleton_embeddings, adjacency,
+   geodesic_dist, joint_mask, frame_mask: ENFORCED.
+   Evidence: src/models/graph_salad/pool_deterministic.py:284-300.
+
+4. Non-empty B/T/J: ENFORCED.
+   Evidence: src/models/graph_salad/pool_deterministic.py:288-290.
+
+5. Device consistency across all input tensors: ENFORCED.
+   Evidence: src/models/graph_salad/pool_deterministic.py:302-312.
+   Dynamic's module-device check is not applicable because deterministic has no
+   module parameters.
+
+6. Float dtype contract: ENFORCED for inputs, PARTIAL for outputs.
+   Evidence for input enforcement: src/models/graph_salad/pool_deterministic.py:314-322.
+   Gap: aux zero constants omit dtype at src/models/graph_salad/pool_deterministic.py:260
+   and src/models/graph_salad/pool_deterministic.py:263.
+
+7. NaN/Inf guard for joint_features and skeleton_embeddings: ENFORCED.
+   Evidence: src/models/graph_salad/pool_deterministic.py:324-327.
+
+8. Adjacency finite, non-negative, <=1, symmetric, zero diagonal: ENFORCED.
+   Evidence: src/models/graph_salad/pool_deterministic.py:328-338.
+
+9. Geodesic NaN/-Inf/negative finite guard: ENFORCED.
+   Evidence: src/models/graph_salad/pool_deterministic.py:340-347.
+
+10. Geodesic max-hop validation should ignore padded rows/cols: NOT ENFORCED.
+    Evidence: src/models/graph_salad/pool_deterministic.py:345-349.
+    Dynamic oracle valid-valid masking: src/models/graph_salad/pool_dynamic.py:629-640.
+
+11. Geodesic finite/+Inf symmetry and finite value symmetry: ENFORCED.
+    Evidence: src/models/graph_salad/pool_deterministic.py:350-358.
+
+12. Geodesic diagonal zero at valid nodes: ENFORCED.
+    Evidence: src/models/graph_salad/pool_deterministic.py:359-361.
+
+13. joint_mask per-sample non-empty and contiguous True-prefix: ENFORCED.
+    Evidence: src/models/graph_salad/pool_deterministic.py:363-372.
+
+14. temporal_stride divisibility: ENFORCED.
+    Evidence: src/models/graph_salad/pool_deterministic.py:374-375.
+
+15. Anchor-source XOR, no partial anchor override: ENFORCED.
+    Evidence: src/models/graph_salad/pool_deterministic.py:377-387.
+
+16. parent_indices list length, per-sample length, FK order, and adjacency exact
+    match: ENFORCED.
+    Evidence: src/models/graph_salad/pool_deterministic.py:389-410.
+
+17. Floyd recompute consistency over valid-valid graph: ENFORCED.
+    Evidence: src/models/graph_salad/pool_deterministic.py:412-423.
+
+18. Rule-based anchor overflow fail-loud: ENFORCED.
+    Evidence: src/models/graph_salad/pool_deterministic.py:116-124.
+
+19. Override anchor shape/dtype, padded -1 sentinel, range, non-empty active
+    slots, contiguous coarse_mask, valid active anchors, strict ascending, root
+    first: ENFORCED.
+    Evidence: src/models/graph_salad/pool_deterministic.py:431-467.
+
+20. Candidate-mask validity and no-candidate fail-loud: ENFORCED.
+    Evidence: src/models/graph_salad/pool_deterministic.py:157-173.
+
+21. Assignment row-sum-to-1 for valid joints and zero padded rows/cols:
+    ENFORCED by implementation and tested.
+    Evidence: src/models/graph_salad/pool_deterministic.py:184-190 and
+    tests/test_pool_deterministic.py:66-77.
+
+22. Pooled graph builds only from valid fine joints and active coarse slots:
+    ENFORCED via graph_utils.
+    Evidence: src/models/graph_salad/pool_deterministic.py:223-229 and
+    src/models/graph_salad/graph_utils.py:202-227.
+
+23. Inactive pooled slots zeroed:
+    ENFORCED in assignment and pooled skeleton embeddings; pooled features are
+    zero because P columns are zero and mass is clamped.
+    Evidence: src/models/graph_salad/pool_deterministic.py:188-189,
+    src/models/graph_salad/pool_deterministic.py:201-203, and
+    src/models/graph_salad/pool_deterministic.py:481-486.
+    Test coverage should be added; dynamic has the analogous test at
+    tests/test_pool_dynamic.py:322-342.
+
+24. No in-place corruption of inputs:
+    ENFORCED. In-place writes are on fresh/cloned tensors only:
+    src/models/graph_salad/pool_deterministic.py:177,
+    src/models/graph_salad/pool_deterministic.py:178,
+    src/models/graph_salad/pool_deterministic.py:185,
+    src/models/graph_salad/pool_deterministic.py:186,
+    src/models/graph_salad/pool_deterministic.py:251,
+    src/models/graph_salad/pool_deterministic.py:252.
+
+25. Gradient flow to non-pool paths:
+    ENFORCED for pooled_features and pooled_skeleton_embeddings, while
+    assignment is intentionally non-grad.
+    Evidence: feature pooling uses differentiable einsum at
+    src/models/graph_salad/pool_deterministic.py:201; skeleton gather/mask at
+    src/models/graph_salad/pool_deterministic.py:481-486.
+    Review verification:
+      assignment_requires_grad False
+      pooled_features_requires_grad True
+      pooled_skeleton_requires_grad True
+      joint_features_grad_nonzero True
+      skeleton_embeddings_grad_nonzero True
+
+26. Output dict schema parity:
+    TOP-LEVEL ENFORCED; AUX NESTED NOT ENFORCED.
+    Evidence: top-level deterministic return at
+    src/models/graph_salad/pool_deterministic.py:493-504 vs dynamic return at
+    src/models/graph_salad/pool_dynamic.py:863-874. Aux mismatch at
+    src/models/graph_salad/pool_deterministic.py:262-266 vs
+    src/models/graph_salad/pool_dynamic.py:404-410.
+
+================================================================================
+Test/command results
+================================================================================
+
+1. PyTorch argmin tiebreak verification:
+   Command:
+     python - <<'PY'
+     import torch
+     x=torch.tensor([[2.,1.,1.,3.],[5.,5.,0.,0.]])
+     print(x.argmin(dim=1).tolist())
+     PY
+   Result:
+     [1, 2]
+
+2. No-param verification:
+   Result:
+     param_count 0
+     param_list_len 0
+     state_dict_keys []
+     children []
+
+3. Deterministic unit tests:
+   Command:
+     python tests/test_pool_deterministic.py
+   Result:
+     Ran 14 tests in 0.124s, OK
+
+4. pytest availability:
+   Command:
+     python -m pytest -q tests/test_pool_deterministic.py
+   Result:
+     /scratch/ts1v23/.conda/bin/python: No module named pytest
+
+5. Schema diff:
+   Result:
+     Dynamic top-level keys == Deterministic top-level keys.
+     Dynamic aux keys = ['entropy', 'locality', 'mincut', 'mincut_cut', 'mincut_ortho']
+     Deterministic aux keys = ['entropy', 'locality', 'mincut']
+
+6. Padding finite-geodesic parity repro:
+   Result:
+     DynamicGraphPool OK 0.0
+     DeterministicGraphPool RAISED ValueError geodesic_dist has finite entries > 9 (max hops)
+
+7. Gradient-flow verification:
+   Result:
+     assignment_requires_grad False
+     pooled_features_requires_grad True
+     pooled_skeleton_requires_grad True
+     joint_features_grad_nonzero True
+     skeleton_embeddings_grad_nonzero True
+
+================================================================================
+GO/NO-GO
+================================================================================
+
+M1.2 step 4 unpool.py: NO-GO for sealed DynamicGraphPool-compatible integration.
+
+Reason:
+  - Hard assignment itself is good enough, and zero-param contract is clean.
+  - But deterministic pool is not yet an interchangeable drop-in for the sealed
+    dynamic pool because it rejects legal padded finite-geodesic batches and its
+    aux_losses schema is missing oracle keys.
+
+Minimum fix list before GO:
+  1. Align geodesic max-hop validation with dynamic: remove it or scope it to
+     valid-valid pairs only.
+  2. Return aux_losses keys mincut_cut, mincut_ortho, mincut, locality, entropy
+     in deterministic, with zero constants on device=P.device and dtype=P.dtype.
+  3. Add tests for aux schema parity, padded finite-geodesic parity, aux dtype
+     under nondefault torch default dtype, and padded joint/slot zeroing.
+  4. Optional hardening: replace fixed 1e6/2e6 argmin masking with +inf
+     non-candidate masking after no-candidate rows are rejected.
