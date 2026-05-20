@@ -336,6 +336,44 @@ class GraphMotionVAETests(unittest.TestCase):
                 f"unexpected missing key {key} — expected only pool/dist/treeik_head",
             )
 
+    def test_stride_tail_frame_mask_consistency(self):
+        """Codex M1.5 R3 P0: frame_mask_recovered correctly invalidates stride-tail frames.
+
+        Regression test: when actual_frames % stride != 0, the unpooled
+        frame_mask_recovered must invalidate the trailing partial window.
+        e.g., num_frames=6, T=8, stride=4 → window 0 (frames 0-3) all valid,
+        window 1 (frames 4-7) has 2 valid (4,5) + 2 padded (6,7) → INVALID,
+        so frame_mask_recovered = [T,T,T,T,F,F,F,F].
+        """
+        D = 32
+        vae = GraphMotionVAE(
+            pool_type="dynamic",
+            d_model=D, n_heads=4, d_ff=64,
+            n_graph_layers=2, n_enc_temporal_layers=1,
+            n_cross_layers=1, n_dec_temporal_layers=1,
+            n_treeik_layers=1,
+            max_coarse=8, local_radius=4,
+            temporal_stride=4,
+        )
+        # B=1, T=8, J=6, actual_frames=6 (stride-tail)
+        batch = _make_batch(B=1, T=8, J=6, D=D)
+        # Override frame_mask: 6 valid, 2 padded
+        batch.frame_mask[:] = False
+        batch.frame_mask[0, :6] = True
+        out = vae(batch)
+        fmr = out["frame_mask_recovered"][0]  # [T=8]
+        # Window 0 (frames 0-3): all valid → recovered T
+        for t in range(4):
+            self.assertTrue(fmr[t].item(),
+                            f"frame {t} should be valid (window 0 all-valid)")
+        # Window 1 (frames 4-7): contains padded frames 6,7 → all invalid
+        for t in range(4, 8):
+            self.assertFalse(fmr[t].item(),
+                             f"frame {t} should be invalid (window 1 has padded)")
+        # Property: frame_mask_recovered ⊆ batch.frame_mask
+        self.assertTrue(((~fmr) | batch.frame_mask[0]).all().item(),
+                        "frame_mask_recovered must be subset of batch.frame_mask")
+
     def test_aux_losses_present(self):
         D = 32
         vae = GraphMotionVAE(

@@ -228,11 +228,18 @@ class GraphMotionVAE(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def encode(self, batch: "GraphMotionBatch") -> dict:
+    def encode(self, batch: "GraphMotionBatch", sample: bool | None = None) -> dict:
         """Encoder → SlotNorm → Pool → Gaussian latent head.
 
         Returns dict with z, mu, logvar, plus graph_info needed by decode.
+
+        Args:
+            sample: if None (default), follows self.training (sample in train,
+                    deterministic in eval). If True, force reparametrize.
+                    If False, force z = mu.
         """
+        if sample is None:
+            sample = self.training
         # Encoder forward (reuse baseline)
         h0 = self.encoder(
             batch.motion_features,        # [B, T, J, 6]
@@ -300,8 +307,11 @@ class GraphMotionVAE(nn.Module):
         dist_out = self.dist(h_lat)  # [B, T_lat, C, 2D]
         mu, logvar = dist_out.chunk(2, dim=-1)  # each [B, T_lat, C, D]
 
-        # Reparametrize
-        z = self.reparametrize(mu, logvar)
+        # Reparametrize (only when sampling; in eval, z = mu for deterministic metrics)
+        if sample:
+            z = self.reparametrize(mu, logvar)
+        else:
+            z = mu
 
         # Mask latent (defense in depth — padded coarse/frame should be 0)
         z = z * coarse_mask[:, None, :, None].to(z.dtype)
@@ -397,9 +407,16 @@ class GraphMotionVAE(nn.Module):
             "frame_mask_recovered": frame_mask_recovered,
         }
 
-    def forward(self, batch: "GraphMotionBatch") -> dict:
-        """Full VAE forward: encode → decode. Returns combined dict."""
-        enc = self.encode(batch)
+    def forward(self, batch: "GraphMotionBatch", sample: bool | None = None) -> dict:
+        """Full VAE forward: encode → decode. Returns combined dict.
+
+        Args:
+            sample: controls reparametrization. If None (default), uses
+                    self.training (sample in train, deterministic in eval).
+        """
+        if sample is None:
+            sample = self.training
+        enc = self.encode(batch, sample=sample)
         dec = self.decode(enc, batch)
         return {
             **enc,

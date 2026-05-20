@@ -118,8 +118,11 @@ def masked_vel_consistency(
     if T < 2:
         # Can't compute numerical velocity with fewer than 2 frames
         return torch.zeros((), device=pred_pos.device, dtype=pred_pos.dtype)
+    # Codex M1.5 R2 fix: pred_vel[t] is stored as backward diff (pos[t] - pos[t-1]) * fps
+    # via TopoFKTreeIKDecoder convention (vae.py:391). To compare against forward diff
+    # numerical_vel[t']=pos[t'+1]-pos[t'], use pred_vel[t'+1] which equals pos[t'+1]-pos[t'].
     numerical_vel = (pred_pos[:, 1:] - pred_pos[:, :-1]) * fps.view(B, 1, 1, 1)  # [B, T-1, J, 3]
-    pred_vel_aligned = pred_vel[:, :-1]  # [B, T-1, J, 3]
+    pred_vel_aligned = pred_vel[:, 1:]  # [B, T-1, J, 3]
     diff = (numerical_vel - pred_vel_aligned).abs().sum(dim=-1)  # [B, T-1, J]
     # Mask: both frame_mask[t] AND frame_mask[t+1] valid; joint_mask[j] valid
     frame_mask_pair = frame_mask[:, :-1] & frame_mask[:, 1:]  # [B, T-1]
