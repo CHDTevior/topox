@@ -1,0 +1,233 @@
+M1.3 GraphMotionVAE Round 5 Review
+===================================
+
+Date: 2026-05-20
+Repo: /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+Reviewer mode: fresh-context repo-truth verification only.
+
+Files inspected
+---------------
+
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/vae.py
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/tests/test_vae.py
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/docs/codex_reviews/m1_3_vae_FULL.txt
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/docs/codex_reviews/m1_3_vae_round2_FULL.txt
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/docs/codex_reviews/m1_3_vae_round3_FULL.txt
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/docs/codex_reviews/m1_3_vae_round4_FULL.txt
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_deterministic.py
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/unpool.py
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/batch.py
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/src/models/encoder.py
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/src/models/motion_decoder.py
+- /iridisfs/scratch/ts1v23/workspace/noKslot_clean/src/models/treeik_decoder.py
+
+Commands run
+------------
+
+- `nl -ba src/models/graph_salad/vae.py | sed -n '1,220p'`
+- `nl -ba tests/test_vae.py | sed -n '1,260p'`
+- `rg --files docs/codex_reviews`
+- `nl -ba tests/test_vae.py | sed -n '260,420p'`
+- `sed -n '1,220p' docs/codex_reviews/m1_3_vae_FULL.txt`
+- `sed -n '1,220p' docs/codex_reviews/m1_3_vae_round2_FULL.txt`
+- `sed -n '1,240p' docs/codex_reviews/m1_3_vae_round3_FULL.txt`
+- `sed -n '1,260p' docs/codex_reviews/m1_3_vae_round4_FULL.txt`
+- `nl -ba src/models/graph_salad/vae.py | sed -n '220,420p'`
+- `PYTHONDONTWRITEBYTECODE=1 python tests/test_vae.py -v`
+- Python constructor validation sweep over all 11 claimed hparams with bad values `0`, `True`, and `1.5`.
+- `rg -n "max_coarse|local_radius|temporal_stride|raise (ValueError|TypeError)|assert" src/models/graph_salad/pool_dynamic.py src/models/graph_salad/pool_deterministic.py src/models/graph_salad/unpool.py src/models/encoder.py src/models/motion_decoder.py src/models/treeik_decoder.py`
+- `nl -ba src/models/graph_salad/pool_dynamic.py | sed -n '360,460p'`
+- `nl -ba src/models/graph_salad/pool_deterministic.py | sed -n '230,330p'`
+- `nl -ba src/models/graph_salad/batch.py | sed -n '1,220p'`
+- `nl -ba src/models/graph_salad/batch.py | sed -n '220,360p'`
+- `nl -ba src/models/graph_salad/batch.py | sed -n '360,520p'`
+- `rg -n "class .*Temporal|temporal_kernel|padding|Conv1d" src/models/encoder.py src/models/motion_decoder.py`
+- `nl -ba src/models/encoder.py | sed -n '90,130p'`
+- `nl -ba src/models/motion_decoder.py | sed -n '65,100p'`
+- Python repro for `temporal_kernel=2` forward crash, shown below.
+- `test -e docs/codex_reviews/m1_3_vae_round5_BRIEF.md; echo $?`
+- `test -e docs/codex_reviews/m1_3_vae_round5_FULL.txt; echo $?`
+
+Q1. Strict positive-int dim hparams sealed?
+-------------------------------------------
+
+Verdict: SEALED.
+
+Source evidence:
+
+- `src/models/graph_salad/vae.py:101-113` iterates exactly the 11 requested hparams:
+  `d_model`, `n_heads`, `d_ff`, `n_graph_layers`, `n_enc_temporal_layers`,
+  `n_cross_layers`, `n_dec_temporal_layers`, `n_treeik_layers`,
+  `motion_feat_dim`, `joint_feat_dim`, and `temporal_kernel`.
+- `src/models/graph_salad/vae.py:114-115` checks strict int and rejects bool:
+  `if not isinstance(val, int) or isinstance(val, bool): raise TypeError(...)`.
+- `src/models/graph_salad/vae.py:116-117` checks positivity:
+  `if val <= 0: raise ValueError(f"{name} must be > 0, got {val}")`.
+- The divisibility check now happens after those guards at `vae.py:121-124`,
+  so `n_heads=0` no longer reaches raw modulo-by-zero.
+- Existing defaults construct cleanly. The small valid path
+  `pool_type='none', d_model=32, n_heads=4, d_ff=64, ...` also constructs cleanly.
+
+Test evidence:
+
+- `tests/test_vae.py:153-155` covers `n_heads=0`.
+- `tests/test_vae.py:157-159` covers `d_model=0`.
+- `tests/test_vae.py:161-165` covers strict int rejection for `n_heads=True`
+  and `d_model=64.0`.
+- `tests/test_vae.py:149-151` still covers non-divisible `d_model/n_heads`.
+- Local run: `PYTHONDONTWRITEBYTECODE=1 python tests/test_vae.py -v` ran 14
+  tests in 0.440s, OK.
+
+Adversarial constructor sweep output:
+
+```text
+d_model=0: ValueError: d_model must be > 0, got 0 | ok=True
+d_model=True: TypeError: d_model must be strict int, got bool | ok=True
+d_model=1.5: TypeError: d_model must be strict int, got float | ok=True
+n_heads=0: ValueError: n_heads must be > 0, got 0 | ok=True
+n_heads=True: TypeError: n_heads must be strict int, got bool | ok=True
+n_heads=1.5: TypeError: n_heads must be strict int, got float | ok=True
+d_ff=0: ValueError: d_ff must be > 0, got 0 | ok=True
+d_ff=True: TypeError: d_ff must be strict int, got bool | ok=True
+d_ff=1.5: TypeError: d_ff must be strict int, got float | ok=True
+n_graph_layers=0: ValueError: n_graph_layers must be > 0, got 0 | ok=True
+n_graph_layers=True: TypeError: n_graph_layers must be strict int, got bool | ok=True
+n_graph_layers=1.5: TypeError: n_graph_layers must be strict int, got float | ok=True
+n_enc_temporal_layers=0: ValueError: n_enc_temporal_layers must be > 0, got 0 | ok=True
+n_enc_temporal_layers=True: TypeError: n_enc_temporal_layers must be strict int, got bool | ok=True
+n_enc_temporal_layers=1.5: TypeError: n_enc_temporal_layers must be strict int, got float | ok=True
+n_cross_layers=0: ValueError: n_cross_layers must be > 0, got 0 | ok=True
+n_cross_layers=True: TypeError: n_cross_layers must be strict int, got bool | ok=True
+n_cross_layers=1.5: TypeError: n_cross_layers must be strict int, got float | ok=True
+n_dec_temporal_layers=0: ValueError: n_dec_temporal_layers must be > 0, got 0 | ok=True
+n_dec_temporal_layers=True: TypeError: n_dec_temporal_layers must be strict int, got bool | ok=True
+n_dec_temporal_layers=1.5: TypeError: n_dec_temporal_layers must be strict int, got float | ok=True
+n_treeik_layers=0: ValueError: n_treeik_layers must be > 0, got 0 | ok=True
+n_treeik_layers=True: TypeError: n_treeik_layers must be strict int, got bool | ok=True
+n_treeik_layers=1.5: TypeError: n_treeik_layers must be strict int, got float | ok=True
+motion_feat_dim=0: ValueError: motion_feat_dim must be > 0, got 0 | ok=True
+motion_feat_dim=True: TypeError: motion_feat_dim must be strict int, got bool | ok=True
+motion_feat_dim=1.5: TypeError: motion_feat_dim must be strict int, got float | ok=True
+joint_feat_dim=0: ValueError: joint_feat_dim must be > 0, got 0 | ok=True
+joint_feat_dim=True: TypeError: joint_feat_dim must be strict int, got bool | ok=True
+joint_feat_dim=1.5: TypeError: joint_feat_dim must be strict int, got float | ok=True
+temporal_kernel=0: ValueError: temporal_kernel must be > 0, got 0 | ok=True
+temporal_kernel=True: TypeError: temporal_kernel must be strict int, got bool | ok=True
+temporal_kernel=1.5: TypeError: temporal_kernel must be strict int, got float | ok=True
+spot pool_type='none', n_heads=0: RAISED ValueError: n_heads must be > 0, got 0
+spot pool_type='none', n_heads=True: RAISED TypeError: n_heads must be strict int, got bool
+spot pool_type='none', d_model=0: RAISED ValueError: d_model must be > 0, got 0
+spot pool_type='none', d_model=64.0: RAISED TypeError: d_model must be strict int, got float
+spot defaults: OK
+spot pool_type='none', d_model=32, n_heads=4, d_ff=64, n_graph_layers=1, n_enc_temporal_layers=1, n_cross_layers=1, n_dec_temporal_layers=1, n_treeik_layers=1, motion_feat_dim=6, joint_feat_dim=9, temporal_kernel=3, temporal_stride=4, dropout=0.0: OK
+```
+
+Q2. Honest convergence: any concrete R12 runnable failure trace remaining?
+-------------------------------------------------------------------------
+
+Verdict: NEEDS-FIX. One concrete runnable failure remains.
+
+Finding: `temporal_kernel` is now strict positive int, but even positive values
+are accepted by `GraphMotionVAE` even though the temporal residual convs require
+length-preserving kernels. With `temporal_kernel=2`, the constructor succeeds
+and the first encoder temporal block crashes at runtime with a raw PyTorch shape
+mismatch.
+
+Source cause:
+
+- `src/models/graph_salad/vae.py:101-117` validates only strict positive int for
+  `temporal_kernel`; it does not require odd kernel size.
+- `src/models/encoder.py:105-113` uses `padding = (kernel_size - 1) // 2` twice.
+  For `kernel_size=2`, length changes from T=8 to T=6 after two convs.
+- `src/models/encoder.py:123-130` then multiplies by the original `[B*J, T=8]`
+  mask, causing the raw shape mismatch before the residual add.
+- `src/models/motion_decoder.py:76-93` uses the same even-kernel-sensitive
+  residual temporal conv pattern downstream.
+
+Exact repro:
+
+```bash
+cd /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+python - <<'PY'
+import importlib.util
+from pathlib import Path
+from src.models.graph_salad.vae import GraphMotionVAE
+
+spec = importlib.util.spec_from_file_location('test_vae_local', Path('tests/test_vae.py'))
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+vae = GraphMotionVAE(
+    pool_type='none', d_model=32, n_heads=4, d_ff=64,
+    n_graph_layers=1, n_enc_temporal_layers=1,
+    n_cross_layers=1, n_dec_temporal_layers=1,
+    n_treeik_layers=1, temporal_kernel=2, temporal_stride=4, dropout=0.0,
+)
+batch = mod._make_batch(B=1, T=8, J=11, D=32)
+vae(batch)
+PY
+```
+
+Traceback:
+
+```text
+Traceback (most recent call last):
+  File "<stdin>", line 16, in <module>
+  File "/scratch/ts1v23/.conda/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ts1v23/.conda/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/iridisfs/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/vae.py", line 387, in forward
+    enc = self.encode(batch)
+          ^^^^^^^^^^^^^^^^^^
+  File "/iridisfs/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/vae.py", line 229, in encode
+    h0 = self.encoder(
+         ^^^^^^^^^^^^^
+  File "/scratch/ts1v23/.conda/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ts1v23/.conda/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/iridisfs/scratch/ts1v23/workspace/noKslot_clean/src/models/encoder.py", line 283, in forward
+    h_flat = layer(h_flat, frame_mask_expanded)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ts1v23/.conda/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ts1v23/.conda/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/iridisfs/scratch/ts1v23/workspace/noKslot_clean/src/models/encoder.py", line 130, in forward
+    x = x * mask.unsqueeze(-1).float()
+        ~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+RuntimeError: The size of tensor a (6) must match the size of tensor b (8) at non-singleton dimension 1
+```
+
+Bounded scan notes:
+
+- `max_coarse`, `local_radius`, and `temporal_stride` validation exists inside
+  dynamic/deterministic poolers and unpool; VAE validates `temporal_stride`.
+- `GraphMotionBatch.from_collate_dict` has broad shape, dtype, mask, finite,
+  parent, adjacency, and scalar guards.
+- The test suite's real-checkpoint compatibility path still passes locally.
+- No additional blocker was needed after the `temporal_kernel=2` trace.
+
+Q3. M1.4 unblock GO/NO-GO
+-------------------------
+
+Decision: NO-GO.
+
+Reason: Q1 is sealed, but Q2 found one concrete R12 runnable failure. Under the
+requested rule, M1.4 can only GO when Q1 is sealed and Q2 has zero concrete
+runnable failures.
+
+Minimal fix target:
+
+- Add a VAE-level fail-loud validation that `temporal_kernel` is odd, e.g.
+  `if temporal_kernel % 2 == 0: raise ValueError("temporal_kernel must be odd ...")`.
+- Add a regression test for `temporal_kernel=2` raising at construction.
+- Rerun `PYTHONDONTWRITEBYTECODE=1 python tests/test_vae.py -v`.

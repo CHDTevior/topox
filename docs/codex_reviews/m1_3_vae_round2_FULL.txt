@@ -1,0 +1,240 @@
+# M1.3 Graph-SALAD VAE Round 2 Review
+
+Top-line verdict: NEEDS-FIX, not BLOCKED.
+
+This is a fresh code-review pass against the current files. I did not trust the
+round-2 claim text without checking the repo.
+
+Files and evidence inspected:
+
+- src/models/graph_salad/vae.py
+- tests/test_vae.py
+- src/models/model.py
+- src/models/slot_norm.py
+- src/models/motion_decoder.py
+- src/models/treeik_decoder.py
+- docs/PLAN_GAP_REPORT.md section 6
+- scripts/train.py, scripts/eval.py, scripts/animate.py ckpt-load paths
+
+Commands run:
+
+- python tests/test_vae.py -v -> 7 tests OK
+- Synthetic Model -> GraphMotionVAE state_dict probe:
+  unexpected=[], missing prefixes=['dist', 'pool', 'treeik_head'],
+  duplicate_param_objects=[], Python 3.12.9, PyTorch 2.10.0+cu128
+- Manual validation probes:
+  dropout=1.0 -> ValueError "dropout must be in [0, 1), got 1.0"
+  d_model=30,n_heads=8 -> ValueError "d_model (30) must be divisible by n_heads (8)"
+  no-pool T=10,stride=4 -> ValueError "GraphMotionVAE no-pool: T=10 must be divisible by temporal_stride=4"
+- Real checkpoint probes:
+  runs/L6_anchor_h100_seed42/best_model.pt model_state_dict prefixes are
+  encoder/slot_assignment/slot_norm/decoder; VAE load has unexpected
+  slot_assignment.* and VAE-only missing dist/pool/treeik_head.
+  runs/baseline_noKslot_ep399/last_model.pt needs dimensions derived from its
+  init_ckpt, matching scripts/eval.py:361-373 and scripts/animate.py:62-75.
+  With derived dims, VAE load has unexpected slot_assignment.* and VAE-only
+  missing dist/pool/treeik_head. Mapping topofk_state_dict into treeik_head
+  raises TreeIK attention bias shape mismatches because saved TreeIK uses
+  8 heads while this VAE builds treeik_head with the base n_heads=4.
+
+## 1. F1 ckpt-compat
+
+Verdict: SEALED for the stated round-2 scope, with a real-ckpt step-2 caveat.
+
+GraphMotionVAE now registers the baseline-compatible modules at the expected
+top-level names:
+
+- self.encoder is a SkeletonEncoder at src/models/graph_salad/vae.py:113-123.
+- self.slot_norm is SlotNorm at src/models/graph_salad/vae.py:123.
+- self.decoder is the raw MotionDecoder at src/models/graph_salad/vae.py:156-170.
+- self.treeik_head is separate ModuleDict state under treeik_head.* at
+  src/models/graph_salad/vae.py:171-188.
+
+Baseline Model registers the same baseline key surface:
+
+- self.encoder at src/models/model.py:76-86.
+- self.slot_norm at src/models/model.py:88-91.
+- self.decoder at src/models/model.py:93-101.
+
+The SlotNorm key prefix is slot_norm.norm.* because SlotNorm contains
+self.norm = nn.LayerNorm(d_model) at src/models/slot_norm.py:25-27. This matches
+the baseline Model and the VAE because both use the same SlotNorm class.
+
+The round-2 test does construct a baseline Model state_dict rather than a purely
+handwritten dict: tests/test_vae.py:148-157 constructs Model, tests/test_vae.py:159-168
+constructs GraphMotionVAE with matching dims, and tests/test_vae.py:170-184 loads
+baseline.state_dict() into the VAE with strict=False, asserts unexpected_keys is
+empty, and restricts missing keys to pool.*, dist.*, treeik_head.*, or unpool.*.
+
+Runtime probe confirms the test's core claim:
+
+- baseline prefixes: decoder, encoder, slot_norm
+- VAE prefixes: decoder, dist, encoder, pool, slot_norm, treeik_head
+- load_state_dict(baseline.state_dict(), strict=False): unexpected=[]
+- missing prefixes: dist, pool, treeik_head
+
+That seals F1 for "baseline Model state_dict loads into VAE without unexpected
+keys." It also verifies that the previous decoder.base.* nesting problem is gone:
+the VAE decoder is MotionDecoder directly at src/models/graph_salad/vae.py:163-170.
+
+Caveat: this is not yet a real checkpoint-load gate. The current test uses an
+in-process synthetic Model state_dict, not runs/L6_anchor_h100_seed42/best_model.pt
+or runs/baseline_noKslot_ep399/last_model.pt. The real L6 and ep399 model_state_dicts
+I probed contain slot_assignment.* unexpected keys. That is consistent with the
+existing tolerant loader policy in scripts/eval.py:359-386 and scripts/animate.py:58-87,
+but it is not covered by tests/test_vae.py. If step 2 intends to reuse the trained
+topofk_state_dict, there is a separate mismatch: scripts/train.py:374-375 constructs
+TopoFKTreeIKDecoder(model.decoder, d_model_actual) without passing n_heads, so it
+uses the TopoFKTreeIKDecoder default n_heads=8 at src/models/treeik_decoder.py:247-255,
+whereas GraphMotionVAE builds TreeIKBlock(..., n_heads, ...) from the base VAE
+n_heads at src/models/graph_salad/vae.py:176-181. The saved ep399 TreeIK attention
+bias weights are shape [8, 1]; a VAE built from the L6 base args has n_heads=4
+and expects [4, 1]. This does not break F1 if treeik_head is intentionally fresh,
+but step 2 must state that policy explicitly.
+
+## 2. F2 reinterpretation
+
+Verdict: OK.
+
+PLAN_GAP_REPORT section 6 gate text is, verbatim:
+
+1. "Structure: `src/models/graph_salad/` contains all 9 files listed above + denoiser stub"
+2. "CPU smoke: B=2 mixed-J, fwd/bwd, no NaN, `z.shape = [B, T/4, C2_max, D]`, no hard-coded 7"
+3. "Padding gate: padded joints/coarse nodes zeroed AND excluded from recon/KL/pool losses; **NaN-with-zero-gradient guard** (test that loss.backward() produces non-zero grads on at least one parameter per batch)"
+4. "Ckpt gate: L6 + ep399 baseline load with `missing=[]`, unexpected only `slot_assignment.*`"
+5. "Recon gate: mini-split masked recon decreases; target = ep399-equivalent `train_diag <= 0.33` or explicit regression report; **PLUS per-species recon for Bat, Crab, Horse, Dragon** (catches the case where global recon is good but Dragon J=143 is catastrophic)"
+6. "Denoiser stub: signature `forward(z_t, timesteps, text, adjacency, geodesic_dist, coarse_mask, frame_mask, level2_meta)` locked"
+7. "Visual QA (CV rule, not optional): GT-vs-pred multi-frame GIFs for Bat, Crab, Horse + 1 Dragon clip; absolute paths in report. Metric-only PASS violates CV primacy rule."
+
+Source: docs/PLAN_GAP_REPORT.md:194-202.
+
+This locked section does not say "forward bitwise match." It says checkpoint load
+compatibility. Therefore the round-2 reinterpretation of F2 as checkpoint-load
+compatibility is defensible against the provided plan text. Important caveat:
+pool_type="none" is still not a bitwise baseline-forward mode; it applies temporal
+pooling, a stochastic Gaussian latent path, and upsampling in src/models/graph_salad/vae.py:245-282
+and src/models/graph_salad/vae.py:317-323. That is acceptable only because section
+6 does not require forward bitwise equality.
+
+## 3. F3 R12 input-validation
+
+Verdict: implementation SEALED; regression tests NEEDS-FIX.
+
+Dropout range:
+
+- Code: src/models/graph_salad/vae.py:100-102 checks 0.0 <= dropout < 1.0 and
+  raises ValueError with "dropout must be in [0, 1)".
+- Manual probe confirmed dropout=1.0 raises that message.
+- Test coverage: absent from tests/test_vae.py. The VAE tests only cover invalid
+  pool_type at tests/test_vae.py:135-137 and non-int temporal_stride at
+  tests/test_vae.py:139-141.
+- Verdict: implementation sealed, test missing.
+
+d_model % n_heads:
+
+- Code: src/models/graph_salad/vae.py:103-106 checks divisibility and raises
+  ValueError with "d_model (...) must be divisible by n_heads (...)".
+- Manual probe confirmed d_model=30,n_heads=8 raises that message.
+- Test coverage: absent from tests/test_vae.py.
+- Verdict: implementation sealed, test missing.
+
+No-pool T % temporal_stride:
+
+- Code: src/models/graph_salad/vae.py:247-253 checks T divisibility before the
+  no-pool temporal AvgPool/view path and raises ValueError with a clear T/stride
+  message.
+- Manual probe confirmed T=10,stride=4 raises that message.
+- Test coverage: absent from tests/test_vae.py. The valid no-pool test at
+  tests/test_vae.py:119-133 uses T=8,stride=4 and does not exercise the error.
+- Verdict: implementation sealed, test missing.
+
+Because F3 was a round-1 R12 finding, I would add three small regression tests
+before calling the round-2 closure fully sealed.
+
+## 4. New R12 from restructure
+
+Verdict: no new blocker found in the requested categories, with one hardening
+note and one step-2 checkpoint-policy risk.
+
+ModuleDict / ModuleList order:
+
+- treeik_head is built as an nn.ModuleDict at src/models/graph_salad/vae.py:176-188.
+- blocks is an nn.ModuleList at src/models/graph_salad/vae.py:178-181.
+- decode iterates self.treeik_head["blocks"] at src/models/graph_salad/vae.py:345-349.
+- The iteration order that matters is the ModuleList order, not ModuleDict key
+  traversal. Runtime environment is Python 3.12.9 and PyTorch 2.10.0+cu128; both
+  preserve module insertion/list order. Verdict: deterministic.
+
+Double registration:
+
+- The base decoder is registered once as self.decoder at src/models/graph_salad/vae.py:163-170.
+- TreeIK head modules are separate under self.treeik_head at src/models/graph_salad/vae.py:176-188.
+- Runtime named_parameters() probe found duplicate_param_objects=[].
+- Verdict: no parameter double-registration found.
+
+Device/dtype:
+
+- Decoder and treeik_head are both registered submodules of GraphMotionVAE, so
+  model.to(device/dtype) moves them together.
+- decode sends decoder output feats into treeik_head modules directly at
+  src/models/graph_salad/vae.py:336-351, then into fk_persample at
+  src/models/graph_salad/vae.py:353-354.
+- Normal project path is float32 tensors; no immediate decoder/treeik dtype
+  mismatch was found.
+- Hardening note: _identity_assignment constructs float32 assignments explicitly
+  at src/models/graph_salad/vae.py:50-56. That is fine for the current float32
+  path, but it is not dtype-polymorphic if a future double/mixed-precision path
+  expects assignment dtype to track h_fine.
+
+Silent fallback:
+
+- No try/except exists in src/models/graph_salad/vae.py.
+- encode/decode/forward do not swallow errors; they rely on the called modules'
+  validation and PyTorch failures.
+- Verdict: no silent fallback found in the VAE.
+
+Step-2 checkpoint-policy risk:
+
+- Existing eval/animate derive baseline Model dimensions from the init checkpoint
+  when loading ep399: scripts/eval.py:361-373 and scripts/animate.py:62-75.
+  A naive VAE built from defaults will not match ep399's model_state_dict, because
+  ep399 args only retain init_ckpt and not the base dims.
+- If step 2 only loads encoder/slot_norm/decoder and initializes VAE-only modules
+  fresh, then the current VAE state surface can support that with an explicit
+  policy accepting slot_assignment.* unexpected and dist/pool/treeik_head missing.
+- If step 2 intends to reuse ep399 topofk_state_dict, current VAE treeik_head
+  cannot load it unless TreeIK n_heads is made compatible with the saved default
+  8-head TopoFKTreeIKDecoder. This is the remaining concrete shape risk.
+
+## 5. M1.3 step 2 GO / NO-GO
+
+Verdict: GO only to the real-checkpoint smoke-test substep; NO-GO for training
+script wiring until that smoke test is added and passes.
+
+Reasoning:
+
+- F1's local module-prefix fix is real and removes the decoder.base.* blocker.
+- F2's forward-bitwise objection is not a PLAN_GAP_REPORT section-6 requirement.
+- F3's runtime validation implementation is present, but the tests do not cover
+  the three round-1 validation fixes.
+- The existing ckpt-compat test is synthetic. It proves the class surfaces are
+  aligned for a freshly constructed Model, but it does not prove the real L6 or
+  ep399 ckpt schema.
+- Real checkpoint loading has policy details that tests must lock before training:
+  slot_assignment.* unexpected keys, dims derived from ep399 init_ckpt, and whether
+  topofk_state_dict is intentionally ignored or mapped into treeik_head with
+  n_heads compatibility.
+
+Recommended immediate fixes before wiring training:
+
+1. Add three F3 regression tests in tests/test_vae.py for dropout, d_model%n_heads,
+   and invalid no-pool T.
+2. Add a real-checkpoint smoke test or standalone preflight script that loads:
+   - runs/L6_anchor_h100_seed42/best_model.pt
+   - runs/baseline_noKslot_ep399/last_model.pt
+   using the same dimension-derivation policy as eval/animate.
+3. Explicitly decide one TreeIK policy:
+   - fresh treeik_head is allowed and topofk_state_dict is ignored, or
+   - treeik_head loads ep399 topofk_state_dict, in which case VAE needs a separate
+     n_treeik_heads defaulting to 8 or another compatibility mapper.
+

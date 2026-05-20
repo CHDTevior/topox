@@ -1,0 +1,146 @@
+--NEEDS-FIX
+M1.3 step 2 gate: NO-GO
+
+Fixes
+
+F1. Checkpoint-compatible decoder construction/naming is not ready for the Step 2 gate.
+Evidence: the baseline wrapper registers the base motion decoder at top-level `decoder.*`
+(`src/models/model.py:93`), and the train/eval loaders load `model_state_dict`
+directly into that wrapper (`scripts/train.py:351`, `scripts/eval.py:374`). In
+GraphMotionVAE, `self.decoder` is the TopoFKTreeIKDecoder wrapper
+(`src/models/graph_salad/vae.py:158`), and the MotionDecoder lives below
+`decoder.base.*` (`src/models/treeik_decoder.py:247`, `src/models/treeik_decoder.py:250`).
+A direct state_dict probe against `runs/baseline_noKslot_ep399/last_model.pt`
+therefore produced missing `decoder.base.*` keys and unexpected baseline
+`decoder.*` keys. Also, baseline training constructs TopoFKTreeIKDecoder without
+passing `n_heads`, so the TreeIK head uses its default 8 heads
+(`scripts/train.py:375`, `src/models/treeik_decoder.py:247`), while VAE passes the
+base encoder/decoder `n_heads` into the TreeIK head (`src/models/graph_salad/vae.py:158-160`).
+For the current baseline init, that base value is 4, which makes TreeIK attention
+weights shape-incompatible if Step 2 tries to load the saved `topofk_state_dict`.
+Fix: either restore top-level `decoder = MotionDecoder` plus a separately named
+TreeIK wrapper, or provide an explicit load/remap helper and a separate
+`n_treeik_heads` defaulting to the baseline TreeIK head value. Step 2 should not
+have to rely on ad hoc remapping.
+
+F2. The bitwise M1.0 no-pool baseline path is not expressible by this VAE yet.
+Evidence: the M1.0 no_k_slot path is `encoder -> slot_norm -> identity assignment`
+with no temporal down/up compression (`scripts/train.py:113-122`). The current
+VAE no-pool path always applies temporal AvgPool (`src/models/graph_salad/vae.py:211-221`),
+then a learnable Gaussian head (`src/models/graph_salad/vae.py:233-237`), and
+then repeat-interleave upsampling (`src/models/graph_salad/vae.py:276-282`).
+Additionally `reparametrize()` always samples random noise and has no eval-mode
+`return mu` branch (`src/models/graph_salad/vae.py:163-168`). Even with
+`pool_type='none'`, this cannot be bitwise-equal to the M1.0 baseline unless the
+caller monkey-patches both the latent head and sampling behavior, and probably
+sets `temporal_stride=1`. Fix: add an explicit ckpt-compat/identity latent mode
+or deterministic encode path used by the gate, and make eval-mode sampling
+intentional and tested.
+
+F3. R12 fail-loud coverage in GraphMotionVAE.__init__/no-pool path is incomplete.
+Evidence: VAE validates `pool_type` (`src/models/graph_salad/vae.py:92-95`) and
+strict int/range for `temporal_stride` (`src/models/graph_salad/vae.py:96-99`),
+but does not explicitly validate dropout, positive strict-int model dimensions,
+or `d_model % n_heads == 0`. The TreeIK attention currently uses a raw Python
+assert for divisibility (`src/models/treeik_decoder.py:180-183`), not a clear
+VAE-level raise. The dynamic and deterministic poolers explicitly reject
+non-divisible frame counts (`src/models/graph_salad/pool_dynamic.py:648-654`,
+`src/models/graph_salad/pool_deterministic.py:384-385`), but the no-pool path
+does not: it computes `T_lat = T // temporal_stride` and later `view(B, T_lat,
+stride)` (`src/models/graph_salad/vae.py:212-221`). In a local probe, T < stride
+raised a raw AvgPool RuntimeError and T not divisible by stride raised a raw
+shape RuntimeError. Fix: add explicit ValueError/TypeError guards and regression
+tests for dropout range, divisibility, and non-divisible/too-short T in the
+no-pool path.
+
+Per-focus verdicts
+
+1(a). Encoder -> SlotNorm -> Pool: PASS.
+SkeletonEncoder.forward returns `[B, T, J, D]` (`src/models/encoder.py:245-292`).
+GraphMotionVAE calls it with the GraphMotionBatch tensors and then applies
+SlotNorm (`src/models/graph_salad/vae.py:176-192`). SlotNorm accepts
+`[B, T, K, D]` (`src/models/slot_norm.py:29-31`), and both poolers accept
+`joint_features [B, T, J, D]` (`src/models/graph_salad/pool_dynamic.py:415-426`,
+`src/models/graph_salad/pool_deterministic.py:277-288`). The call-site passes
+the expected tensors and keys (`src/models/graph_salad/vae.py:194-204`).
+
+1(b). Pool output dict -> latent head: PASS with a dependency caveat.
+Both M1.2 poolers return `pooled_features`, `pooled_mask`, `frame_mask_down`,
+`assignment`, and `aux_losses` (`src/models/graph_salad/pool_dynamic.py:863-874`,
+`src/models/graph_salad/pool_deterministic.py:503-514`). VAE reads those exact
+keys (`src/models/graph_salad/vae.py:205-209`) and applies a shared
+`Linear(D, 2D)` over the last axis (`src/models/graph_salad/vae.py:138-140`,
+`src/models/graph_salad/vae.py:232-234`), matching plan Section 8
+(`outside_docs/graph_salad_implementation_plan.md:558-573`). VAE masks `z`
+with coarse and latent-frame masks (`src/models/graph_salad/vae.py:239-241`) and
+returns the masks (`src/models/graph_salad/vae.py:249-250`). It does not itself
+mask or clamp returned `mu/logvar`; safety depends on the M1.2 KL helper, which
+zeroes `mu/logvar` before exp and clamps logvar (`src/models/graph_salad/losses.py:132-175`).
+Do not compute an unmasked KL directly from the raw returned `logvar`.
+
+1(c). Latent z -> Unpool: PASS.
+The poolers use assignment orientation `[B, J, C]` (`src/models/graph_salad/pool_dynamic.py:30-39`,
+`src/models/graph_salad/pool_deterministic.py:503-514`). VAE passes that same
+assignment, coarse mask, joint mask, and downsampled frame mask into
+DynamicGraphUnpool (`src/models/graph_salad/vae.py:265-272`). The unpool
+contract expects those shapes (`src/models/graph_salad/unpool.py:61-68`) and
+uses `einsum("bjc,btcd->btjd", ...)` to recover fine joints
+(`src/models/graph_salad/unpool.py:165-169`). For `pool_type='none'`, VAE builds
+a masked identity assignment (`src/models/graph_salad/vae.py:50-56`,
+`src/models/graph_salad/vae.py:222-224`) and skips the graph unpool as intended
+(`src/models/graph_salad/vae.py:275-282`).
+
+1(d). Unpool -> TopoFKTreeIKDecoder -> split into (pos, vel): PASS.
+After unpool/no-pool upsample, VAE rebuilds a fine-joint identity assignment
+for the decoder (`src/models/graph_salad/vae.py:284-305`). MotionDecoder uses
+assignment as `[B, J, K]` and returns features to the TreeIK wrapper
+(`src/models/motion_decoder.py:150-204`). TopoFKTreeIKDecoder returns
+`torch.cat([pos, vel], dim=-1)` as `[B, T, Jpad, 6]`
+(`src/models/treeik_decoder.py:269-288`), and VAE splits that channel layout into
+3D position and 3D velocity (`src/models/graph_salad/vae.py:291-306`).
+
+2. No-pool path: SHAPE PASS for divisible T, NEEDS-FIX for fail-loud and ckpt identity.
+The path performs temporal AvgPool (`src/models/graph_salad/vae.py:211-221`),
+repeat-interleave upsample (`src/models/graph_salad/vae.py:276-282`), and decodes
+to `pred_pos/pred_vel [B, T, J, 3]` when `T % temporal_stride == 0`
+(`src/models/graph_salad/vae.py:306-311`). The test covers the happy path with
+T=8, stride=4, J=11 (`tests/test_vae.py:119-133`). Missing explicit T guards and
+the lack of identity latent/baseline mode are covered by F2/F3.
+
+3. 3-way ablation symmetry: PASS on the current valid-input contract.
+The dynamic, deterministic, and none paths all reach the same decoder call and
+split to `[B, T, J, 3]` (`src/models/graph_salad/vae.py:265-311`). Tests exercise
+dynamic, deterministic, and none forwards (`tests/test_vae.py:78-133`), with the
+dynamic test checking both position and velocity shapes (`tests/test_vae.py:91-100`).
+The deterministic test should also assert `pred_vel` shape, but the code path is
+the same split and no silent shape divergence was found for valid divisible T.
+
+4. R12 fail-loud: NEEDS-FIX.
+See F3. Pool type and temporal_stride are checked in `__init__`; dropout,
+dimension divisibility, and no-pool temporal divisibility are not explicitly
+guarded at the VAE boundary.
+
+5. M1.3 Step 2 ckpt-compat gate: NO-GO.
+One-line justification: direct baseline checkpoint loading into this VAE is
+blocked by decoder key nesting and TreeIK head n_heads mismatch, and bitwise
+baseline comparison is blocked by the unavoidable Gaussian sampling/head path.
+
+Extra scan
+
+- KL formula itself is not in `vae.py`. The existing M1.2 loss uses the standard
+  `-0.5 * (1 + logvar - mu^2 - exp(logvar))`, sums over D, means over valid
+  latent nodes, masks before arithmetic, and clamps logvar before exp
+  (`src/models/graph_salad/losses.py:132-175`).
+- `reparametrize()` always samples, including eval mode (`src/models/graph_salad/vae.py:163-168`);
+  this is a Step 2 blocker unless an explicit deterministic/identity path is added.
+- No logvar clamp in VAE; clamp exists in the KL helper (`src/models/graph_salad/losses.py:137-170`).
+- No `.cuda()` or device hardcoding was found. Identity assignment uses the
+  input mask device (`src/models/graph_salad/vae.py:50-56`), and zero aux losses
+  use `h0.device` (`src/models/graph_salad/vae.py:224-230`).
+- Silent fallback scan: unknown `pool_type` fails loud (`src/models/graph_salad/vae.py:92-95`);
+  no-pool invalid T fails deep with raw RuntimeError rather than a VAE-level
+  message (F3).
+
+Verification run
+
+- `python tests/test_vae.py` passed locally: 6 tests, OK.

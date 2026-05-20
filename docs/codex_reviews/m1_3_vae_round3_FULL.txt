@@ -1,0 +1,51 @@
+M1.3 VAE Round 3 — Codex Review (FRESH thread, gpt-5.5 xhigh)
+================================================================
+Date: 2026-05-20
+Reviewer model: gpt-5.5 (xhigh reasoning effort)
+Thread: 019e46c7-0460-7a02-96e6-08aaaa5de3d2 (fresh, no prior context)
+Files reviewed:
+  - /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/vae.py
+  - /scratch/ts1v23/workspace/noKslot_clean/tests/test_vae.py
+  - /scratch/ts1v23/workspace/noKslot_clean/runs/baseline_noKslot_ep399/last_model.pt (49MB real ckpt)
+
+Verdict: NEEDS-FIX
+
+Q1 → The 3 round-2 items are substantively sealed:
+- (a) Yes. The new tests hit the intended paths: dropout guard in
+  vae.py:101, head divisibility guard in vae.py:103, and no-pool
+  `T % temporal_stride` guard in vae.py:249.
+- (b) Yes locally. The test loads `runs/baseline_noKslot_ep399/last_model.pt`,
+  verified present at 51,718,229 bytes, and asserts `unexpected_keys == []`
+  plus missing keys only under `pool.`, `dist.`, `treeik_head.`, `unpool.`
+  in test_vae.py:203.
+- (c) Yes for this test path. It infers `n_heads` from
+  `encoder.graph_layers.0.geodesic_bias.weight` and passes that into
+  `GraphMotionVAE`; `treeik_head` uses the same constructor `n_heads`
+  in vae.py:176. No hardcoded `n_heads=4` found in vae.py.
+
+Q2 → One real issue:
+- test_vae.py:176: `torch.load(..., weights_only=False)` is unsafe and
+  unnecessary. Same checkpoint loads with `weights_only=True` (verified).
+- test_vae.py:174: the real-ckpt test skips if the ckpt is absent.
+  Acceptable for optional local dev, but weak for an R9 gate because CI
+  could pass without exercising the real-ckpt fix.
+- Dim inference is mostly fail-loud: missing keys raise `KeyError`, bad
+  shape rank raises `IndexError`, and size mismatch would make
+  `load_state_dict` raise. No broad `try/except` swallowing errors.
+
+Q3 → NO-GO until the `weights_only=False` load is fixed. After that, GO
+for M1.4 CPU smoke. Ad hoc CPU forward on the real-ckpt-loaded model
+with `weights_only=True`: `unexpected=[]`, no bad missing keys,
+`pred_pos` and `pred_vel` were finite with shape `(1, 8, 11, 3)`.
+
+Findings
+========
+1. test_vae.py:176 uses `weights_only=False` for a real checkpoint load.
+   Replace with `weights_only=True`.
+2. test_vae.py:174 silently skips the real-ckpt gate when the file is
+   absent. For milestone gating, make this fail loud or require an
+   explicit opt-out.
+
+M1.4 gating decision: NO-GO as-is; GO after fixing the unsafe load.
+Verification run: `PYTHONDONTWRITEBYTECODE=1 python tests/test_vae.py`
+passed 11 tests in 0.423s.

@@ -1,0 +1,166 @@
+M1.3 VAE Round 4 — Codex Review (fresh context)
+=================================================
+
+Date: 2026-05-20
+Repo: /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+Scope:
+- src/models/graph_salad/vae.py
+- tests/test_vae.py
+- docs/codex_reviews/m1_3_vae_round3_FULL.txt
+- docs/codex_reviews/m1_3_vae_round2_FULL.txt
+- docs/codex_reviews/m1_3_vae_FULL.txt
+- runs/baseline_noKslot_ep399/last_model.pt
+- docs/PLAN_GAP_REPORT.md section 6
+
+Top-line verdict: NEEDS-FIX for M1.4 unblock.
+
+The round-3 fix point itself is corrected: tests/test_vae.py:178 now uses
+`weights_only=True`, and the real ep399 checkpoint still loads under that flag.
+However, fresh R12 scan found one concrete untested constructor-validation bug in
+GraphMotionVAE: `n_heads=0` raises raw `ZeroDivisionError` at vae.py:103, and
+`d_model=0` is accepted by the constructor. That keeps M1.3 R12 from being fully
+sealed.
+
+Commands run
+------------
+
+- `rg -n "weights_only\s*=\s*False|weights_only\s*=\s*True|torch\.load\(" .`
+- `python tests/test_vae.py`
+- `python - <<'PY' ... torch.load(..., weights_only=True) ... PY`
+- Constructor probe:
+  `GraphMotionVAE(pool_type='none', d_model=32, n_heads=0)` ->
+  `ZeroDivisionError: integer modulo by zero`
+
+Q1. weights_only=True security fix
+----------------------------------
+
+Verdict: SEALED at the round-3 test fix point; NOT repo-wide pickle-safe yet.
+
+Evidence for fixed test line:
+- tests/test_vae.py:176-178 documents the round-3 security fix and calls:
+  `torch.load(str(ckpt_path), map_location="cpu", weights_only=True)`.
+- The same test then loads the filtered checkpoint into GraphMotionVAE with
+  `strict=False` at tests/test_vae.py:205.
+- tests/test_vae.py:207-210 asserts no unexpected keys after dropping only
+  `slot_assignment.*`.
+- tests/test_vae.py:211-215 restricts missing keys to `pool.`, `dist.`,
+  `treeik_head.`, or `unpool.`.
+- The local test run confirmed this path passes against the real ep399 file:
+  11 tests OK in 0.386s.
+- A direct `torch.load(..., weights_only=True)` probe returned a dict with
+  `model_state_dict`, 184 state keys, and encoder keys such as
+  `encoder.joint_feat_proj.*`.
+
+Repo-wide search result:
+- tests/test_vae.py:178 uses `weights_only=True`.
+- scripts/train.py:336-337 still uses `torch.load(..., weights_only=False)`.
+- scripts/eval.py:361 still uses `torch.load(args.ckpt, ..., weights_only=False)`.
+- scripts/eval.py:365 still uses `torch.load(init_ckpt_path, ..., weights_only=False)`.
+- scripts/animate.py:62 still uses `torch.load(ckpt_path, ..., weights_only=False)`.
+- scripts/animate.py:64-66 still uses `torch.load(..., weights_only=False)`.
+- Historical review docs also mention the old test blocker, but the executable
+  code leftovers are the three scripts above.
+
+Skip-if-absent risk:
+- tests/test_vae.py:173-175 still skips the real-ckpt test when
+  `runs/baseline_noKslot_ep399/last_model.pt` is absent.
+- In this single-machine repo, with the 50M file present and no CI, this is
+  dismissible as an immediate local gate risk.
+- It remains a portability risk if CI or a checkpoint-light clone appears; then
+  the gate should fail loud unless an explicit opt-out is set.
+
+Q2. Fresh R12 convergence scan
+------------------------------
+
+Verdict: NOT sealed. One concrete R12-grade bug remains with runnable trace.
+
+Bug: GraphMotionVAE does not validate model dimension / head arguments before
+using them.
+
+Evidence:
+- src/models/graph_salad/vae.py:96-99 validates `temporal_stride` as strict int
+  and positive.
+- src/models/graph_salad/vae.py:101-102 validates `dropout`.
+- src/models/graph_salad/vae.py:103 immediately computes `d_model % n_heads`.
+- There is no preceding strict-int / positive guard for `d_model`, `n_heads`,
+  `d_ff`, layer counts, or treeik layer count.
+- tests/test_vae.py:149-151 covers only the non-divisible case
+  `d_model=17, n_heads=4`.
+- tests/test_vae.py does not cover `n_heads=0`, `n_heads=True`,
+  `n_heads=4.0`, or `d_model=0`.
+
+Runnable failure trace:
+
+```bash
+cd /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+python - <<'PY'
+from src.models.graph_salad.vae import GraphMotionVAE
+GraphMotionVAE(pool_type="none", d_model=32, n_heads=0)
+PY
+```
+
+Expected/current error:
+
+```text
+ZeroDivisionError: integer modulo by zero
+```
+
+Why this is R12-grade:
+- The user explicitly listed division by zero and unvalidated input as R12 scan
+  targets.
+- This is a VAE-boundary input validation bug, not a downstream numerical
+  artifact.
+- It is not covered by an explicit test.
+- It is easy to make fail-loud with a clear `TypeError` / `ValueError` before
+  vae.py:103.
+
+Additional probe: `d_model=0` is accepted by the constructor and emits PyTorch
+zero-element tensor warnings. `n_heads=True`, `n_heads=4.0`, and
+`d_model=32.0` fail later with raw PyTorch constructor `TypeError`s rather than
+VAE-level validation.
+
+Other R12 scan notes:
+- No silent try/except fallback exists in vae.py.
+- No-pool T divisibility now fails loud at vae.py:249-253 and is tested at
+  tests/test_vae.py:153-166.
+- Dropout range is tested at tests/test_vae.py:143-147.
+- d_model/n_heads non-divisibility is tested at tests/test_vae.py:149-151.
+- Dynamic/deterministic pool paths delegate shape/mask validation to the poolers.
+- Real ckpt dim inference fails loud through key lookup or load_state_dict; no
+  broad exception swallowing was found in tests/test_vae.py:188-205.
+- I found no additional runnable VAE-only NaN-with-zero-gradient or mask-leak
+  trace in this pass.
+
+Recommended one-blocker fix:
+- Add strict positive-int validation in GraphMotionVAE.__init__ before line 103
+  for at least `d_model`, `n_heads`, `d_ff`, `n_graph_layers`,
+  `n_enc_temporal_layers`, `n_cross_layers`, `n_dec_temporal_layers`,
+  `n_treeik_layers`, `motion_feat_dim`, and `joint_feat_dim`.
+- Add tests for `n_heads=0`, `n_heads=True`, `n_heads=4.0`, and `d_model=0`.
+- Then rerun `python tests/test_vae.py`.
+
+Q3. M1.4 unit tests + CPU smoke unblock
+---------------------------------------
+
+Verdict: NO-GO.
+
+One blocker:
+- M1.3 R12 is not sealed because GraphMotionVAE constructor input validation
+  still allows or raw-crashes on invalid model dimensions/head counts
+  (notably `n_heads=0` and `d_model=0`).
+
+Otherwise OK:
+- The round-3 `weights_only=True` test fix is real.
+- The real ep399 ckpt-compat test passes locally.
+- The 3-way pool ablation happy paths are still covered:
+  dynamic at tests/test_vae.py:78-103, deterministic at tests/test_vae.py:104-118,
+  no-pool at tests/test_vae.py:119-133.
+- Plan section 6 confirms the next gates are CPU smoke, padding, ckpt, recon,
+  denoiser stub, and visual QA at docs/PLAN_GAP_REPORT.md:194-202.
+
+M1.4 gate decision: NO-GO until the constructor-validation blocker is fixed and
+tested. After that specific fix:
+- GO to M1.4 CPU smoke / padding gate / recon gate.
+- Keep the repo-wide `weights_only=False` script loaders on the cleanup list,
+  especially before any checkpoint-loading CPU smoke that consumes external or
+  untrusted checkpoint paths.

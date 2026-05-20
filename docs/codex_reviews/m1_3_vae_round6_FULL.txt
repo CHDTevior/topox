@@ -1,0 +1,269 @@
+M1.3 GraphMotionVAE Round 6 Review
+===================================
+
+Date: 2026-05-20
+Repo: /scratch/ts1v23/workspace/noKslot_clean
+Verdict: NEEDS-FIX
+M1.4 decision: NO-GO
+
+Scope
+-----
+
+User request: verify the Round 6 temporal_kernel odd-only fix, run the
+tests/test_vae.py suite, and perform an R12 honest convergence scan for a
+concrete runnable failure trace against current vae.py.
+
+Files inspected
+---------------
+
+- docs/codex_reviews/m1_3_vae_round5_FULL.txt
+- docs/codex_reviews/m1_3_vae_round5_BRIEF.md
+- docs/codex_reviews/m1_3_vae_round4_BRIEF.md
+- src/models/graph_salad/vae.py
+- tests/test_vae.py
+- src/models/graph_salad/batch.py
+- src/models/graph_salad/pool_dynamic.py
+- src/models/graph_salad/pool_deterministic.py
+- src/models/graph_salad/unpool.py
+- src/models/encoder.py
+- src/models/motion_decoder.py
+- src/models/treeik_decoder.py
+- src/models/slot_norm.py
+
+Commands run
+------------
+
+- `nl -ba src/models/graph_salad/vae.py | sed -n '1,260p'`
+- `nl -ba src/models/graph_salad/vae.py | sed -n '224,520p'`
+- `nl -ba tests/test_vae.py | sed -n '1,320p'`
+- `python -m pytest tests/test_vae.py -x -q`
+- `python tests/test_vae.py -v`
+- Python temporal_kernel validation sweep over bad values
+  `0, 2, 4, -1, True, 1.5` and good values `1, 3, 5`.
+- Python padded-frame repro for `pool_type="none"`.
+- Python padded-frame scan over `pool_type in ("none", "deterministic", "dynamic")`.
+
+Q1. temporal_kernel odd-constraint sealed?
+------------------------------------------
+
+Verdict: SEALED.
+
+Source evidence:
+
+- `src/models/graph_salad/vae.py:101-117` includes `temporal_kernel` in the
+  strict positive-int hparam loop.
+- `src/models/graph_salad/vae.py:114-115` rejects bool and non-int values with
+  a TypeError that names the parameter.
+- `src/models/graph_salad/vae.py:116-117` rejects zero and negative values with
+  a ValueError that names the parameter.
+- `src/models/graph_salad/vae.py:125-132` rejects even positive values with
+  `ValueError("temporal_kernel must be odd, got ...")`.
+- `tests/test_vae.py:167-169` adds the Round 6 regression test for
+  `temporal_kernel=2` construction-time rejection.
+
+Validation sweep output:
+
+```text
+BAD CASES
+temporal_kernel=0: ValueError: temporal_kernel must be > 0, got 0
+temporal_kernel=2: ValueError: temporal_kernel must be odd, got 2 (encoder uses centered conv padding)
+temporal_kernel=4: ValueError: temporal_kernel must be odd, got 4 (encoder uses centered conv padding)
+temporal_kernel=-1: ValueError: temporal_kernel must be > 0, got -1
+temporal_kernel=True: TypeError: temporal_kernel must be strict int, got bool
+temporal_kernel=1.5: TypeError: temporal_kernel must be strict int, got float
+GOOD CASES
+temporal_kernel=1: OK
+temporal_kernel=3: OK
+temporal_kernel=5: OK
+```
+
+This covers the requested bad cases: 0, 2, 4, negatives, bool, float; and the
+requested good cases: 1, 3, 5. All error messages for temporal_kernel name the
+parameter.
+
+Q2. Test-suite result
+---------------------
+
+The exact requested command could not run in this environment because pytest is
+not installed:
+
+```text
+$ python -m pytest tests/test_vae.py -x -q
+/scratch/ts1v23/.conda/bin/python: No module named pytest
+```
+
+Fallback run through the file's unittest entrypoint did execute the same
+15 test methods and passed:
+
+```text
+test_aux_losses_present (__main__.GraphMotionVAETests.test_aux_losses_present) ... ok
+test_ckpt_compat_baseline_load (__main__.GraphMotionVAETests.test_ckpt_compat_baseline_load)
+Verify baseline keys (encoder.* + slot_norm.norm.* + decoder.*) ... ok
+test_ckpt_compat_real_baseline_load (__main__.GraphMotionVAETests.test_ckpt_compat_real_baseline_load)
+Real ckpt smoke: load runs/baseline_noKslot_ep399/last_model.pt into ... ok
+test_d_model_not_divisible_by_n_heads_raises (__main__.GraphMotionVAETests.test_d_model_not_divisible_by_n_heads_raises) ... ok
+test_d_model_zero_raises (__main__.GraphMotionVAETests.test_d_model_zero_raises) ... ok
+test_deterministic_forward (__main__.GraphMotionVAETests.test_deterministic_forward) ... ok
+test_dim_hparam_strict_int (__main__.GraphMotionVAETests.test_dim_hparam_strict_int) ... ok
+test_dynamic_forward (__main__.GraphMotionVAETests.test_dynamic_forward) ... ok
+test_even_temporal_kernel_raises (__main__.GraphMotionVAETests.test_even_temporal_kernel_raises) ... ok
+test_invalid_dropout_raises (__main__.GraphMotionVAETests.test_invalid_dropout_raises) ... ok
+test_invalid_pool_type_raises (__main__.GraphMotionVAETests.test_invalid_pool_type_raises) ... ok
+test_invalid_temporal_stride_raises (__main__.GraphMotionVAETests.test_invalid_temporal_stride_raises) ... ok
+test_n_heads_zero_raises (__main__.GraphMotionVAETests.test_n_heads_zero_raises) ... ok
+test_nopool_T_not_divisible_raises (__main__.GraphMotionVAETests.test_nopool_T_not_divisible_raises) ... ok
+test_nopool_forward (__main__.GraphMotionVAETests.test_nopool_forward) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 0.521s
+
+OK
+```
+
+So: the claim "15 tests pass" is confirmed via unittest, but not via the exact
+pytest command because the current Python environment lacks pytest.
+
+Q3. R12 honest convergence scan
+-------------------------------
+
+Verdict: NEEDS-FIX. I found one concrete runnable failure trace.
+
+Concrete blocker: padded frames are marked invalid by `frame_mask_recovered`,
+but `GraphMotionVAE.decode` returns non-zero `pred_pos` on those invalid frames.
+
+Why this is a VAE output bug, not speculation:
+
+- `src/models/motion_decoder.py:195-197` masks the feature path by
+  `frame_mask` before returning features to the FK head.
+- `src/models/treeik_decoder.py:227-234` also masks TreeIK block activations by
+  frame and joint mask.
+- `src/models/graph_salad/vae.py:376-380` then applies the rotation head and FK.
+  The rotation head has an identity-rotation bias, so zero invalid-frame
+  features become identity local rotations.
+- `src/models/treeik_decoder.py:114` masks FK output by `joint_mask` only, not
+  by `frame_mask`.
+- `src/models/graph_salad/vae.py:387-390` returns `pred_pos` and
+  `frame_mask_recovered` without reapplying the frame mask to `pred_pos`.
+
+Runnable repro:
+
+```bash
+cd /scratch/ts1v23/workspace/noKslot_clean
+python - <<'PY'
+import torch
+from src.models.graph_salad.batch import GraphMotionBatch
+from src.models.graph_salad.vae import GraphMotionVAE
+
+def adj_line(N):
+    A = torch.zeros(N, N)
+    for j in range(1, N):
+        A[j, j - 1] = 1.0
+        A[j - 1, j] = 1.0
+    return A
+
+def geo_line(N):
+    return torch.tensor([[abs(i - j) for j in range(N)] for i in range(N)],
+                        dtype=torch.float32)
+
+B, T, J = 1, 8, 6
+nf = 4
+joint_mask = torch.ones(B, J, dtype=torch.bool)
+frame_mask = torch.zeros(B, T, dtype=torch.bool)
+frame_mask[:, :nf] = True
+rest_offsets = torch.zeros(B, J, 3)
+rest_offsets[:, 1:, 0] = 1.0
+
+d = {
+    "motion_features": torch.randn(B, T, J, 6),
+    "skeleton_features": torch.randn(B, J, 9),
+    "joint_mask": joint_mask,
+    "frame_mask": frame_mask,
+    "adjacency": adj_line(J).unsqueeze(0),
+    "geodesic_dist": geo_line(J).unsqueeze(0),
+    "name_hashes": torch.zeros(B, J, dtype=torch.long),
+    "root_position": torch.randn(B, T, 3),
+    "root_velocity": torch.randn(B, T, 3),
+    "local_rotations_6d": torch.randn(B, T, J, 6),
+    "foot_contact": torch.zeros(B, T, 4),
+    "bone_lengths": torch.ones(B, T, J),
+    "rest_offsets": rest_offsets,
+    "num_joints": torch.tensor([J], dtype=torch.long),
+    "num_frames": torch.tensor([nf], dtype=torch.long),
+    "fps": torch.full((B,), 20.0),
+    "has_rotations": torch.ones(B, dtype=torch.bool),
+    "parent_indices": [[-1] + list(range(J - 1))],
+    "joint_names": [[f"j{j}" for j in range(J)]],
+    "canonical_names": [[f"c{j}" for j in range(J)]],
+    "bone_lengths_rest": [[1.0] * J],
+    "text": ["sample"],
+    "skeleton_id": ["skel"],
+    "motion_id": ["mot"],
+}
+batch = GraphMotionBatch.from_collate_dict(d)
+vae = GraphMotionVAE(
+    pool_type="none", d_model=32, n_heads=4, d_ff=64,
+    n_graph_layers=1, n_enc_temporal_layers=1,
+    n_cross_layers=1, n_dec_temporal_layers=1,
+    n_treeik_layers=1, temporal_stride=4, dropout=0.0,
+)
+vae.eval()
+with torch.no_grad():
+    out = vae(batch)
+invalid = ~out["frame_mask_recovered"]
+invalid_pos_max = out["pred_pos"][invalid].abs().max().item()
+invalid_vel_max = out["pred_vel"][invalid].abs().max().item()
+print("frame_mask_recovered", out["frame_mask_recovered"].tolist())
+print("invalid_pos_max", invalid_pos_max)
+print("invalid_vel_max", invalid_vel_max)
+assert invalid_pos_max == 0.0, (
+    f"pred_pos has non-zero padded frames: max_abs={invalid_pos_max}"
+)
+PY
+```
+
+Exact output:
+
+```text
+frame_mask_recovered [[True, True, True, True, False, False, False, False]]
+invalid_pos_max 5.0
+invalid_vel_max 0.0
+Traceback (most recent call last):
+  File "<stdin>", line 65, in <module>
+AssertionError: pred_pos has non-zero padded frames: max_abs=5.0
+```
+
+The same padded-frame symptom appears across all three pool paths:
+
+```text
+none frame_mask_recovered= [[True, True, True, True, False, False, False, False]] invalid_pos_max= 5.0 invalid_vel_max= 0.0
+deterministic frame_mask_recovered= [[True, True, True, True, False, False, False, False]] invalid_pos_max= 5.0 invalid_vel_max= 0.0
+dynamic frame_mask_recovered= [[True, True, True, True, False, False, False, False]] invalid_pos_max= 5.0 invalid_vel_max= 0.0
+```
+
+Bounded scan notes:
+
+- Type/value strictness for temporal_kernel is sealed as shown in Q1.
+- The Round 5 even-kernel crash is fixed at construction time.
+- The existing valid all-frame tests cover no-pool, deterministic, and dynamic
+  forward paths and pass via unittest.
+- Mask handling is not converged: padded frames remain non-zero in final
+  `pred_pos` after the FK head.
+- I do not need to list speculative risks beyond this concrete failure; this
+  one runnable blocker is sufficient for NEEDS-FIX under the requested rule.
+
+Fix target
+----------
+
+Minimal target: after FK in `GraphMotionVAE.decode`, reapply
+`frame_mask_recovered` to `pos`, and ensure `vel` is also zero on invalid
+frames after finite differencing. Add a regression test with `num_frames < T`
+that asserts `pred_pos` and `pred_vel` are zero wherever
+`frame_mask_recovered` is False. Run the exact pytest command once pytest is
+available, plus the unittest fallback if needed.
+
+Final verdict
+-------------
+
+NEEDS-FIX. The temporal_kernel Round 6 fix is sealed, but R12 convergence is not:
+there is a concrete runnable padded-frame mask failure in final VAE outputs.
+M1.4 is NO-GO.

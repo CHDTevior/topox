@@ -22,6 +22,7 @@ from .losses import (
     masked_l1_vel,
     masked_vel_consistency,
 )
+from .vae import GraphMotionVAE
 from .graph_utils import (
     floyd_shortest_path,
     build_coarse_adjacency_from_hard_assign,
@@ -45,6 +46,8 @@ __all__ = [
     "masked_bone_length",
     "aggregate_pool_aux",
     "compute_total_loss",
+    # M1.3 VAE wrapper
+    "GraphMotionVAE",
     # M1.1 scaffolding
     "GraphMotionBatch",
     "GraphSaladDenoiserStub",

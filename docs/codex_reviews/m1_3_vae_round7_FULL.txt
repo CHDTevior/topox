@@ -1,0 +1,156 @@
+M1.3 GraphMotionVAE Round 7 Review
+Repo: /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+Reviewer: fresh-thread repo-truth audit
+Date: 2026-05-20
+
+Top-line verdict: PASS / CONVERGENCE. M1.4 GO.
+
+Scope
+-----
+Round 6 concrete failure was: with num_frames=4 and padded T=8, padded
+frames 4..7 of pred_pos were non-zero after FK. Claimed R7 fix: in
+GraphMotionVAE.decode(), reapply frame_mask_recovered and joint_mask to both
+pos and vel after FK and numerical velocity diff.
+
+Q1 - Padded-frame zero sealed?
+--------------------------------
+Verdict: SEALED.
+
+Implementation evidence, src/models/graph_salad/vae.py:380-398:
+
+  380	                          batch.rest_offsets, batch.joint_mask)            # [B, T, J, 3]
+  381	        # Velocity from numerical diff (matches TopoFKTreeIKDecoder)
+  382	        vel = torch.zeros_like(pos)
+  383	        if pos.shape[1] > 1:
+  384	            vel[:, 1:] = (pos[:, 1:] - pos[:, :-1]) * batch.fps.view(-1, 1, 1, 1)
+  385	            vel[:, 0] = vel[:, 1]
+  386	        # Codex M1.3 R6 fix: reapply frame_mask + joint_mask on pos/vel so
+  387	        # padded frames + joints output exactly zero (FK + numerical-diff
+  388	        # otherwise leaks non-zero values into padded regions).
+  389	        fm_b = frame_mask_recovered[:, :, None, None].to(pos.dtype)
+  390	        jm_b = batch.joint_mask[:, None, :, None].to(pos.dtype)
+  391	        pos = pos * fm_b * jm_b
+  392	        vel = vel * fm_b * jm_b
+  393	
+  394	        return {
+  395	            "pred_pos": pos,        # [B, T, J, 3]
+  396	            "pred_vel": vel,        # [B, T, J, 3]
+  397	            "frame_mask_recovered": frame_mask_recovered,
+  398	        }
+
+This is the correct location: FK produces pos at lines 379-380, numerical
+diff writes vel at lines 382-385, and both tensors are masked immediately
+before return at lines 389-392. The frame mask and joint mask are applied to
+both pred_pos and pred_vel.
+
+Test coverage evidence, tests/test_vae.py:167-221:
+
+- test_padded_frame_output_zero instantiates exactly one VAE:
+  GraphMotionVAE(pool_type="dynamic", ...) at lines 170-178.
+- It constructs T=8 with nf=[4], frame_mask[0, :4] = True, then asserts
+  out["pred_pos"][0, 4:, :, :].abs().max().item() == 0.0 and the same for
+  pred_vel at lines 217-221.
+- It does not loop over pool_type and does not instantiate pool_type="none" or
+  pool_type="deterministic". Therefore the author claim that this test itself
+  verifies all three pool variants is false.
+
+Judgment on sufficiency:
+
+The narrow test matrix is not ideal, but it is sufficient for this round-6
+bug because the fix is unconditional in the shared decode() tail. All three
+variants branch only before h_fine/frame_mask_recovered construction:
+
+- pooled variants use self.unpool at vae.py:332-341;
+- no-pool uses temporal repeat at vae.py:342-349;
+- all paths then execute the same FK, velocity diff, and lines 389-392 mask.
+
+I also ran an all-pool probe to verify this construction in execution:
+
+  dynamic {'frame_pos': 0.0, 'frame_vel': 0.0, 'joint_pos': 0.0, 'joint_vel': 0.0} mask [True, True, True, True, False, False, False, False]
+  deterministic {'frame_pos': 0.0, 'frame_vel': 0.0, 'joint_pos': 0.0, 'joint_vel': 0.0} mask [True, True, True, True, False, False, False, False]
+  none {'frame_pos': 0.0, 'frame_vel': 0.0, 'joint_pos': 0.0, 'joint_vel': 0.0} mask [True, True, True, True, False, False, False, False]
+
+Q1 conclusion: padded-frame and padded-joint output zeroing is sealed by the
+shared decode tail. The test claim "all 3 variants" is inaccurate, but the
+implementation and independent all-pool probe cover the round-6 repro.
+
+Q1 required regression command
+------------------------------
+Command run:
+
+  cd /iridisfs/scratch/ts1v23/workspace/noKslot_clean && python tests/test_vae.py -v 2>&1 | tail -25
+
+Relevant output:
+
+  test_padded_frame_output_zero (__main__.GraphMotionVAETests.test_padded_frame_output_zero) ... ok
+
+  ----------------------------------------------------------------------
+  Ran 16 tests in 0.462s
+
+  OK
+
+This confirms the requested test passes and the test count is 16. Runtime
+differs from the author's claimed 0.39s but is not meaningful.
+
+Q2 - Honest convergence check
+-----------------------------
+Verdict: CONVERGENCE. I found no concrete R12-style runnable failure.
+
+Additional probes run:
+
+1. All-pool mask leakage probe:
+   - pool_type in ["dynamic", "deterministic", "none"]
+   - valid frames 0..3, padded frames 4..7
+   - valid joints 0..3, padded joints 4..5
+   - checked pred_pos and pred_vel for padded frames and padded joints
+   - result: all maxima exactly 0.0 for all three pool variants.
+
+2. Finite/autograd smoke:
+
+  dynamic loss 3.812861919403076 grad_ok True
+  deterministic loss 3.4417331218719482 grad_ok True
+  none loss 3.7203938961029053 grad_ok True
+
+This covered finite pred_pos/pred_vel/mu/logvar and at least one finite,
+non-zero gradient across parameters for each pool variant.
+
+3. Independent codex exec repo-truth audit:
+
+  codex exec --model gpt-5.5 --config model_reasoning_effort=xhigh ...
+
+It independently reached the same conclusion:
+
+- vae.py applies frame_mask_recovered and joint_mask to both pos and vel.
+- test_padded_frame_output_zero only tests dynamic.
+- standalone all-pool padded-frame probe produced zero padded outputs for
+  none/deterministic/dynamic.
+- no concrete runnable failure found; PASS / M1.4 GO.
+
+Discarded non-failures:
+
+- A first custom padded-joint probe used invalid batch metadata
+  (parent_indices length did not match num_joints), and GraphMotionBatch
+  correctly rejected it.
+- A second invalid probe had non-zero adjacency entries in padded rows/cols,
+  and GraphMotionBatch correctly rejected it.
+- These are input-construction errors, not model failures.
+
+Q2 conclusion: no remaining numerical issue, mask leakage repro, checkpoint
+compat regression, dtype mismatch, or autograd failure was found in the
+available quick probes. R12 invariant convergence.
+
+Q3 - M1.4 unblock GO / NO-GO
+----------------------------
+Verdict: GO.
+
+M1.3 passes the project gate. The only caveat is test honesty: the committed
+regression test is dynamic-only despite the author's "all 3 variants" wording.
+That caveat does not block the milestone because the fix is in the shared
+decode tail after all variants converge, and the all-pool probe verifies the
+same padded-zero invariant in execution.
+
+Final verdict
+-------------
+M1.3 PASS.
+R12 CONVERGENCE.
+M1.4 GO.
