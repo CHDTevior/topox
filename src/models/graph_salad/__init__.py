@@ -1,0 +1,26 @@
+"""graph_salad — graph-aware latent VAE + denoiser stub for multi-topology motion.
+
+M1 milestone scope: Phase 1 (GraphMotionVAE reconstruction across 3 pool variants —
+dynamic learned / deterministic-anchor / no-pool) + Phase 2 denoiser interface stub
+(signature-only). No denoiser training in M1.
+
+See docs/PLAN_GAP_REPORT.md for design decisions and acceptance gates.
+"""
+
+from .graph_utils import (
+    floyd_shortest_path,
+    build_coarse_adjacency_from_hard_assign,
+    find_anchors_rulebased,
+    decompose_chains,
+    topological_order_with_root_first,
+    assert_root_first_parent_order,
+)
+
+__all__ = [
+    "floyd_shortest_path",
+    "build_coarse_adjacency_from_hard_assign",
+    "find_anchors_rulebased",
+    "decompose_chains",
+    "topological_order_with_root_first",
+    "assert_root_first_parent_order",
+]

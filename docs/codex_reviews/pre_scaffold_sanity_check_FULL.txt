@@ -1,0 +1,56 @@
+Codex MCP pre-scaffold sanity check — FULL output
+========================================================
+Generated: 2026-05-20
+Model: gpt-5.5
+Reasoning effort: xhigh
+ThreadId: 019e4323-bfe7-7530-94c3-7e396913b622
+Caller: /home/ts1v23/.claude/agents (general-purpose subagent)
+Audit scope: META-REVIEW of planning artifacts before M1 scaffolding starts
+
+Inputs reviewed in full:
+- /scratch/ts1v23/workspace/noKslot_clean/docs/PLAN_GAP_REPORT.md
+- /scratch/ts1v23/workspace/noKslot_clean/outside_docs/graph_salad_implementation_plan.md
+
+Audit axes (5):
+1. PLAN_GAP_REPORT.md soundness (logical holes / internal contradictions)
+2. M1 6-step roadmap completeness (load-bearing missing? dependencies?)
+3. User decisions audit (Q-A AnyTop, Q-B MinCutPool, Q-C denoiser stub, Q-D normalize)
+4. M1 acceptance gate adequacy (7 items — blind spots?)
+5. Hidden Karpathy R1 violations (single-interpretation choices not surfaced)
+
+========================================================
+CODEX OUTPUT
+========================================================
+
+# Pre-Scaffold Sanity Check — Verdict
+
+## (a) PLAN_GAP_REPORT.md verdict
+YELLOW — Mostly coherent, but not fully closed. The main contradiction is that [PLAN_GAP_REPORT.md](/scratch/ts1v23/workspace/noKslot_clean/docs/PLAN_GAP_REPORT.md:42) says AnyTop must be addressed before coding, while §7/§8 treat Q-A as resolved and make AnyTop reading conditional. The file inventory also has a count mismatch: 9 listed graph_salad files, but "11 new src files".
+
+## (b) M1 roadmap verdict
+YELLOW — Scaffolding can start after small plan fixes. Coding-1 precedes DynamicGraphPool, and `graph_utils.py` is listed, but its implementation is not a distinct dependency before `pool.py`. Dataset/dataloader wiring and loss-weight scheduling are also too implicit.
+
+## (c) Hidden risks / omissions
+1. AnyTop is the largest novelty risk. Its arXiv page confirms topology-aware denoising, textual joint descriptions, few-shot topology generalization, and unseen skeleton generation; SALAD gives latent diffusion/editing ancestry, but "39 species + SALAD framework" alone may read as benchmark engineering unless Graph-SALAD proves a distinct advantage over AnyTop.
+
+2. Fixed `lambda_mincut=0.5` is a valid user lock, but it is not low-risk. Cold-start all-to-one clusters, empty coarse nodes, early conflict with FK/recon loss, and topology-dependent C_i instability should be declared as known failure modes. A ramp should at least be pre-authorized as a fail-loud fallback if diagnostics show collapse.
+
+3. The denoiser stub should raise `NotImplementedError`, not return zeros. For the interface, raw `text: list[str]` is acceptable for M1 only if the plan records that Phase 2 may switch to cached text conditioning. Add `level2_meta` or equivalent metadata now if editing/hierarchical attention needs token-to-coarse-group interpretability.
+
+4. The normalization reclassification is plausible but not airtight. A third interpretation is "source repo never finished Zoo stats." If wrong, raw-scale training can overweight large skeletons, hide small-species failure, and make `train_diag <= 0.33` misleading.
+
+5. The current gates do not fully prove "GraphMotionVAE reconstruction is good." They under-cover NaN/zero-gradient after masking, all-joints-to-one-cluster, empty coarse nodes, static FK/T-pose solutions, and mode collapse across topology families. Visual QA helps, but only if paired with per-topology and motion-dynamics checks.
+
+## (d) Specific changes recommended before scaffold starts
+1. **Make AnyTop audit mandatory and define the minimum differentiator** — Why: reviewer pushback will be "AnyTop already does arbitrary-topology skeleton diffusion"; Graph-SALAD needs a prewritten answer beyond benchmark size.
+
+2. **Split `graph_utils`/anchor-ordering preflight before `DynamicGraphPool`** — Why: pool correctness depends on anchor generation, shortest paths, root preservation, and parent-before-child ordering.
+
+3. **Strengthen M1 gates with pool diagnostics and relative baselines** — Why: use active coarse count, mass min/max, assignment entropy, per-topology recon/velocity, and zero-pool/identity comparisons rather than relying only on absolute `train_diag <= 0.33`.
+
+## (e) Most critical question codex would ask if it were the implementer
+What is the smallest M1 that proves the hard claim: dynamic graph pooling helps multi-topology reconstruction rather than merely adding complexity? I would ask for a locked comparison against a simpler deterministic-anchor or no-learned-pool baseline, with per-species visual QA and assignment diagnostics. Without that, M1 can pass smoke tests while still violating Karpathy R2/R9: too much architecture, not enough evidence that the architecture is the reason reconstruction works.
+
+========================================================
+END OF CODEX OUTPUT
+========================================================

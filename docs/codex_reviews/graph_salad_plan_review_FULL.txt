@@ -1,0 +1,79 @@
+Codex Review: graph-SALAD implementation plan vs noKslot_clean repo
+Model: gpt-5.5, reasoning effort: xhigh
+Date: 2026-05-20
+threadId: 019e42fe-95b9-7150-bc0e-851a043b889b
+Reviewer cwd: /scratch/ts1v23/workspace/noKslot_clean
+
+================================================================================
+PROMPT (summary)
+================================================================================
+
+Holistic fresh-eyes review BEFORE implementation. User decisions locked in:
+- SALAD source will be cloned to outside_docs/SALAD/ as read-only reference
+- graph_salad will be a CLEAN reimplementation in src/models/graph_salad/
+- Phase 0: use existing noKslot ep399 baseline as equivalent (do NOT bring in source slot_ae.py)
+- TreeIK path is PRESERVED: rot -> hard FK -> bone/edge invariance
+- M1 milestone: GraphMotionVAE reconstruction + denoiser interface preparation; do NOT train denoiser yet
+
+Codex was asked to produce a SHORT brief (under 800 words) covering:
+1. TreeIK logic chain review (PRIMARY)
+2. Plan vs repo compatibility audit
+3. Hidden risks (top 3-5)
+4. M1 acceptance checklist
+5. Critical bugs flagged (if any)
+
+================================================================================
+CODEX OUTPUT (verbatim)
+================================================================================
+
+### 1. TreeIK logic chain review (PRIMARY)
+
+The current TreeIK path is logically aligned with the locked design: it avoids free Cartesian joint prediction by decoding rotations, then hard-FK positions (`fk_one`: child position is parent position plus rotated rest offset, [src/models/treeik_decoder.py:87-96](src/models/treeik_decoder.py:87)). That preserves bone/edge lengths by construction; eval confirms edge/bone metrics are hard-FK-driven ([README.md:93-99](README.md:93)).
+
+(a) `RestFiLM` conditions only on projected `rest_tensor` offsets (`rest_proj(rest_tensor)` then FiLM), not GT motion, so it is geometry conditioning and leak-free for target-skeleton generation ([src/models/treeik_decoder.py:158-170](src/models/treeik_decoder.py:158), [src/models/treeik_decoder.py:274](src/models/treeik_decoder.py:274)).
+
+(b) `TreeGraphAttention` uses dense per-sample `adjacency/geodesic_dist` biases and masks padded keys, then zeroes padded queries ([src/models/treeik_decoder.py:194-210](src/models/treeik_decoder.py:194)). It does not consume `edge_index/edge_mask`; Graph-SALAD must convert dynamic graph metadata to dense `[B,J,J]` or add an adapter.
+
+(c) FK handles variable J through `parents_list[b]`, truncates to `Jpad`, validates single root index 0 and parent-before-child order, and zeros padded joints ([src/models/treeik_decoder.py:99-114](src/models/treeik_decoder.py:99)). Hidden assumption: every skeleton and any future pooled/unpooled order must preserve root=0 and topological parent-before-child order.
+
+(d) 6D-to-rot uses standard Gram-Schmidt columns and geodesic loss clamps acos input for stability ([src/models/treeik_decoder.py:57-63](src/models/treeik_decoder.py:57), [src/models/treeik_decoder.py:299-311](src/models/treeik_decoder.py:299)). Caveat: near-colinear 6D vectors can produce non-orthonormal matrices; not fatal, but monitor.
+
+(e) `TopoFKTreeIKDecoder.forward` correctly consumes `parents_list`, `rest_tensor`, dense graph tensors, masks, and `fps` across batch ([src/models/treeik_decoder.py:269-288](src/models/treeik_decoder.py:269)). Current train/eval pass source `frame_mask` into target decode ([scripts/train.py:468-473](scripts/train.py:468), [scripts/eval.py:413-416](scripts/eval.py:413)); safe for same-clip self-recon, but Graph-SALAD should pass the batch/target frame mask explicitly.
+
+Verdict: GOOD-TO-REUSE
+
+### 2. Plan vs repo compatibility audit
+
+§4 SkeletonEncoder reuse | DIRECT REUSE | Interface matches plan, but downstream must keep frame masking because encoder only final-masks joints ([src/models/encoder.py:289-291](src/models/encoder.py:289)).
+
+§6 DynamicGraphPool | NEW BUILD | No module exists; current identity assignment is baseline-only ([scripts/train.py:89-122](scripts/train.py:89)).
+
+§7 DynamicGraphUnpool | NEW BUILD | Current `MotionDecoder` unpools by assignment but has no dynamic pool metadata interface ([src/models/motion_decoder.py:169-180](src/models/motion_decoder.py:169)).
+
+§8 GraphMotionVAE | NEW BUILD | Current `Model` is encoder+slot_norm+decoder only, no latent head/pool/unpool ([src/models/model.py:49-101](src/models/model.py:49)).
+
+§9 MotionDecoder reuse | MINOR ADAPT | Reuse temporal/cross-attn/output, but add `coarse_mask`; current attention only has assignment log-bias ([src/models/motion_decoder.py:38-70](src/models/motion_decoder.py:38)).
+
+§11 diffusion training | SPEC GAP | `GraphMotionBatch.text` absent though §11 calls `batch.text` ([outside_docs/graph_salad_implementation_plan.md:207-223](outside_docs/graph_salad_implementation_plan.md:207), [outside_docs/graph_salad_implementation_plan.md:743-755](outside_docs/graph_salad_implementation_plan.md:743)).
+
+### 3. Hidden risks (top 3-5)
+
+- Dragon J=143 — attention/pool memory and masks must handle near-`max_joints` cases; repo default `max_joints=160` covers it, but dynamic graph code must avoid accidental fixed 128 assumptions ([scripts/train.py:217-219](scripts/train.py:217)).
+- Normalization stats — dataset loads stats under `data_dir.name` but species samples use species `skeleton_id`, so per-species stats would not apply as written; current train/eval force `normalize=False`, and recon loss is raw masked MSE ([src/data/unified_dataset.py:80-83](src/data/unified_dataset.py:80), [src/data/unified_dataset.py:138-142](src/data/unified_dataset.py:138), [scripts/train.py:276-278](scripts/train.py:276), [src/utils.py:112-117](src/utils.py:112)).
+- Text handling — collate returns `text` as `list[str]`, while the plan dataclass omits text; denoiser interface must define this now even if M1 does not train it ([src/data/unified_dataset.py:351-362](src/data/unified_dataset.py:351)).
+- Checkpoint compatibility — L6/baseline load requires `strict=False`, missing must stay empty, and only `slot_assignment.*` may be unexpected ([src/models/model.py:20-26](src/models/model.py:20), [scripts/train.py:349-371](scripts/train.py:349), [docs/codex_reviews/step12_final_OUT.txt:55-60](docs/codex_reviews/step12_final_OUT.txt:55)).
+- Plan §14 still says "current SlotAE/fixed n_slots" smoke; locked decision supersedes it: use existing noKslot ep399 baseline and do not revive source `slot_ae.py`/`slot_assignment.py` ([outside_docs/graph_salad_implementation_plan.md:856-870](outside_docs/graph_salad_implementation_plan.md:856), [src/models/model.py:14-18](src/models/model.py:14)).
+
+### 4. M1 acceptance checklist
+
+- [ ] `src/models/graph_salad/` contains `__init__.py`, batch, pool, unpool, VAE, attention, losses, graph_utils, and denoiser-interface stub files.
+- [ ] CPU smoke: B=2 mixed J, forward/backward, no NaN, z shape `[B,T/4,C2_max,D]`, no hard-coded 7.
+- [ ] Padding gate: padded joints/coarse nodes are exactly zeroed and excluded from recon/KL/pool losses.
+- [ ] Ckpt gate: L6 and ep399 baseline load through existing `Model` with missing=[], unexpected only `slot_assignment.*`.
+- [ ] Recon gate: fixed mini-split masked recon loss decreases; ep399-equivalent run targets `train_diag <= 0.33` or reports regression.
+- [ ] Denoiser stub exposes `forward(z_t, timesteps, text, adjacency, geodesic_dist, coarse_mask, frame_mask)`.
+- [ ] Visual QA: render GT-vs-pred multi-frame GIF/contact sheets for at least Bat/Crab/Horse and one Dragon clip; metric-only PASS is invalid.
+
+### 5. Critical bugs flagged (if any)
+
+None found.

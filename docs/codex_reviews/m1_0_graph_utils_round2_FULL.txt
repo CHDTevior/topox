@@ -1,0 +1,98 @@
+============================================================
+Codex Round 2 Review — M1.0 graph_utils.py
+============================================================
+Date:           2026-05-20
+Model:          gpt-5.5
+Reasoning:      xhigh
+Thread:         019e433f-8ccf-7b70-a67b-42a47f4b2811 (continued from round 1)
+Files reviewed:
+  - /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/graph_utils.py (453 LoC)
+  - /scratch/ts1v23/workspace/noKslot_clean/tests/test_graph_utils.py (419 LoC)
+Round 1 verdict:  NEEDS-FIX (4 P0 items)
+Round 2 verdict:  PASS
+
+============================================================
+ROUND 1 P0 ITEMS (recap)
+============================================================
+P0-1  build_coarse_adjacency_from_hard_assign silently .clamp(0, C-1)'d
+      invalid assignments → must RAISE on <0, >=C, or pointing to
+      coarse_mask=False.
+P0-2  Add shared _validate_parent_tree(parents) and call from
+      decompose_chains + find_anchors_rulebased + topological_order_with_root_first.
+P0-3  Remove unused short_limb_chunk_len from public signature.
+P0-4  Add missing test cases: invalid assignment / shape-mismatch /
+      mask-dtype / Floyd disconnected / parent-utility validation /
+      long-chain exact anchor positions.
+
+============================================================
+ROUND 2 FIXES APPLIED (claimed)
+============================================================
+- Private _validate_parent_tree(parents) validator added at top of
+  graph_utils.py (raises on multi/no root, out-of-range, self-loop,
+  cycle, disconnected).
+- build_coarse_adjacency_from_hard_assign: clamp replaced with
+  explicit shape + mask-dtype validation, range check on
+  hard_assignment (fine_mask=True positions only), inactive-coarse-id
+  check. Padded joints still use clamped value internally for the
+  scatter (their contribution is multiplied by 0 fine_mask).
+- decompose_chains, find_anchors_rulebased,
+  topological_order_with_root_first now call _validate_parent_tree
+  at entry.
+- short_limb_chunk_len parameter removed.
+- 16 new test cases added (total 39, all PASS locally in 0.041s):
+    1 Floyd disconnected components
+    6 ValidateParentTreeTests
+    5 BuildCoarseAdjacencyTests invalid input
+    3 FindAnchorsRulebasedTests (exact positions + invalid tree + invalid chunk_len)
+    1 DecomposeChainsTests invalid tree
+
+============================================================
+CODEX FULL VERDICT (round 2)
+============================================================
+VERDICT: PASS
+
+P0-1 (no-clamp): PASS. Valid fine joints now raise on `<0`/`>=C`
+  [graph_utils.py:203-211] and inactive `coarse_mask=False` ids
+  [graph_utils.py:215-223]; padded invalid assignments remain ignored
+  then masked out [graph_utils.py:212-232].
+
+P0-2 (shared validator): PASS. `_validate_parent_tree` covers
+  single-root, range/self-loop, BFS reachability [graph_utils.py:31-84]
+  and is called by topo/decompose/anchors
+  [graph_utils.py:300,342,409].
+
+P0-3 (remove dead param): PASS. `find_anchors_rulebased` public
+  signature now only exposes `max_chain_chunk_len`
+  [graph_utils.py:364-368].
+
+P0-4 (test coverage): PASS. 39 tests pass via
+  `python tests/test_graph_utils.py`; new tests cover invalid
+  assignment, inactive coarse, mask dtype, shape mismatch, disconnected
+  Floyd, parent validation, exact chunk positions
+  [test_graph_utils.py:99-110,152-193,196-231,324-357].
+
+Regressions: none detected. The old padded-invalid case still passes
+  [test_graph_utils.py:138-150], so the range check did not
+  accidentally reject padded joints.
+
+Validator coverage: sufficient for M1.0. `J=0` returns OK and callers
+  return empty; `J=1` root-only works. Cycles not connected to root
+  are reported as disconnected rather than always "cycle", but still
+  fail loud, which is enough for the pool contract.
+
+Test semantics: sound. `test_line_chunked_exact_positions` correctly
+  locks the documented leaf-to-root chunking direction: line `0..10`,
+  chunk 3 gives `[0,1,4,7,10]` [test_graph_utils.py:324-345], matching
+  implementation [graph_utils.py:434-451].
+
+M1.1 unblock: GO. M1.0 graph utility P0 blockers are resolved.
+
+Remaining concerns: P1 only: add an explicit square check for
+  `fine_adjacency.shape[1] == fine_adjacency.shape[2]`; today
+  non-square input fails loudly later with a PyTorch `RuntimeError`,
+  not a clean `ValueError`. Also consider device-consistency checks
+  if pool code may pass CPU/GPU-mixed tensors.
+
+============================================================
+END OF ROUND 2 REVIEW
+============================================================

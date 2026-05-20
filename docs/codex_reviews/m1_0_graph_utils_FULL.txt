@@ -1,0 +1,70 @@
+Codex MCP review — M1.0 graph_utils.py preflight
+====================================================
+Model: gpt-5.5
+Reasoning effort: xhigh
+Thread ID: 019e433f-8ccf-7b70-a67b-42a47f4b2811
+Date: 2026-05-20
+Cwd: /scratch/ts1v23/workspace/noKslot_clean
+
+Files reviewed:
+  - src/models/graph_salad/__init__.py (24 LoC)
+  - src/models/graph_salad/graph_utils.py (~310 LoC, 6 functions)
+  - tests/test_graph_utils.py (~250 LoC, 23 stdlib unittest cases)
+
+Context provided:
+  - outside_docs/graph_salad_implementation_plan.md §6
+  - docs/PLAN_GAP_REPORT.md §1.2 / §5 / §6
+  - docs/codex_reviews/graph_salad_plan_review_BRIEF.md §3.3
+
+====================================================
+CODEX RESPONSE (verbatim)
+====================================================
+
+OVERALL VERDICT: NEEDS-FIX
+
+Q1. PER-FUNCTION:
+  - floyd_shortest_path: CORRECT for valid float/bool inputs. Missing dtype validation, but no silent graph bug found.
+  - build_coarse_adjacency_from_hard_assign: NOT-CORRECT. It silently clamps valid out-of-range assignments instead of failing loud [graph_utils.py:135], which can invent fine→coarse groups.
+  - assert_root_first_parent_order: CORRECT for the intended invariant; minor caveat: empty input is accepted [graph_utils.py:171-172].
+  - topological_order_with_root_first: CORRECT for valid trees and rerooting; malformed parent ranges can raise raw IndexError instead of clean ValueError [graph_utils.py:214-216].
+  - decompose_chains: CORRECT only for valid single-root trees. It does not validate roots/cycles, so multi-root input silently returns bogus chains [graph_utils.py:261-278].
+  - find_anchors_rulebased: PARTIAL. Rules are structurally implemented, but it accepts malformed trees silently and exposes unused `short_limb_chunk_len` despite rule 6 being deferred [graph_utils.py:285-286,333-345].
+
+Q2. PLAN §6.2 FIDELITY: mostly faithful for rules 1-5:
+  - Rule 1 root anchor: implemented [graph_utils.py:341-345].
+  - Rule 2 degree>=3 branch: implemented as non-root children>=2, equivalent for tree internals [graph_utils.py:346-349].
+  - Rule 3 leaf/end-effector: implemented as all leaves [graph_utils.py:351-354].
+  - Rules 4-5 chain chunk / every N joints: implemented, but chunking is leaf-to-root, not explicitly root-to-leaf [graph_utils.py:356-373]. Not clearly wrong, but should be locked by tests.
+  - Rule 6 short-limb merge: correctly deferred, but the unused public param should be removed or made private.
+
+Q3. POOL CONTRACT:
+  (a) candidate-anchor mask: yes. `find_anchors_rulebased` gives anchor indices; mask is trivial.
+  (b) coarse-adj: yes for hard assign, after fixing invalid assignment validation.
+  (c) per-anchor geodesic: `floyd_shortest_path` is enough; pool can gather `dist[:, fine_j, anchor_c]`.
+  (d) chain-id exposure: not strictly required if M1.2 uses geodesic-radius locality only. If implementing plan §6.3 same_chain / chain-chunk local mask, current API lacks explicit fine→chain/anchor-segment metadata; add a helper or explicitly defer.
+
+Q4. MISSING TESTS (5-10 items):
+  1. Valid fine joint assigned to `-1` or `C+99` must raise, not clamp [graph_utils.py:135].
+  2. Valid fine joint assigned to `coarse_mask=False` should raise or be explicitly handled.
+  3. Shape mismatch tests for `hard_assignment`, `fine_mask`, non-square `fine_adjacency`.
+  4. Mask dtype tests: `joint_mask`, `fine_mask`, `coarse_mask` must be bool.
+  5. Disconnected valid Floyd graph: finite self-diagonal, +inf across components.
+  6. Parent utilities on no-root, multi-root, out-of-range parent, and cycle/disconnected-cycle inputs.
+  7. Exact long-chain anchor positions for chunking direction, e.g. line length 11 chunk=3.
+  8. Branch degree boundary tests: root/non-root with 1, 2, 3 children.
+  9. Full 39-skeleton sweep, not only Bat: parent invariant, J range, anchor count, geodesic match.
+  10. Test runner packaging: `python -m unittest tests.test_graph_utils -v` currently fails; direct `python tests/test_graph_utils.py` passes 23/23.
+
+Q5. KARPATHY:
+  R2 Simplicity: mostly simple, but unused `short_limb_chunk_len` is over-exposed.
+  R3 Surgical: implementation files are surgical; current worktree also has untracked docs/outside_docs/.aris artifacts, so scope is not clean if counted literally.
+  R8 Read-before-Write: yes. Actual skeleton npz keys include `parent_indices`, `adjacency`, `geodesic_dist`; 39 files span J=18-143.
+  R12 Fail Loud: NEEDS-FIX. `build_coarse...` clamps bad assignments; chain/anchor utilities do not validate malformed trees.
+
+Q6. PERFORMANCE: acceptable for M1.0/M1.1 scale. B=8,J=160 is ~32.8M elementwise Floyd updates; CPU measured ~10ms here, CUDA unavailable in this session. On A100/H100 it should be fine, though the Python loop creates 160 GPU kernel launches, so cache static fine geodesics and run Floyd mainly on pooled C where possible. Do not use half precision for graph distances unless tested.
+
+MINIMAL FIX LIST:
+  1. In `build_coarse_adjacency_from_hard_assign`, validate shape/mask dtype and raise on valid joints with assignment `<0`, `>=C`, or inactive coarse id.
+  2. Add a shared parent-tree validator and call it from `decompose_chains` and `find_anchors_rulebased`.
+  3. Remove unused `short_limb_chunk_len` from the public signature or document it as intentionally private/deferred.
+  4. Add the missing tests above, especially bad hard assignments and malformed parent trees.

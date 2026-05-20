@@ -14,6 +14,12 @@ __pycache__/
 # 数据 (data/ 是软链或本地复制, 不进 git)
 /data/
 
+# outside_docs/SALAD/ 是 git clone 的 reference repo (不 commit; 用 scripts/_build_graph_salad_env.sh 提示重新 clone)
+/outside_docs/SALAD/
+
+# .aris/ harness telemetry, 不 commit
+/.aris/
+
 # OS / 编辑器
 .DS_Store
 *.swp
