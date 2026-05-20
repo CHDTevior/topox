@@ -1,0 +1,74 @@
+Step 12 codex FRESH-EYE FINAL review — whole repo holistic audit
+================================================================
+threadId: 019e42c7-4d90-7492-95dd-ac03a46e39d7 (NEW THREAD, fresh-eye; not continuation of 019e427e)
+model: gpt-5.5  effort: xhigh  sandbox: none
+date: 2026-05-20 UTC ~01:30
+reviewer entrypoint: mcp__codex__codex (new thread)
+
+VERDICT: PASS
+
+A (whole-repo py_compile + import resolution): YES
+   `compileall` clean; module imports 15/15 OK
+B (integration cross-file consistency): YES
+   - ckpt loaders in train.py/eval.py/animate.py tolerate both new schema
+     (no fk_state_dict) and source baseline schema (fk_state_dict: None +
+     slot_assignment.* in model_state_dict)
+   - encode_decode(model, src, tgt) signature consistent across train.py /
+     eval.py / animate.py / self_test.py
+   - TopoFKTreeIKDecoder.forward arg order matches in train.py
+     _Composite.forward, eval.py main loop, animate.py forward_clip
+C (reproducible baseline defaults match diagnostic config): YES
+   - data paths repointed to `data/cs_sparse2full_*` (without `data/processed/`
+     source prefix)
+   - removed flags (w_rev/w_cycle/w_bone/gw_weight/w_kin/w_anchor) locked
+     to 0 by absent code (not arg-exposed)
+   - --freeze_base_slot_name 1 → --freeze_name_embed 1 (no_k_slot equivalent)
+D (eval.py auto-chain CLI contract satisfied by animate.py): YES
+   - no missing forwarded args
+E (visual-QA-primacy hard-fail end-to-end): YES
+   - animate.py raises RuntimeError on missing species coverage
+   - eval.py forces GATE_PASS_all_species=False through anim_ok=False
+F (raw-rotation AST guard correctly repointed): YES
+   - __file__ resolves to scripts/train.py
+   - 0 outside-guard hits for `local_rotations_6d` in train.py
+G (no dead old identifiers): YES
+   - text grep clear for NoKslotModel/noKslot_model/encode_decode_nok/
+     forward_clip_nok/load_model_head_nok/THRESH_NOKSLOT_BASELINE/
+     write_preflight_manifest_nokslot — ALL absent after Step 10 rename
+H (README + requirements accuracy): YES
+   - Layout section matches actual src/ + scripts/ tree
+   - Default reproducible-baseline configuration table values match
+     scripts/train.py argparse defaults
+   - Known result numbers verified against runs/baseline_noKslot_ep399/
+     gate_verdict.json:
+       pos_nrmse_extent=0.127232 (README: 0.127)
+       vel_corr=0.987179 (README: 0.987)
+       vel_nrmse=0.167542 (README: 0.167)
+       rot_l1_deg=43.310 (README: 43.3°)
+       edge_ratio_p05≈0.9999997 (README: ≈0.9999)
+   - Pillow is needed by matplotlib.animation.PillowWriter in animate.py
+I (no dangling source-repo path references): YES
+   - executable code: 0 hits for /iridisfs/.../motion_representation_study/
+     or data/processed/
+   - acceptable: docstring/comment/README mentions of source path for
+     provenance
+J (data + ckpt assets present + load clean): YES
+   - data/cs_sparse2full_tgt/motions/ + data/cs_sparse2full_ik_rot/ exist
+   - runs/L6_anchor_h100_seed42/best_model.pt (39 MB) loads through Model
+     with strict=False: missing=[], 6 slot_assignment.* unexpected keys only
+   - runs/baseline_noKslot_ep399/last_model.pt (50 MB) loads through Model
+     with strict=False: same pattern
+
+Critical findings: None.
+
+Advisory:
+  - runs/baseline_noKslot_ep399/gate_verdict.json still records original
+    source-run metadata (ckpt=runs/cs_sparse2full_noKslot_diag/last_model.pt,
+    variant=subdiv) — this is historical metadata from when source eval
+    produced the file; running scripts/eval.py on the new path overwrites
+    these fields. Metrics + ckpt are valid as-is.
+  - scripts/__pycache__ contains stale rename-era bytecode (pre-Step 10
+    NoKslotModel references). Not tracked (.gitignore __pycache__) and
+    auto-regenerated on next module import. Not a code issue.
+
+Final note: PASS — repo is submission-ready for next-method work.
