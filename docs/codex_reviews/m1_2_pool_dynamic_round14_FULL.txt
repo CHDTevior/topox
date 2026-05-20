@@ -1,0 +1,286 @@
+M1.2 pool_dynamic.py Round 14 CODEX REVIEW (fresh thread)
+
+Verdict: NEEDS-FIX
+GO/NO-GO for unblocking pool_deterministic.py: NO-GO
+
+Scope
+- Repo: /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+- Target: src/models/graph_salad/pool_dynamic.py
+- Tests: tests/test_pool_dynamic.py
+- Prior review index: docs/codex_reviews/m1_2_pool_dynamic_round{2..13}_BRIEF.md
+- Independent fresh Codex cross-check: codex exec --model gpt-5.5 --config model_reasoning_effort=xhigh, session 019e45dc-2749-7b10-aa8f-2dc29eab5e0a.
+
+Local verification
+- Command: python tests/test_pool_dynamic.py
+- Result: 56/56 PASS.
+
+Summary
+- Round 14 fixes are present:
+  - Strict int/non-bool guards now include local_radius, max_chain_chunk_len, and temporal_stride: src/models/graph_salad/pool_dynamic.py:102-108; regressions at tests/test_pool_dynamic.py:203-209.
+  - Direct parent_indices vs adjacency gross mismatch check exists: src/models/graph_salad/pool_dynamic.py:691-707; regression at tests/test_pool_dynamic.py:194-201.
+  - Existing padded-adjacency mincut pollution regression still passes: tests/test_pool_dynamic.py:328-355.
+- Prior R12 seal count: 18/21 code-sealed; #18 and #19 are still unsealed; #21 is only gross-mismatch sealed and remains partial because the new #22 trace passes.
+- New 22nd R12 found: sub-1e-6 parent/adjacency mismatch is accepted, but graph_utils.floyd_shortest_path treats it as a real edge because any adjacency > 0 is an edge.
+- The two caller-deferred rationales do not survive scrutiny:
+  - Override tensor device normalization is still after validation and .item()/implicit item paths.
+  - Floyd atol=1e-6 is not justified for integer hop distances.
+
+Prior R12 seal table
+
+Numbering follows the cumulative round10-round13 BRIEF numbering. Earlier round7 names are folded into the closest cumulative category.
+
+1. MinCut ortho uses per-sample C_valid, not C_max: SEALED.
+   Evidence: P is masked by joint_mask/coarse_mask at src/models/graph_salad/pool_dynamic.py:362-364; valid-pair Frobenius norm at src/models/graph_salad/pool_dynamic.py:365-371; per-sample C_valid target at src/models/graph_salad/pool_dynamic.py:373-378. Regression compares C_max=8 vs C_max=4 with shared weights at tests/test_pool_dynamic.py:400-434.
+
+2. parent_indices outer/per-sample length: SEALED.
+   Evidence: parent_indices must be list length B at src/models/graph_salad/pool_dynamic.py:677-682; per-sample len == joint_mask.sum at src/models/graph_salad/pool_dynamic.py:683-690. Regression: tests/test_pool_dynamic.py:211-217; outer-length coverage also at tests/test_pool_dynamic.py:687-704.
+
+3. Full anchor-source XOR, parent_indices plus override pair: SEALED.
+   Evidence: src/models/graph_salad/pool_dynamic.py:665-676 rejects both or neither. Regression: tests/test_pool_dynamic.py:239-252.
+
+4. Partial anchor-source XOR, only one of anchor_indices/coarse_mask: SEALED.
+   Evidence: src/models/graph_salad/pool_dynamic.py:655-664. Regression: tests/test_pool_dynamic.py:517-527.
+
+5. Inactive slot anchor range and inactive outputs: SEALED.
+   Evidence: all anchor_indices entries, including coarse_mask=False entries, are range-checked at src/models/graph_salad/pool_dynamic.py:732-745; assignment rows/cols are masked at src/models/graph_salad/pool_dynamic.py:257-260; inactive pooled_skeleton_embeddings are zeroed at src/models/graph_salad/pool_dynamic.py:827-830. Regressions: tests/test_pool_dynamic.py:529-538 and tests/test_pool_dynamic.py:292-312.
+
+6. Odd T % temporal_stride: SEALED.
+   Evidence: src/models/graph_salad/pool_dynamic.py:647-653 rejects non-divisible T before frame_mask.view. Regression: tests/test_pool_dynamic.py:650-661.
+
+7. Per-sample all-False joint_mask: SEALED.
+   Evidence: src/models/graph_salad/pool_dynamic.py:594-602. Regression: tests/test_pool_dynamic.py:573-585.
+
+8. Override active-anchor invariants: SEALED.
+   Evidence: zero active coarse slots at src/models/graph_salad/pool_dynamic.py:753-758; active -1 rejection at src/models/graph_salad/pool_dynamic.py:772-777; padded-joint target rejection at src/models/graph_salad/pool_dynamic.py:778-782; strictly ascending unique anchors at src/models/graph_salad/pool_dynamic.py:783-792. Regressions: tests/test_pool_dynamic.py:587-605 and tests/test_pool_dynamic.py:663-685.
+
+9. Override zero-active coarse_mask: SEALED.
+   Evidence: src/models/graph_salad/pool_dynamic.py:753-758. Regression: tests/test_pool_dynamic.py:640-648.
+
+10. coarse_mask contiguous True-prefix: SEALED.
+   Evidence: src/models/graph_salad/pool_dynamic.py:759-771. Regressions: tests/test_pool_dynamic.py:607-626.
+
+11. joint_mask contiguous True-prefix: SEALED.
+   Evidence: src/models/graph_salad/pool_dynamic.py:603-621. Regressions: tests/test_pool_dynamic.py:540-571.
+
+12. Override path requires root joint 0 as first active anchor: SEALED.
+   Evidence: src/models/graph_salad/pool_dynamic.py:793-802. Regression: tests/test_pool_dynamic.py:628-638.
+
+13. joint_features finite guard: SEALED.
+   Evidence: src/models/graph_salad/pool_dynamic.py:509-512. Regressions cover NaN and +Inf at tests/test_pool_dynamic.py:444-449 and tests/test_pool_dynamic.py:377-382.
+
+14. skeleton_embeddings finite guard: SEALED.
+   Evidence: src/models/graph_salad/pool_dynamic.py:513-516. Regressions cover NaN and +Inf at tests/test_pool_dynamic.py:451-456 and tests/test_pool_dynamic.py:384-389.
+
+15. Adjacency structural/value contract: CODE-SEALED, TEST GAP REMAINS.
+   Evidence: shape at src/models/graph_salad/pool_dynamic.py:449-453; dtype at src/models/graph_salad/pool_dynamic.py:497-506; finite at src/models/graph_salad/pool_dynamic.py:519-522; symmetry at src/models/graph_salad/pool_dynamic.py:523-527; zero diagonal at src/models/graph_salad/pool_dynamic.py:528-532; [0,1] domain at src/models/graph_salad/pool_dynamic.py:533-545. Regressions cover dtype/symmetry/self-loop/negative/>1 at tests/test_pool_dynamic.py:276-280 and tests/test_pool_dynamic.py:458-515. Direct adjacency NaN/Inf regression is still absent.
+
+16. Geodesic structural/value contract: SEALED for structural checks.
+   Evidence: shape at src/models/graph_salad/pool_dynamic.py:449-453; dtype at src/models/graph_salad/pool_dynamic.py:497-506; NaN/-Inf rejection at src/models/graph_salad/pool_dynamic.py:546-555; finite negative rejection at src/models/graph_salad/pool_dynamic.py:556-563; finite-pattern/symmetry checks at src/models/graph_salad/pool_dynamic.py:567-584; valid-node zero diagonal at src/models/graph_salad/pool_dynamic.py:585-592. Regressions: tests/test_pool_dynamic.py:282-286 and tests/test_pool_dynamic.py:436-499.
+
+17. Strict scalar/dtype/module named branches: CODE-SEALED, MINOR TEST GAP.
+   Evidence: d_model/max_coarse strict int at src/models/graph_salad/pool_dynamic.py:97-101; Round 14 strict int for local_radius/max_chain_chunk_len/temporal_stride at src/models/graph_salad/pool_dynamic.py:102-108; positive/range checks at src/models/graph_salad/pool_dynamic.py:109-120; finite scalar hparams at src/models/graph_salad/pool_dynamic.py:121-130; float tensor dtype at src/models/graph_salad/pool_dynamic.py:497-506; module device/dtype at src/models/graph_salad/pool_dynamic.py:478-492. Regressions: tests/test_pool_dynamic.py:70-88, tests/test_pool_dynamic.py:203-209, tests/test_pool_dynamic.py:264-326, and tests/test_pool_dynamic.py:365-375. Minor gap: mincut_lambda finite is code-covered at src/models/graph_salad/pool_dynamic.py:121-130 but tests/test_pool_dynamic.py:314-319 checks locality_alpha and temperature only.
+
+18. Device consistency including override tensors: NOT SEALED.
+   Core input tensors and module device are checked at src/models/graph_salad/pool_dynamic.py:464-484, with regressions at tests/test_pool_dynamic.py:357-375. Override tensors are still validated before normalization: override validation begins at src/models/graph_salad/pool_dynamic.py:717, implicit .item()/device-sensitive boolean evaluation is reachable at src/models/graph_salad/pool_dynamic.py:737, explicit .item() paths are at src/models/graph_salad/pool_dynamic.py:743-744 and src/models/graph_salad/pool_dynamic.py:796-801, and normalization happens only at src/models/graph_salad/pool_dynamic.py:803-805. Meta override probe raises RuntimeError, not fail-loud ValueError.
+
+19. Geodesic values exactly equal Floyd(adjacency): NOT SEALED.
+   Evidence: consistency recomputes Floyd at src/models/graph_salad/pool_dynamic.py:623-628 and compares finite values with torch.allclose(..., atol=1e-6, rtol=0.0) at src/models/graph_salad/pool_dynamic.py:637-645. graph_utils.floyd_shortest_path initializes exact 0/1/+Inf and uses min-add over integer hop counts at src/models/graph_salad/graph_utils.py:125-146, so finite distances should be exact integer equality. A symmetric +5e-7 perturbation passes.
+
+20. Padded adjacency rows/cols must not corrupt mincut: SEALED by masking.
+   Evidence: _compute_aux_losses masks adjacency with valid_pair_fine at src/models/graph_salad/pool_dynamic.py:346-356. Coarse graph construction also masks fine edges at src/models/graph_salad/graph_utils.py:238-251. Regression: tests/test_pool_dynamic.py:328-355.
+
+21. parent_indices <-> adjacency consistency: PARTIAL.
+   Evidence: Round 14 gross mismatch check constructs expected adjacency from parents and compares against actual sub-adjacency at src/models/graph_salad/pool_dynamic.py:691-707. Regression catches star-parents vs line-adjacency at tests/test_pool_dynamic.py:194-201. But it uses torch.allclose(..., atol=1e-6, rtol=0.0) at src/models/graph_salad/pool_dynamic.py:702, so it accepts a sub-epsilon extra edge that graph_utils.floyd_shortest_path treats as a real edge. This is the new #22.
+
+New 22nd R12
+
+Finding: sub-1e-6 parent/adjacency mismatch is accepted, but Floyd treats it as a true edge.
+
+Why it is R12:
+- The parent-vs-adjacency consistency check is the Round 14 fix for #21, but uses allclose with atol=1e-6 at src/models/graph_salad/pool_dynamic.py:702.
+- graph_utils.floyd_shortest_path defines has_edge = (adjacency > 0) at src/models/graph_salad/graph_utils.py:128. Therefore adjacency[0, 0, 5] = 5e-7 is topologically a real edge for Floyd, but "close enough to zero" for the parent consistency check.
+- If geodesic_dist is recomputed from that adjacency, Floyd consistency passes too, because expected_geo is based on the corrupted adjacency at src/models/graph_salad/pool_dynamic.py:623-640.
+- Actual behavior is NO_RAISE with a shortcut distance of 1 hop between joints 0 and 5, although parent_indices describes a line where 0->5 should be 5 hops.
+
+Runnable trace:
+
+python - <<'PY'
+import torch
+from src.models.graph_salad.pool_dynamic import DynamicGraphPool
+from src.models.graph_salad.graph_utils import floyd_shortest_path
+
+D, T, J = 16, 4, 6
+pool = DynamicGraphPool(d_model=D, max_coarse=8, local_radius=5)
+parents = [[-1, 0, 1, 2, 3, 4]]
+jf = torch.randn(1, T, J, D)
+se = torch.randn(1, J, D)
+adj = torch.zeros(1, J, J)
+for j, p in enumerate(parents[0]):
+    if p >= 0:
+        adj[0, j, p] = adj[0, p, j] = 1.0
+adj[0, 0, 5] = adj[0, 5, 0] = 5e-7  # not in parents, but >0 edge for Floyd
+jm = torch.ones(1, J, dtype=torch.bool)
+geo = floyd_shortest_path(adj, jm)
+fm = torch.ones(1, T, dtype=torch.bool)
+out = pool(jf, se, adj, geo, jm, fm, parent_indices=parents)
+print("NO_RAISE", "geo_0_5=", geo[0, 0, 5].item(), "anchors=", out["anchor_indices"].tolist())
+PY
+
+Observed:
+NO_RAISE geo_0_5= 1.0 anchors= [[0, 5, -1, -1, -1, -1, -1, -1]]
+
+Expected:
+ValueError, because adjacency contains an edge absent from parent_indices. The fix should use exact binary equality for parent-derived adjacency, or first enforce binary adjacency and then torch.equal on the valid subgraph. Using allclose here is inconsistent with the >0 edge semantics in Floyd.
+
+Deferred item judgment
+
+1. Override tensor device normalization before .item()
+
+Judgment: caller defer is not defensible. CPU override tensors work, but the code still has device-sensitive validation before normalization.
+
+Evidence:
+- Override validation starts at src/models/graph_salad/pool_dynamic.py:717.
+- Device-sensitive boolean evaluation on anchor_indices occurs at src/models/graph_salad/pool_dynamic.py:737.
+- .item() paths occur at src/models/graph_salad/pool_dynamic.py:743-744 and src/models/graph_salad/pool_dynamic.py:796-801.
+- Device normalization to joint_features.device occurs only afterward at src/models/graph_salad/pool_dynamic.py:803-805.
+
+Probe:
+
+python - <<'PY'
+import torch
+from src.models.graph_salad.pool_dynamic import DynamicGraphPool
+
+def adj_line(n):
+    A = torch.zeros(n, n)
+    for j in range(1, n):
+        A[j, j - 1] = A[j - 1, j] = 1.0
+    return A
+
+def geo_line(n):
+    return torch.tensor([[abs(i - j) for j in range(n)] for i in range(n)], dtype=torch.float32)
+
+D, T, J = 16, 4, 6
+pool = DynamicGraphPool(d_model=D, max_coarse=3, local_radius=5)
+jf = torch.randn(1, T, J, D)
+se = torch.randn(1, J, D)
+adj = adj_line(J).unsqueeze(0)
+geo = geo_line(J).unsqueeze(0)
+jm = torch.ones(1, J, dtype=torch.bool)
+fm = torch.ones(1, T, dtype=torch.bool)
+anchor_indices = torch.tensor([[0, 2, 5]], dtype=torch.long).to("meta")
+coarse_mask = torch.ones(1, 3, dtype=torch.bool)
+try:
+    pool(jf, se, adj, geo, jm, fm, anchor_indices=anchor_indices, coarse_mask=coarse_mask)
+    print("NO_RAISE")
+except Exception as e:
+    print(type(e).__name__, str(e))
+PY
+
+Observed:
+RuntimeError Tensor.item() cannot be called on meta tensors
+
+Expected:
+ValueError such as "anchor_indices.device meta != joint_features.device cpu", or normalization/check before any scalar extraction. This is not a silent wrong result, but it is still not the fail-loud API contract and remains unsealed.
+
+2. Floyd atol=1e-6 vs exact equality
+
+Judgment: caller defer is not defensible. The "fp32 noise" rationale does not apply to this check.
+
+Evidence:
+- graph_utils.floyd_shortest_path initializes exact 1.0 for edges, +Inf for non-edges, and exact 0.0 diagonals at src/models/graph_salad/graph_utils.py:125-138.
+- It then applies min over sums of integer hop counts at src/models/graph_salad/graph_utils.py:140-146. For the dataset scale here, finite hop counts are small integers exactly representable in float32.
+- pool_dynamic.py still uses allclose with atol=1e-6 for the Floyd consistency value check at src/models/graph_salad/pool_dynamic.py:637-645.
+
+Probe:
+
+python - <<'PY'
+import torch
+from src.models.graph_salad.pool_dynamic import DynamicGraphPool
+
+D, T, J = 16, 4, 6
+pool = DynamicGraphPool(d_model=D, max_coarse=3, local_radius=5)
+parents = [[-1, 0, 1, 2, 3, 4]]
+jf = torch.randn(1, T, J, D)
+se = torch.randn(1, J, D)
+adj = torch.zeros(1, J, J)
+for j in range(1, J):
+    adj[0, j, j - 1] = adj[0, j - 1, j] = 1.0
+geo = torch.zeros(1, J, J)
+for i in range(J):
+    for j in range(J):
+        geo[0, i, j] = abs(i - j)
+geo[0, 0, 1] += 5e-7
+geo[0, 1, 0] += 5e-7
+jm = torch.ones(1, J, dtype=torch.bool)
+fm = torch.ones(1, T, dtype=torch.bool)
+try:
+    pool(jf, se, adj, geo, jm, fm, parent_indices=parents)
+    print("NO_RAISE", "geo_0_1", format(geo[0, 0, 1].item(), ".9f"))
+except Exception as e:
+    print(type(e).__name__, e)
+PY
+
+Observed:
+NO_RAISE geo_0_1 1.000000477
+
+Expected:
+ValueError. A shortest-path hop count of 1.000000477 is not the Floyd integer distance 1.0.
+
+Secondary hardening candidate
+
+Direct parent path also lacks the FK ordering guard that GraphMotionBatch enforces. This is not needed for the #22 verdict, but it should be fixed in the same parent_indices validation area if direct DynamicGraphPool.forward is an owned API.
+
+Evidence:
+- GraphMotionBatch validates both validate_parent_tree and assert_root_first_parent_order at src/models/graph_salad/batch.py:372-394.
+- treeik_decoder documents/validates that FK requires single root at index 0 and parent-before-child order at src/models/treeik_decoder.py:66-76.
+- pool_dynamic.py direct parent path validates length and adjacency match at src/models/graph_salad/pool_dynamic.py:677-707, then calls _select_anchors at src/models/graph_salad/pool_dynamic.py:712-715. It does not call assert_root_first_parent_order.
+- graph_utils.validate_parent_tree is explicitly looser and does not require root=0 or parent-before-child at src/models/graph_salad/graph_utils.py:31-37; find_anchors_rulebased uses that looser validator at src/models/graph_salad/graph_utils.py:409-413.
+
+Probe:
+
+python - <<'PY'
+import torch
+from src.models.graph_salad.pool_dynamic import DynamicGraphPool
+
+D, T, J = 16, 4, 3
+pool = DynamicGraphPool(d_model=D, max_coarse=3, local_radius=3, max_chain_chunk_len=5)
+parents = [[1, 2, -1]]  # valid rooted tree, but root is joint 2 and parents do not precede children
+jf = torch.randn(1, T, J, D)
+se = torch.randn(1, J, D)
+adj = torch.zeros(1, J, J)
+for j, p in enumerate(parents[0]):
+    if p >= 0:
+        adj[0, j, p] = adj[0, p, j] = 1.0
+geo = torch.tensor([[[0., 1., 2.], [1., 0., 1.], [2., 1., 0.]]])
+jm = torch.ones(1, J, dtype=torch.bool)
+fm = torch.ones(1, T, dtype=torch.bool)
+out = pool(jf, se, adj, geo, jm, fm, parent_indices=parents)
+print("NO_RAISE", "anchor_indices=", out["anchor_indices"].tolist())
+PY
+
+Observed:
+NO_RAISE anchor_indices= [[0, 2, -1]]
+
+Expected if direct parent path mirrors GraphMotionBatch:
+ValueError for FK ordering invariant violation. Because root is joint 2, sorted anchors put leaf joint 0 in coarse slot 0, which is incompatible with downstream root-first assumptions.
+
+Required fixes before GO
+
+1. Make parent_indices vs adjacency exact on valid subgraph.
+   Preferred: before comparing to parent-derived adjacency, require actual_adj_sub entries are exactly binary 0/1, then use torch.equal(actual_adj_sub, expected_adj_sub). If soft adjacency is truly allowed, then Floyd semantics must not be adjacency > 0; as implemented, exact binary topology is the coherent contract.
+
+2. Move override tensor device handling before any tensor boolean evaluation or .item().
+   Either reject non-matching device with ValueError or normalize anchor_indices/coarse_mask to joint_features.device immediately after shape/dtype checks and before range/active-slot validation. Add meta or mixed-device regression.
+
+3. Tighten Floyd value consistency to exact equality on finite valid entries.
+   Use torch.equal on masked finite entries, or allclose with atol=0, rtol=0. Add a sub-1e-6 perturbation regression and a finite-pattern mismatch regression.
+
+4. If direct DynamicGraphPool.forward remains a supported parent_indices API, call assert_root_first_parent_order or equivalent before building expected adjacency. Add root-not-zero and parent-after-child direct-pool regressions.
+
+5. Fill remaining minor test gaps:
+   - adjacency NaN/Inf direct-pool regression for #15 finite branch.
+   - mincut_lambda non-finite hparam regression for #17.
+
+Final decision
+
+NEEDS-FIX. Do not unblock pool_deterministic.py yet. The current state has 56 passing tests, but the parent/adjacency exactness bug and the two unresolved deferred items are on the core topology contract. pool_deterministic.py would either inherit the same ambiguous graph semantics or be forced to work around an unstable upstream contract.

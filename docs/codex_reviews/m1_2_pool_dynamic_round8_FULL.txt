@@ -1,0 +1,45 @@
+Codex review — M1.2 pool_dynamic.py — Round 8
+Model: gpt-5.5 (reasoning effort: xhigh)
+Thread: 019e45a0-7c96-7580-acd8-d5251574f4a4 (FRESH — no continuation from rounds 1-7)
+Date: 2026-05-20
+
+# Round 8 Verdict: NEEDS-FIX
+
+## Q1: 13 R12 categories
+A. joint_features.shape — PASS — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:410-417` — rank 4, last dim `d_model`, non-empty `B/T/J`.
+
+B. joint_features finite — PASS — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:441-444` — rejects NaN/Inf.
+
+C. skeleton_embeddings.shape — PASS — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:418-422` — exact `(B,J,D)`.
+
+D. skeleton_embeddings finite — PASS — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:445-448` — rejects NaN/Inf.
+
+E. adjacency.shape — PASS — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:423-427` — exact `(B,J,J)`.
+
+F. adjacency finite — PASS — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:451-454` — rejects NaN/Inf.
+
+G. adjacency symmetry — PASS — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:455-459` — `allclose(..., atol=1e-6, rtol=0.0)`.
+
+H. adjacency zero diagonal / no self-loops — PASS — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:460-464` — rejects nonzero diagonal.
+
+I. geodesic.shape — PASS — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:423-427` — exact `(B,J,J)`.
+
+J. geodesic finite OR +Inf only — PASS — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:465-474` — rejects NaN and `-Inf`; `+Inf` remains allowed.
+
+K. geodesic symmetry — FAIL — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:465-474` only checks NaN/`-Inf`; no `geodesic_dist` transpose/allclose guard before assignment at `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:648-652`.
+
+L. geodesic zero diagonal — FAIL — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:465-474` has no diagonal check; malformed self-distance reaches gathers at `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:199` and `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:359`.
+
+M. K_max / pool dimension consistency — PASS — `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:98-99`, `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:147-152`, `/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py:559-572` — `max_coarse >= 1`, anchor overflow rejected, override shapes must match `(B,max_coarse)`.
+
+## Q2: 14th R12 search
+Not convergence. Concrete extra leak: adjacency value domain is unchecked. Input: valid `B=1,T=4,J=6,D=16` line skeleton, but set `adj[0,2,3] = adj[0,3,2] = -1.0`. Expected: raise, because adjacency contract is binary/soft `[0,1]`. Current code: passes finite/symmetry/diagonal guards, then negative edge is silently dropped by coarse binarization and also distorts mincut degree. I probed this: `forward()` returned `NO_RAISE`.
+
+## Q3: pool_deterministic.py
+NO-GO — all 13 are not sealed: geodesic symmetry and zero diagonal are still missing, and adjacency value-domain validation is still leaking.
+
+## (if NEEDS-FIX) Fix list
+1. Add `geodesic_dist` finite/+Inf-pattern symmetry and finite-value `allclose(..., rtol=0.0)` guard.
+2. Add valid-node geodesic diagonal-zero guard.
+3. Add adjacency value-domain guard: reject `<0` and `>1` unless the intended pool contract explicitly allows other weights.
+4. Add regression tests for geodesic asymmetric, geodesic nonzero diagonal, adjacency negative, adjacency >1, and adjacency NaN/Inf.

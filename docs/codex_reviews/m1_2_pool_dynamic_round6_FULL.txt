@@ -1,0 +1,44 @@
+M1.2 pool_dynamic.py — Round 6 codex review FULL
+Model: gpt-5.5 xhigh, fresh thread
+threadId: 019e4593-96af-71d3-994c-8bee35534245
+Date: 2026-05-20
+
+================================================================================
+
+Finding: **NEEDS-FIX**. Round 6 fixes the joint-mask hole, but I found a concrete 12th R12: override anchors can omit root `0` and still pass silently.
+
+**Q1 — 11 Listed R12**
+1. Mincut per-sample ortho: code pool_dynamic.py:336 uses `coarse_mask`, per-sample `C_valid`, and `I/sqrt(C_valid)`. Test coverage is only finite aux smoke at test_pool_dynamic.py:88, not a numeric oracle. I separately probed perfect C_valid=3/2 assignments and got `mincut_ortho=3.55e-15`.
+2. Parent length matches `joint_mask.sum`: code pool_dynamic.py:503, test test_pool_dynamic.py:170.
+3. Full XOR: code pool_dynamic.py:485, test test_pool_dynamic.py:198.
+4. Partial XOR: code pool_dynamic.py:478, test test_pool_dynamic.py:223.
+5. Inactive slot range: code pool_dynamic.py:535, test test_pool_dynamic.py:235. Checked both `>=J` and `<-1`; both raise.
+6. Odd-T: code pool_dynamic.py:467, test test_pool_dynamic.py:344.
+7. All-False `joint_mask`: code pool_dynamic.py:438, test test_pool_dynamic.py:279.
+8. Override ascending + unique: code pool_dynamic.py:586, tests test_pool_dynamic.py:293 and test_pool_dynamic.py:303.
+9. Override zero-active: code pool_dynamic.py:556, test test_pool_dynamic.py:334.
+10. `coarse_mask` prefix-active: code pool_dynamic.py:562, tests test_pool_dynamic.py:313 and test_pool_dynamic.py:324.
+11. `joint_mask` prefix-active: code pool_dynamic.py:447, tests test_pool_dynamic.py:246 and test_pool_dynamic.py:265. B>1 mixed case catches sample 1 correctly.
+
+**Q2 — 12th R12**
+Yes: **override root omission**. Contract evidence: rule anchors include root at pool_dynamic.py:4, root/order invariant at pool_dynamic.py:25, anchor rule "root" at graph_utils.py:380, and plan says root must be anchor at outside_docs/graph_salad_implementation_plan.md:356. Current override validation only checks active anchors are valid/prefix/sorted/unique at pool_dynamic.py:575.
+
+Runnable trace:
+`B=1,T=4,J=6,D=4`, line graph, `joint_mask=frame_mask=all True`, `anchor_indices=[[1,2,5]]`, `coarse_mask=[[T,T,T]]`. Expected: `ValueError` because root anchor `0` is missing. Actual: success, `anchor_indices=[[1,2,5]]`, assignment rows sum to 1, finite pooled features, pooled adjacency `[[0,1,0],[1,0,1],[0,1,0]]`.
+
+**Q3 — Surgical / Math**
+Yes. Round 6 appears surgical: validation guard at pool_dynamic.py:447, tests at test_pool_dynamic.py:246. No observed drift into assignment, pooling, pooled graph, or mincut math.
+
+**Q4 — pool_deterministic.py**
+NO-GO. Deterministic pool shares the same graph_utils anchor/root contract; implementing it now would inherit the override-root omission hole.
+
+Tests run: `python tests/test_pool_dynamic.py` → 26/26 PASS in 0.124s.
+
+=== FINAL VERDICT ===
+verdict: NEEDS-FIX
+q1_all_11_sealed: partial — implementation seals all 11, but mincut ortho lacks a checked-in numeric unit oracle
+q2_12th_r12: override anchor_indices can omit root 0 and silently produce finite wrong-root pooled graph
+q3_surgical: yes — round 6 only adds joint_mask prefix validation plus two negative tests; math unchanged
+q4_pool_deterministic_unblock: NO-GO — shared deterministic contract must first reject root-missing override anchors
+fix_list: 1. In override path, require `valid_anchors[0] == 0` for every sample. 2. Add `test_anchor_indices_missing_root_raises` with `anchor_indices=[[1,2,5]]`, `coarse_mask=all True`.
+=== END VERDICT ===

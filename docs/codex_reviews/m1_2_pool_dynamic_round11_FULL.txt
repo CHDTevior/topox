@@ -1,0 +1,69 @@
+M1.2 pool_dynamic.py Round 11 — codex review FULL
+Model: gpt-5.5
+Reasoning effort: xhigh
+Thread (FRESH): 019e45b6-7cbb-74f0-a256-f98449e85081
+Date: 2026-05-20
+Local verify: 45 tests PASS in graph_salad env (45 passed in 6.89s — slow due to torch import, all green)
+Files under review:
+  - src/models/graph_salad/pool_dynamic.py (768 LoC)
+  - tests/test_pool_dynamic.py (590 LoC)
+
+=== VERDICT ===
+NEEDS-FIX
+
+=== Q1: R12 SEAL TABLE ===
+#1 mincut ortho per-sample — NOT-SEALED. Source is per-sample at `src/models/graph_salad/pool_dynamic.py:337-357`, but tests still only finite-smoke aux losses at `tests/test_pool_dynamic.py:94-96` / `583-586`; no per-sample-vs-Cmax regression.
+
+#2 parent length match — SEALED. Guard `pool_dynamic.py:614-627`; test `test_parent_length_mismatch_raises` `test_pool_dynamic.py:176-182`.
+
+#3 full anchor-source XOR — SEALED. Guard `pool_dynamic.py:602-612`; tests `test_both_anchor_sources_raises` / `test_no_anchor_source_raises` `test_pool_dynamic.py:204-217`.
+
+#4 partial anchor override XOR — SEALED. Guard `pool_dynamic.py:595-601`; test `test_partial_anchor_args_raises` `test_pool_dynamic.py:368-378`.
+
+#5 inactive slots zero outputs — SEALED. Source masks assignment/features/embeddings at `pool_dynamic.py:239-243`, `262-264`, `747-750`; tests `test_padded_joint_assignment_zeroed` and `test_inactive_slot_outputs_zeroed` `test_pool_dynamic.py:148-174`, `257-277`.
+
+#6 odd/non-divisible T — SEALED. Guard `pool_dynamic.py:584-590`; test `test_odd_temporal_stride_raises` `test_pool_dynamic.py:501-512`.
+
+#7 all-false joint_mask — SEALED. Guard `pool_dynamic.py:555-563`; test `test_all_false_joint_mask_raises` `test_pool_dynamic.py:424-436`.
+
+#8 override ascending+unique — SEALED. Guard `pool_dynamic.py:703-712`; tests `test_anchor_indices_duplicate_active_raises`, `test_anchor_indices_unsorted_active_raises` `test_pool_dynamic.py:438-456`.
+
+#9 override zero-active — SEALED. Guard `pool_dynamic.py:672-678`; test `test_anchor_zero_active_slots_raises` `test_pool_dynamic.py:491-499`.
+
+#10 coarse_mask prefix-active — SEALED. Guard `pool_dynamic.py:679-691`; tests `test_coarse_mask_hole_raises`, `test_coarse_mask_true_in_padded_raises` `test_pool_dynamic.py:458-477`.
+
+#11 joint_mask prefix-active — SEALED. Guard `pool_dynamic.py:564-582`; tests `test_joint_mask_hole_raises`, `test_joint_mask_true_in_padded_raises` `test_pool_dynamic.py:391-422`.
+
+#12 override missing root — SEALED. Guard `pool_dynamic.py:713-722`; test `test_anchor_indices_missing_root_raises` `test_pool_dynamic.py:479-489`.
+
+#13 joint_features finite — SEALED-by-code-only. Guard rejects NaN/Inf at `pool_dynamic.py:473-476`; `test_joint_features_nan_raises` covers NaN only at `test_pool_dynamic.py:295-300`; no Inf branch test.
+
+#14 skeleton_embeddings finite — SEALED-by-code-only. Guard rejects NaN/Inf at `pool_dynamic.py:477-480`; `test_skeleton_embeddings_nan_raises` covers NaN only at `test_pool_dynamic.py:302-307`; no Inf branch test.
+
+#15 adjacency contract — SEALED. Guards `pool_dynamic.py:483-509`; tests symmetry/diagonal/range at `test_adjacency_asymmetric_raises_pool`, `test_adjacency_self_loop_raises_pool`, `test_adjacency_negative_raises_pool`, `test_adjacency_above_one_raises_pool` `test_pool_dynamic.py:309-321`, `352-366`.
+
+#16 geodesic internal contract — SEALED. Guards `pool_dynamic.py:511-549`; tests NaN/-Inf/negative/asym/diag at `test_pool_dynamic.py:287-350`.
+
+#17 dtype/strict — SEALED. Constructor strict-int guards `pool_dynamic.py:96-100`; float32 guards `461-470`; tests `test_d_model_bool_raises` and four dtype tests `test_pool_dynamic.py:229-255`.
+
+#18 device consistency — NOT-SEALED. Source only checks five input tensors against `joint_features.device` at `pool_dynamic.py:443-456`; `test_mixed_device_raises_pool` only covers `skeleton_embeddings` on meta at `test_pool_dynamic.py:279-285`. It does not check internal module parameter device, and the source has no module-param guard despite the Round-11 claim.
+
+=== Q2: 19TH FAILURE MODE ===
+FOUND: `geodesic_dist` can be topologically inconsistent with `adjacency` / `parent_indices` and silently destroys locality.
+
+Concrete attack: pass a valid J=6 line skeleton adjacency/parents, but set `geodesic_dist = torch.zeros(1, 6, 6)`. This passes current geodesic guards because it is finite, nonnegative, symmetric, and zero-diagonal (`pool_dynamic.py:511-549`). Then `_compute_assignment` uses that bad geodesic for locality and candidate masks (`pool_dynamic.py:200-217`), making every anchor appear distance 0 and turning graph-local pooling into embedding-only assignment. Current tests cover malformed geodesic values but not adjacency-vs-geodesic consistency (`test_pool_dynamic.py:287-350`). I probed this exact pattern; forward passed and locality loss was 0.0.
+
+=== Q3: M1.3 POOL_DETERMINISTIC UNBLOCK ===
+NO-GO — Round-11 closes several requested items, but #1, #13/#14, #18, and the geodesic-consistency failure are still not sealed.
+
+=== FIX LIST (if NEEDS-FIX) ===
+1. `tests/test_pool_dynamic.py`: add a true per-sample mincut orthogonality regression that would fail under the old `C_max` target, not just finite aux checks.
+
+2. `tests/test_pool_dynamic.py`: add explicit `+Inf` tests for `joint_features` and `skeleton_embeddings`.
+
+3. `src/models/graph_salad/pool_dynamic.py:443`: extend device validation to module parameters and override tensors (`anchor_indices`, `coarse_mask`) or document/verify intentional auto-move behavior; add tests.
+
+4. `src/models/graph_salad/pool_dynamic.py:511`: validate `geodesic_dist` against `adjacency`/`joint_mask` via Floyd or equivalent edge-distance consistency; add an all-zero-geodesic mismatch regression.
+
+=== SUMMARY ===
+Round-11 is real progress: dtype, `d_model=True`, inactive output zeroing, and one mixed-device path are present. It is not converged yet; M1.3 should stay blocked.

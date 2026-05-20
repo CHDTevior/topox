@@ -1,0 +1,109 @@
+M1.2 pool_dynamic.py Round 9 Codex Review (FRESH thread, gpt-5.5 xhigh)
+========================================================================
+threadId: 019e45a8-760c-77e0-a75b-24849c706074
+Date: 2026-05-20
+Context: Round 8 found 3 unsealed (geo symmetry / geo zero-diagonal / adj value-domain).
+Round 9 fixes claimed: all 3 + 5 new tests; 37 tests PASS in 0.08s.
+Reviewer: gpt-5.5 xhigh, fresh thread (no codex-reply continuation), per
+feedback_codex_clean_context.md rule.
+
+Files reviewed:
+  P = /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py
+  T = /scratch/ts1v23/workspace/noKslot_clean/tests/test_pool_dynamic.py
+
+Codex also ran the test suite: `python tests/test_pool_dynamic.py` -> 37 tests pass,
+but the R12 contract is still NOT sealed.
+
+------------------------------------------------------------------------
+Blocking Findings
+------------------------------------------------------------------------
+
+1. Geodesic non-negativity is MISSING.
+   - `P:478-513` checks NaN, `-Inf`, symmetry, and valid-node diagonal, but never
+     checks finite values `< 0`.
+   - A symmetric `geo[2,3]=geo[3,2]=-1` is accepted and forward completes.
+   - No fail test exists near `T:251-278`.
+
+2. Node feature dtype `float32` is NOT enforced.
+   - `P:410-448` checks shape and finite values only.
+   - Float64 inputs fail later as PyTorch RuntimeError, not as this module's
+     fail-loud contract; a double-converted module could also accept them.
+   - No dtype fail test exists.
+
+3. `K`/`d` are NOT strict positive ints.
+   - `P:96-99` only compares numeric value.
+   - `max_coarse=3.5` and `max_coarse=True` are accepted at construction.
+   - `d_model=16.0` raises indirectly from nn.Linear, not via module contract.
+   - `T:52-64` only tests zero/negative-style invalid values.
+
+------------------------------------------------------------------------
+Q1 — 13/14 R12 Invariant Checklist
+------------------------------------------------------------------------
+
+| #  | Invariant                            | Status                                                                                              |
+|----|--------------------------------------|----------------------------------------------------------------------------------------------------|
+| 1  | K positive int                       | PARTIALLY SEALED: P:98-99 raises for <1, but not non-int. T:55-56 only tests 0. UNSEALED.            |
+| 2  | d positive int                       | PARTIALLY SEALED: P:96-97 raises for <=0, but not strict int. T:53-54 only tests 0. UNSEALED.        |
+| 3  | node features finite                 | SEALED: P:441-448; fail tests for NaN at T:223-235; pass via T:66-90. (Inf not separately tested.)   |
+| 4  | slot init reproducible               | Behavior present via nn.Linear init at P:118-120 under torch.manual_seed; NO TEST. Test gap.         |
+| 5  | node features dtype float32          | MISSING: no dtype check in P:410-448; no test. UNSEALED.                                             |
+| 6  | adjacency square                     | Code check P:423-427; pass via T:43-44, T:66-90; no explicit bad-shape test.                         |
+| 7  | adjacency symmetric                  | SEALED: P:455-459; fail test T:237-242; pass T:92-103.                                               |
+| 8  | adjacency zero diagonal              | SEALED: P:460-464; fail test T:244-249; pass T:92-103.                                               |
+| 9  | adjacency value domain [0,1]         | SEALED: P:468-477; fail tests T:280-294; pass inputs T:21-26.                                        |
+| 10 | geodesic square                      | Code check P:423-427; pass inputs T:29-34; no explicit bad-shape test.                               |
+| 11 | geodesic symmetric                   | Code check P:491-505; finite-value fail test T:265-271. Finite/+Inf pattern branch P:494-498 UNTESTED.|
+| 12 | geodesic zero diagonal valid nodes   | SEALED: P:508-513; fail test T:273-278; pass inputs T:29-34.                                         |
+| 13 | geodesic non-negative                | MISSING: no <0 check in P:478-513; no fail test. UNSEALED.                                           |
+| 14 | additional: anchor override contract | SEALED: source-exclusivity P:552-572, shape/dtype P:598-610, range/prefix/valid/unique/root          |
+|    |                                      | P:617-681; pass test T:178-196; fail tests T:198-220, T:296-317, T:366-427, T:442-464.               |
+
+------------------------------------------------------------------------
+Q2 — 15th Lurking Invariants
+------------------------------------------------------------------------
+
+- `K <= N`: NOT APPLICABLE for `max_coarse` (capacity with padded slots). Active
+  anchors constrained to valid, unique joints by P:652-667; effectively enforced.
+- Feature dim consistency: PRESENT at P:410-421; tested T:466-475.
+- Adjacency/geodesic dtype: ABSENT. Real contract gap if M1.3 expects fail-loud
+  boundaries; int topology tensors currently fail later as PyTorch runtime errors.
+- Empty graph (N=0): PRESENT at P:416-417; no explicit test.
+- Single-node graph (N=1): NOT EXPLICITLY TESTED; likely supported if parent list
+  is [-1], but should be added as edge-case test.
+- Disconnected geodesic `+Inf`: INTENDED by P:478-505; symmetric +Inf allowed,
+  asymmetric pattern raises. NO TEST covers this branch.
+- Slot indexing out of bounds: SEALED by P:617-625; tests T:213-220 and T:308-317.
+- Determinism beyond seed: no explicit deterministic-algorithms guarantee; likely
+  out-of-scope for this pooling module unless downstream requires bitwise determinism.
+
+------------------------------------------------------------------------
+Q3 — pool_deterministic Unblock: NO-GO
+------------------------------------------------------------------------
+
+NO-GO for M1.3 scaffolding as a frozen contract. Downstream can use the shape
+ideas, but should NOT rely on this as an R12 fail-loud boundary until the missing
+dtype, constructor type, and geodesic non-negativity checks are fixed.
+
+------------------------------------------------------------------------
+Fix List (intent only, no full patches)
+------------------------------------------------------------------------
+
+- P:96-99: add strict `isinstance(x, int) and not isinstance(x, bool)` checks for
+  `d_model` and `max_coarse`, BEFORE value checks.
+- P:410-448: add explicit `joint_features.dtype == torch.float32` and
+  `skeleton_embeddings.dtype == torch.float32` checks; consider matching checks
+  for adjacency/geodesic if topology dtype is part of the public contract.
+- P:478-513: add `if (geodesic_dist < 0).any(): raise ValueError(...)` while
+  still allowing `+Inf`.
+- T (tests): add fail tests for
+    * constructor non-int / bool K and d (e.g., max_coarse=3.5, max_coarse=True,
+      d_model=16.0)
+    * feature dtype != float32 (joints and skeletons)
+    * negative geodesic (finite negative)
+    * geodesic +Inf pattern asymmetry (one side +Inf, other side finite)
+    * seed reproducibility (same seed -> same slot init)
+    * bad adjacency/geodesic shape (non-square)
+
+------------------------------------------------------------------------
+VERDICT: NEEDS-FIX
+------------------------------------------------------------------------

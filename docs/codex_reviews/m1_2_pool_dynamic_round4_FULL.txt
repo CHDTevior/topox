@@ -1,0 +1,83 @@
+M1.2 pool_dynamic.py — Round 4 Codex Review (FULL)
+Model: gpt-5.5
+Reasoning effort: xhigh
+Thread: 019e4584-0eff-7fa1-b9df-9898b697393c (fresh — no prior context)
+Date: 2026-05-20
+Reviewer: codex MCP (mcp__codex__codex)
+
+================================================================================
+PROMPT BACKGROUND
+================================================================================
+
+Rounds 1-3 sealed 6 R12 (fail-loud) categories:
+1. MinCut ortho per-sample C_valid
+2. Parent length mismatch per-b vs joint_mask.sum
+3. Full XOR (both parent_indices AND anchor_indices+coarse_mask)
+4. Partial XOR (only one of anchor pair)
+5. Inactive-slot anchor range
+6. Odd T % stride
+
+Round 3 found 2 more (fixed in round 4):
+7. All-False joint_mask (`joint_mask.any(dim=-1).all()` per-batch raise)
+8. Override-anchor invariants (zero-active + ascending + valid-joint + -1-in-active + padded-target)
+
+Round 4 fixes:
+- pool_dynamic.py:438-446 — all-False joint_mask check
+- pool_dynamic.py:530-560 — override anchor invariant block
+- tests/test_pool_dynamic.py:246-288 — 4 new tests
+
+Tests: 22/22 PASS in ~0.07s.
+
+================================================================================
+CODEX VERDICT (verbatim)
+================================================================================
+
+## VERDICT: NEEDS-FIX
+
+## (1) Eight R12 Categories
+
+| # | category | status | code-trace |
+|---|----------|--------|------------|
+| a | mincut ortho per-sample `C_valid` | sealed | `src/models/graph_salad/pool_dynamic.py:336-352` |
+| b | parent length per-b vs `joint_mask.sum` | sealed | `src/models/graph_salad/pool_dynamic.py:478-491` |
+| c | full XOR: parents plus anchor pair | sealed | `src/models/graph_salad/pool_dynamic.py:466-472` |
+| d | partial XOR: only one of anchor pair | sealed | `src/models/graph_salad/pool_dynamic.py:459-465` |
+| e | inactive-slot anchor range | sealed | `src/models/graph_salad/pool_dynamic.py:516-529` |
+| f | odd `T % stride` before `_pool_features` | sealed | `src/models/graph_salad/pool_dynamic.py:448-454` |
+| g | all-False `joint_mask` | sealed | `src/models/graph_salad/pool_dynamic.py:438-446` |
+| h | override invariants: duplicate / unsorted / zero-active / `-1` active / padded-target | sealed for listed subcases | `src/models/graph_salad/pool_dynamic.py:533-560`; padded-target at `546-550` |
+
+## (2) 9th R12 Probe
+
+Found one concrete silent finite-output hole: override `coarse_mask` is not required to be prefix-active, so the root anchor can be displaced from slot 0.
+
+Probe:
+
+```python
+anchor_indices = torch.tensor([[-1, 0, 2, 5]])
+coarse_mask = torch.tensor([[False, True, True, True]])
+joint_mask = torch.ones(1, 6, dtype=torch.bool)
+```
+
+With a normal `J=6` line skeleton, `T=4`, `local_radius=5`, this passes `src/models/graph_salad/pool_dynamic.py:533-560`, returns finite pooled outputs and finite aux losses, with `pooled_mask=[[False, True, True, True]]` and hard assignments only in slots `[1,2,3]`.
+
+Why this is invalid: rule-based selection writes anchors contiguously from slot 0 and pads the tail (`src/models/graph_salad/pool_dynamic.py:140-155`), with sorted anchors from `graph_utils.py:457`. Override currently matches sorted/unique active anchors, but not the prefix slot contract. Add a per-sample `coarse_mask` prefix check.
+
+## (3) R3 Surgical
+
+Inside the two reviewed files, the round-4 edits are surgical: validation-only blocks plus focused tests. However, current `git status` is not strictly two-file-only: `src/models/graph_salad/__init__.py` is modified and `docs/codex_reviews/*pool_dynamic*` files are untracked. If those are outside the Round 4 patch, fine; if included, Round 4 is not strictly surgical.
+
+I ran `python tests/test_pool_dynamic.py`: 22 tests OK. `python -m pytest ...` is not runnable in this environment because `pytest` is not installed.
+
+## (4) Math Correctness
+
+Math semantics are unchanged: feature pooling is still `S^T X / mass` at `src/models/graph_salad/pool_dynamic.py:257-259`; coarse adjacency still uses hard argmax then binary lifted adjacency at `297-303`; mincut cut + ortho remain at `323-354`.
+
+## (5) pool_deterministic Unblock
+
+NO-GO until the prefix-active `coarse_mask` guard is added. `pool_deterministic.py` will share the anchor/slot contract, so letting override anchors occupy non-prefix slots would bake in an incompatible slot convention.
+
+## Fix List
+
+1. `src/models/graph_salad/pool_dynamic.py:533` — add per-sample `coarse_mask` prefix validation: first `C_valid` slots True, remaining slots False.
+2. `tests/test_pool_dynamic.py` — add a regression test with `anchor_indices=[[-1,0,2,5]]`, `coarse_mask=[[False,True,True,True]]`, expecting `ValueError`.

@@ -1,0 +1,160 @@
+Round 15 fresh-eye codex review: M1.2 pool_dynamic.py
+
+Verdict: NEEDS-FIX-with-CONCRETE-trace
+Independent codex exec session id: 019e45ec-d2ef-7e20-99b3-02d231aec097
+Scope read directly:
+- src/models/graph_salad/pool_dynamic.py
+- tests/test_pool_dynamic.py
+- src/models/graph_salad/graph_utils.py
+- src/models/graph_salad/__init__.py
+
+Commands / probes run
+1. command -v codex && codex --version
+   - /home/ts1v23/.nvm/versions/node/v22.12.0/bin/codex
+   - codex-cli 0.130.0
+2. codex exec --model gpt-5.5 --config model_reasoning_effort=xhigh --skip-git-repo-check ...
+   - session id: 019e45ec-d2ef-7e20-99b3-02d231aec097
+   - independent verdict also found NEEDS-FIX on the inactive anchor sentinel trace.
+3. python -m pytest tests/test_pool_dynamic.py -q
+   - Environment issue only: /scratch/ts1v23/.conda/bin/python: No module named pytest
+4. python tests/test_pool_dynamic.py
+   - Ran 58 tests in 0.170s locally and 0.120s in independent exec; OK.
+5. AST count of tests/test_pool_dynamic.py
+   - 58 test_* functions found, matching the expected count.
+6. Manual round-14 probes
+   - root_not_first raised ValueError: parent_indices[0] violates FK ordering invariant.
+   - subtle_adj_mismatch raised ValueError: geodesic_dist values inconsistent with shortest-path over adjacency.
+7. Manual 23rd-R12 trace
+   - override-path inactive anchor value 0 survives under pooled_mask=False and is returned as metadata.
+
+Q1. Are all 22 prior R12 fail-loud categories actually sealed?
+
+Answer: Yes for the previously represented categories I could verify from repo truth. I did not rely on prior review docs. I checked the current code, the current 58-test suite, and targeted negative probes. I found no reopened prior category. The new finding below is a distinct 23rd category in the anchor override metadata contract.
+
+Spot-check evidence:
+
+1. Round-14 FK ordering invariant on parent_indices path is sealed.
+   - pool_dynamic.py:678-701 validates parent_indices list length, then calls assert_root_first_parent_order(parent_indices[b]) and re-raises with a DynamicGraphPool message.
+   - graph_utils.py:256-281 implements the root-first / parent-before-child invariant: parents[0] must be -1, later -1 roots are rejected, and every parent must be in [0, i).
+   - tests/test_pool_dynamic.py:211-227 constructs root at index 2 with matching adjacency/geodesic so the FK-order check fires before adjacency mismatch.
+   - Manual probe reproduced the loud error:
+     "DynamicGraphPool: parent_indices[0] violates FK ordering invariant (root=0 + parents[j]<j) - root invariant violated: parents[0]=1, expected -1".
+
+2. Parent-adjacency exact equality plus Floyd consistency is sealed.
+   - pool_dynamic.py:624-646 recomputes expected_geo = floyd_shortest_path(adjacency, joint_mask), compares reachability with torch.equal, and compares finite values with allclose at 1e-6.
+   - pool_dynamic.py:702-720 reconstructs expected_adj_sub from parent_indices and checks torch.equal(actual_adj_sub, expected_adj_sub). There is no tolerance on the parent/adjacency binary contract.
+   - graph_utils.py:91-150 confirms Floyd treats any adjacency > 0 as an edge.
+   - tests/test_pool_dynamic.py:194-201 catches star parents against line adjacency.
+   - tests/test_pool_dynamic.py:229-239 catches a 5e-7 spurious valid edge by either Floyd mismatch or exact parent-adj mismatch.
+   - Manual probe with adj[0,0,5] = adj[0,5,0] = 5e-7 raised:
+     "DynamicGraphPool: geodesic_dist values inconsistent with shortest-path over adjacency".
+
+3. Mask and anchor-source fail-loud surfaces are sealed for the tested contract, except for the new inactive-sentinel gap below.
+   - pool_dynamic.py:595-623 rejects all-false joint_mask and non-contiguous True-prefix joint masks.
+   - tests/test_pool_dynamic.py:570-615 cover joint_mask holes, True in padded region, and all-false joint_mask.
+   - pool_dynamic.py:656-677 enforces exactly one anchor source: parent_indices OR (anchor_indices + coarse_mask), not both or neither; partial override args fail loudly.
+   - tests/test_pool_dynamic.py:269-282 and 547-557 cover both-source, no-source, and partial-override cases.
+   - pool_dynamic.py:745-815 validates override shape, dtype, range, nonempty active slots, prefix coarse_mask, active anchors valid / sorted / unique / root-first / not padded.
+   - tests/test_pool_dynamic.py:284-292, 559-568, 617-678, and 693-715 cover out-of-range anchors, invalid inactive out-of-range values, duplicate/unsorted active anchors, coarse_mask holes, missing root, zero active slots, and active anchor pointing to padded joints.
+
+4. Dtype/device/finite guards are present and tested.
+   - pool_dynamic.py:465-493 rejects mixed tensor devices, module device mismatch, and module dtype != float32.
+   - pool_dynamic.py:495-564 rejects non-float32 data tensors, nonfinite joint_features/skeleton_embeddings, nonfinite adjacency, invalid adjacency value domain, geodesic NaN/-Inf, and negative finite geodesics.
+   - tests/test_pool_dynamic.py:294-316, 350-356, 387-419, 466-545 cover these cases.
+
+5. Padded and inactive tensor outputs are mostly sealed.
+   - pool_dynamic.py:258-261 zeros assignment rows/cols for padded joints and padded coarse slots.
+   - pool_dynamic.py:840-843 zeros pooled_skeleton_embeddings at inactive slots via coarse_mask.
+   - graph_utils.py:238-251 masks fine padded edges when building pooled adjacency.
+   - tests/test_pool_dynamic.py:166-192, 322-342, and 358-385 cover padded assignment zeroing, inactive output zeroing, and padded adjacency pollution not changing mincut_cut.
+
+Q2. Is there a concrete 23rd R12 that survives?
+
+Answer: Yes. The override path silently violates the documented anchor_indices output sentinel contract for inactive slots.
+
+Repo-truth contract:
+- pool_dynamic.py:39 documents output anchor_indices as "[B, C_max] long, -1 for padded".
+- pool_dynamic.py:164-179 implements the rule-based path that way: anchor_indices is initialized to -1 and only active slots are overwritten.
+- pool_dynamic.py:745-758 validates all override anchor_indices are in [-1, J), so invalid garbage such as 9999 raises.
+- pool_dynamic.py:765-815 validates only active slots for nonnegative, valid-joint, strictly ascending, root-first anchors.
+- No check enforces anchor_indices[b, c] == -1 when coarse_mask[b, c] is False.
+- pool_dynamic.py:850-860 returns anchor_indices unchanged.
+
+Concrete runnable trace:
+
+python - <<'PY'
+import torch
+from src.models.graph_salad.pool_dynamic import DynamicGraphPool
+
+D, T, J = 16, 4, 6
+pool = DynamicGraphPool(d_model=D, max_coarse=4, local_radius=5)
+jf = torch.randn(1, T, J, D)
+se = torch.randn(1, J, D)
+
+adj = torch.zeros(1, J, J)
+for j in range(1, J):
+    adj[0, j, j - 1] = 1.0
+    adj[0, j - 1, j] = 1.0
+
+geo = torch.zeros(1, J, J)
+for i in range(J):
+    for j in range(J):
+        geo[0, i, j] = abs(i - j)
+
+jm = torch.ones(1, J, dtype=torch.bool)
+fm = torch.ones(1, T, dtype=torch.bool)
+
+# Slot 3 is inactive, but contains a valid joint id 0 instead of the documented -1 sentinel.
+anchor_indices = torch.tensor([[0, 2, 5, 0]], dtype=torch.long)
+coarse_mask = torch.tensor([[True, True, True, False]])
+
+out = pool(
+    jf, se, adj, geo, jm, fm,
+    anchor_indices=anchor_indices,
+    coarse_mask=coarse_mask,
+)
+print("returned_anchor_indices=", out["anchor_indices"].tolist())
+print("pooled_mask=", out["pooled_mask"].tolist())
+print("inactive_assignment_abs_sum=", float(out["assignment"][0, :, 3].abs().sum()))
+print("inactive_embedding_abs_sum=", float(out["pooled_skeleton_embeddings"][0, 3].abs().sum()))
+PY
+
+Observed output:
+
+returned_anchor_indices= [[0, 2, 5, 0]]
+pooled_mask= [[True, True, True, False]]
+inactive_assignment_abs_sum= 0.0
+inactive_embedding_abs_sum= 0.0
+
+Why this is R12:
+- The core tensors are masked, so this does not immediately corrupt pooled_features or pooled_skeleton_embeddings.
+- But the returned metadata is wrong by the module's own output contract: slot 3 is padded/inactive, yet the sentinel is 0, not -1.
+- A downstream module that consumes anchor_indices by sentinel, or logs/serializes anchor metadata, sees an active-looking root id in an inactive slot.
+- This is a silent wrong output / silent metadata fallback. It should either fail loud or the output contract must be explicitly redefined.
+
+Minimal required fix:
+- In the override path, after coarse_mask prefix validation, reject inactive slots that are not -1:
+  inactive = ~valid_anchor_mask
+  if (anchor_indices[b][inactive] != -1).any(): raise ValueError(...)
+- Add a regression test, e.g. test_inactive_anchor_slot_must_be_minus_one_raises:
+  anchor_indices = [[0, 2, 5, 0]], coarse_mask = [[True, True, True, False]]
+  should raise an informative error mentioning inactive/padded coarse slots and -1 sentinel.
+
+Secondary public API note:
+- pool_dynamic.py:95 exposes dropout: float = 0.0 but rg shows no other dropout use in the requested files.
+- A probe with dropout=1.0 and identical weights produced bit-identical outputs to dropout=0.0; dropout=nan, inf, -0.1, 2.0, and a string were accepted in construction and no dropout attribute/module exists.
+- I am not using this as the primary 23rd R12 because the sentinel issue is more directly tied to the dynamic-pool output contract. Still, before declaring the public API final, either remove dropout, reject non-default/non-finite values, or implement it.
+
+Q3. pool_deterministic.py next sibling module unblock?
+
+Answer: NO-GO.
+
+Reason:
+- Current tests pass and the previous 22 represented fail-loud categories look sealed, but a concrete 23rd R12 survives in pool_dynamic.py.
+- The sibling deterministic pool should not start from a module with a known silent metadata contract violation in the shared anchor/coarse-mask surface.
+- Unblock after the inactive anchor sentinel path either fails loudly or is explicitly redefined with docs/tests.
+
+Brief answers:
+- Q1: Yes for the prior represented categories; no reopened prior R12 found. Spot checks above cover FK parent ordering, exact parent-adj/Floyd consistency, mask/anchor-source validation, dtype/device/finite validation, and padded-output masking.
+- Q2: Yes, a concrete 23rd R12 survives: override inactive anchor slots can return valid joint ids instead of -1 under pooled_mask=False.
+- Q3: NO-GO for pool_deterministic.py until the sentinel contract is fixed or redefined.

@@ -1,0 +1,391 @@
+M1.2 pool_dynamic.py Round 12 - codex review FULL
+Model: gpt-5.5
+Reasoning effort: xhigh
+Date: 2026-05-20
+Repo root: /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+
+Scope read directly from disk:
+  - src/models/graph_salad/pool_dynamic.py
+  - tests/test_pool_dynamic.py
+  - src/models/graph_salad/graph_utils.py
+  - src/models/graph_salad/batch.py
+  - src/models/graph_salad/denoiser_stub.py
+  - docs/codex_reviews/m1_2_pool_dynamic_round11_FULL.txt
+
+Local verification:
+  - python tests/test_pool_dynamic.py
+    Result: 50 tests OK, 0.186s in this environment.
+  - python -m unittest discover -s tests
+    Result: 166 tests OK, 2.242s in this environment.
+  - python -m pytest ...
+    Result: pytest is not installed in this environment.
+  - Independent codex exec audit was also started with gpt-5.5/xhigh. It timed
+    out before a final prose verdict, but it independently reproduced the same
+    padded-adjacency/mincut and override-device concerns recorded below.
+
+VERDICT: NEEDS-FIX
+
+M1.3 pool_deterministic.py unblock: NO-GO.
+
+Summary:
+  - The suite is green.
+  - Most Round-11 fixes are present.
+  - The "19 R12s sealed" convergence claim is not fully confirmed.
+  - R12 #19 Floyd consistency is implemented, but not as an exact value check:
+    source uses atol=1e-6, rtol=0 at pool_dynamic.py:609-612, and the test only
+    catches a gross all-zero mismatch at tests/test_pool_dynamic.py:313-320.
+  - R12 #18 is sealed for core input tensors and module-device mismatch, but
+    override tensors are still validated before device normalization and can
+    RuntimeError instead of fail-loud ValueError.
+  - A new R12-class issue exists: non-zero padded adjacency entries are accepted
+    by DynamicGraphPool and corrupt the mincut denominator through degree =
+    adjacency.sum(dim=-1), even though assignment and pooled adjacency ignore
+    padded joints.
+
+
+Q1. 19 R12 SEAL TABLE
+
+#1 mincut orthogonality must use per-sample C_valid, not C_max
+Status: SEALED for the named issue.
+Source trace:
+  - pool_dynamic.py:337-357 computes ortho per sample.
+  - pool_dynamic.py:345 builds valid_pair from coarse_mask.
+  - pool_dynamic.py:352 computes C_valid = coarse_mask.sum(dim=-1).
+  - pool_dynamic.py:354 scales the identity target by sqrt(C_valid), not C_max.
+Regression trace:
+  - tests/test_pool_dynamic.py:322-356 compares mincut_ortho for max_coarse=8
+    vs max_coarse=4 with identical assignments/weights and asserts equality to
+    4 decimal places.
+Assessment:
+  - This is now a real C_valid-vs-C_max regression, not only a finite smoke test.
+
+#2 parent_indices length must match joint_mask.sum per sample
+Status: SEALED.
+Source trace:
+  - pool_dynamic.py:648-661 validates parent_indices is list length B and
+    len(parent_indices[b]) == joint_mask[b].sum().
+Regression trace:
+  - tests/test_pool_dynamic.py:176-182 truncates parents and expects a length
+    mismatch ValueError.
+
+#3 full anchor-source XOR: parent_indices path vs override pair
+Status: SEALED.
+Source trace:
+  - pool_dynamic.py:636-647 rejects both parent_indices+override and neither.
+Regression trace:
+  - tests/test_pool_dynamic.py:204-211 rejects both sources.
+  - tests/test_pool_dynamic.py:213-217 rejects no source.
+
+#4 partial anchor override XOR: anchor_indices and coarse_mask must come together
+Status: SEALED.
+Source trace:
+  - pool_dynamic.py:629-635 rejects exactly one of anchor_indices/coarse_mask.
+Regression trace:
+  - tests/test_pool_dynamic.py:439-449 covers only-anchor and only-coarse_mask.
+
+#5 inactive coarse slots must stay zero
+Status: SEALED for assignment, pooled features, and pooled skeleton embeddings.
+Source trace:
+  - pool_dynamic.py:241-242 zeroes assignment rows/cols with joint_mask/coarse_mask.
+  - pool_dynamic.py:262-264 mass-normalized pooling yields zero for zero-assignment
+    inactive columns.
+  - pool_dynamic.py:781-784 masks pooled_skeleton_embeddings by coarse_mask.
+Regression trace:
+  - tests/test_pool_dynamic.py:148-174 checks padded joint assignment rows and
+    inactive assignment columns.
+  - tests/test_pool_dynamic.py:257-277 checks inactive pooled_features and
+    pooled_skeleton_embeddings are near-zero.
+
+#6 odd/non-divisible T must fail before frame_mask.view
+Status: SEALED.
+Source trace:
+  - pool_dynamic.py:618-624 rejects T % temporal_stride != 0.
+Regression trace:
+  - tests/test_pool_dynamic.py:572-583 uses T=5, stride=2 and expects the guard.
+
+#7 all-false joint_mask must fail
+Status: SEALED.
+Source trace:
+  - pool_dynamic.py:565-573 rejects any batch element with no valid joint.
+Regression trace:
+  - tests/test_pool_dynamic.py:495-507 passes joint_mask all False with empty
+    parent_indices and expects ValueError.
+
+#8 override anchors must be sorted and unique
+Status: SEALED.
+Source trace:
+  - pool_dynamic.py:737-746 checks active-anchor diffs <= 0 and raises.
+Regression trace:
+  - tests/test_pool_dynamic.py:509-517 covers duplicate active anchors.
+  - tests/test_pool_dynamic.py:519-527 covers unsorted active anchors.
+
+#9 override coarse_mask cannot have zero active slots
+Status: SEALED.
+Source trace:
+  - pool_dynamic.py:706-712 rejects coarse_mask all False per sample.
+Regression trace:
+  - tests/test_pool_dynamic.py:562-570 covers zero active coarse slots.
+
+#10 coarse_mask active slots must be contiguous prefix
+Status: SEALED.
+Source trace:
+  - pool_dynamic.py:713-725 checks active slots occupy [0, C_valid).
+Regression trace:
+  - tests/test_pool_dynamic.py:529-538 covers a coarse_mask hole.
+  - tests/test_pool_dynamic.py:540-548 covers True in padded region.
+
+#11 joint_mask valid joints must be contiguous prefix
+Status: SEALED.
+Source trace:
+  - pool_dynamic.py:574-592 checks valid joints occupy [0, J_valid).
+Regression trace:
+  - tests/test_pool_dynamic.py:462-479 covers a hole.
+  - tests/test_pool_dynamic.py:481-493 covers a later True after a False.
+Ordering note:
+  - These tests use geodesic values that would be inconsistent if reached, so
+    they also demonstrate that mask validation fires before the Floyd consistency
+    block at pool_dynamic.py:594-616.
+
+#12 override anchors must include root joint 0 first
+Status: SEALED.
+Source trace:
+  - pool_dynamic.py:747-756 requires valid_anchors[0] == 0.
+Regression trace:
+  - tests/test_pool_dynamic.py:550-560 passes anchors [1, 2, 5] and expects
+    missing-root ValueError.
+
+#13 joint_features NaN and +Inf must fail
+Status: SEALED.
+Source trace:
+  - pool_dynamic.py:480-483 rejects non-finite joint_features via torch.isfinite.
+Regression trace:
+  - tests/test_pool_dynamic.py:366-371 covers NaN.
+  - tests/test_pool_dynamic.py:299-304 covers +Inf.
+
+#14 skeleton_embeddings NaN and +Inf must fail
+Status: SEALED.
+Source trace:
+  - pool_dynamic.py:484-487 rejects non-finite skeleton_embeddings.
+Regression trace:
+  - tests/test_pool_dynamic.py:373-378 covers NaN.
+  - tests/test_pool_dynamic.py:306-311 covers +Inf.
+
+#15 adjacency structural/value contract
+Status: SEALED for the previously named finite/symmetric/zero-diagonal/[0,1]
+branches, but see new R12 #20 below for a padded-adjacency leak not covered by
+the known #15 tests.
+Source trace:
+  - pool_dynamic.py:490-493 rejects NaN/Inf adjacency.
+  - pool_dynamic.py:494-498 rejects asymmetric adjacency.
+  - pool_dynamic.py:499-503 rejects non-zero diagonal.
+  - pool_dynamic.py:507-516 rejects negative and >1 edge weights.
+Regression trace:
+  - tests/test_pool_dynamic.py:380-385 covers asymmetric adjacency.
+  - tests/test_pool_dynamic.py:387-392 covers self-loop.
+  - tests/test_pool_dynamic.py:423-429 covers negative edge.
+  - tests/test_pool_dynamic.py:431-437 covers edge > 1.
+Gap:
+  - There is no DynamicGraphPool test that pollutes padded adjacency rows/cols.
+    GraphMotionBatch rejects this at batch.py:466-472, but DynamicGraphPool's
+    direct API accepts it and its mincut loss is affected.
+
+#16 geodesic internal contract: NaN, -Inf, negative finite, symmetry, valid diag
+Status: MOSTLY SEALED.
+Source trace:
+  - pool_dynamic.py:518-520 rejects NaN.
+  - pool_dynamic.py:522-526 rejects -Inf.
+  - pool_dynamic.py:529-534 rejects negative finite entries.
+  - pool_dynamic.py:541-555 checks finite-pattern and finite-value symmetry.
+  - pool_dynamic.py:558-563 checks zero diagonal on valid nodes.
+Regression trace:
+  - tests/test_pool_dynamic.py:394-399 covers NaN.
+  - tests/test_pool_dynamic.py:401-406 covers -Inf.
+  - tests/test_pool_dynamic.py:358-364 covers negative finite entries.
+  - tests/test_pool_dynamic.py:408-414 covers finite asymmetric values.
+  - tests/test_pool_dynamic.py:416-421 covers non-zero valid diagonal.
+Residual test weakness:
+  - I did not find a specific +Inf finite-pattern asymmetry regression. The code
+    exists, but the checked-in tests do not directly exercise that branch.
+
+#17 dtype/strict constructor/input checks
+Status: SEALED for the named input-dtype and d_model/max_coarse strictness
+branches, with a separate module-dtype hardening issue below.
+Source trace:
+  - pool_dynamic.py:96-104 rejects non-strict/non-positive d_model/max_coarse.
+  - pool_dynamic.py:105-112 checks positive local_radius/max_chain_chunk_len/
+    temperature/temporal_stride.
+  - pool_dynamic.py:468-477 requires joint_features, skeleton_embeddings,
+    adjacency, and geodesic_dist to be float32.
+Regression trace:
+  - tests/test_pool_dynamic.py:52-70 covers constructor validation, including
+    d_model=16.0, max_coarse=4.5, max_coarse=True, and invalid positives.
+  - tests/test_pool_dynamic.py:253-255 covers d_model=True.
+  - tests/test_pool_dynamic.py:229-251 covers float64 rejection for all four
+    float tensor inputs.
+Residual issue:
+  - Module parameter dtype is not checked. See Additional issue B below.
+
+#18 device consistency
+Status: PARTIALLY SEALED. The Round-12 claimed module-parameter device check is
+present and tested. The override tensor path is still not fail-loud on device.
+Source trace for sealed part:
+  - pool_dynamic.py:443-456 checks skeleton_embeddings, adjacency,
+    geodesic_dist, joint_mask, and frame_mask against joint_features.device.
+  - pool_dynamic.py:457-463 checks self.q_proj.weight.device against input
+    device.
+Regression trace for sealed part:
+  - tests/test_pool_dynamic.py:279-285 covers skeleton_embeddings on meta vs
+    joint_features on CPU.
+  - tests/test_pool_dynamic.py:287-297 covers module on meta vs CPU inputs.
+Unsealed subcase:
+  - In override mode, anchor_indices/coarse_mask are validated at
+    pool_dynamic.py:671-756 before device normalization at pool_dynamic.py:757-759.
+  - A meta anchor_indices or meta coarse_mask does not raise the intended
+    DynamicGraphPool ValueError; it fails with RuntimeError: "Tensor.item()
+    cannot be called on meta tensors".
+  - No checked-in test covers override tensor device mismatch.
+
+#19 geodesic_dist must equal Floyd(adjacency, joint_mask)
+Status: NOT SEALED as claimed.
+Source trace:
+  - pool_dynamic.py:594-599 recomputes expected_geo = floyd_shortest_path.
+  - pool_dynamic.py:600-607 checks finite reachability pattern inside the valid
+    joint-pair mask.
+  - pool_dynamic.py:608-616 checks values against expected_geo.
+Problem:
+  - The value check is not exact. pool_dynamic.py:609-612 uses
+    torch.allclose(..., atol=1e-6, rtol=0.0). The Round-12 claim says exact value
+    match / value-identical. rtol=0 alone is not exact when atol is nonzero.
+Regression trace:
+  - tests/test_pool_dynamic.py:313-320 catches an all-zero geodesic with a line
+    adjacency. This proves a gross value mismatch fails.
+Missing regression:
+  - No test checks a sub-1e-6 value mismatch, and no test checks finite-pattern
+    mismatch on a valid disconnected graph.
+Probe:
+  - I perturbed geo[0,0,1] and geo[0,1,0] by +5e-7. Forward accepted it:
+      accepted_epsilon_mismatch=True
+      geo_01 1.0000004768371582
+      assignment_finite True
+  - That is incompatible with the stated exact-match seal.
+Ordering:
+  - The Floyd check is placed after adjacency/geodesic/mask structural checks
+    at pool_dynamic.py:488-593. Tests such as test_joint_mask_hole_raises
+    at tests/test_pool_dynamic.py:462-479 and adjacency/geodesic structural tests
+    at tests/test_pool_dynamic.py:380-421 show earlier violations fire first.
+
+
+Q2. 20TH R12 SEARCH
+
+FOUND: padded adjacency rows/cols are accepted by DynamicGraphPool and corrupt
+the mincut denominator.
+
+Why this is R12:
+  - DynamicGraphPool accepts joint_mask-padded inputs directly, not only
+    GraphMotionBatch objects.
+  - Padded joints are explicitly meant to be ignored. Assignment and pooled
+    graph do ignore them.
+  - The mincut denominator does not ignore padded adjacency edges incident to
+    valid joints, because degree is computed on the raw adjacency.
+  - This changes aux_losses["mincut"] while leaving assignment and pooled graph
+    unchanged, so it is silent loss corruption.
+
+Source trace:
+  - pool_dynamic.py:488-516 validates adjacency finite/symmetric/diagonal/range,
+    but does not require padded rows/cols to be zero under joint_mask.
+  - pool_dynamic.py:330 computes S^T A S. Because P rows for padded joints are
+    zero, padded endpoints do not affect the numerator.
+  - pool_dynamic.py:332 computes degree = adjacency.sum(dim=-1) without masking
+    padded rows/cols.
+  - pool_dynamic.py:333-335 uses that degree in the mincut denominator.
+  - graph_utils.py:239-240 masks fine edges before coarse adjacency, so the same
+    padded edge does not affect pooled_adjacency. This makes the loss corruption
+    easy to miss.
+Dependency note:
+  - GraphMotionBatch rejects padded adjacency pollution at batch.py:466-472.
+    That protects the collate path, but it does not seal DynamicGraphPool's
+    direct API or its own fail-loud contract.
+Test-suite gap:
+  - tests/test_pool_dynamic.py:148-174 covers padded joint assignment with padded
+    adjacency rows initialized to zero at tests/test_pool_dynamic.py:157-160.
+  - There is no test that inserts a non-zero padded adjacency edge and expects
+    either a ValueError or invariant mincut loss.
+
+Concrete probe:
+  - Setup: J_max=8, J_valid=6, line graph on valid joints. Add only one polluted
+    padded edge adj[0,0,7] = adj[0,7,0] = 1.0.
+  - Forward accepts the polluted adjacency.
+  - assignment_equal True
+  - pooled_adj_equal True
+  - mincut_cut_clean -0.9097329378128052
+  - mincut_cut_bad   -0.8132305145263672
+  - mincut_clean     -0.4387211501598358
+  - mincut_bad       -0.3904699385166168
+
+Required fix:
+  - Either reject any non-zero adjacency in padded rows/cols inside
+    DynamicGraphPool.forward, or mask adjacency by joint_mask before every aux
+    loss computation, including degree. Prefer fail-loud rejection to match the
+    rest of this module.
+  - Add a regression test that pollutes a padded row/col and expects ValueError,
+    or, if masking is chosen, asserts mincut is identical to the clean case.
+
+
+ADDITIONAL R12-CLASS HARDENING GAPS
+
+A. Override tensor device mismatch still RuntimeErrors
+  - Source: pool_dynamic.py:671-756 validates override tensors before moving them
+    to input device at pool_dynamic.py:757-759.
+  - Probe: anchor_indices on meta or coarse_mask on meta raises RuntimeError
+    "Tensor.item() cannot be called on meta tensors" rather than a
+    DynamicGraphPool ValueError.
+  - Test gap: no override-device mismatch test.
+  - Fix: device-check or normalize anchor_indices/coarse_mask immediately after
+    shape/dtype validation and before value checks.
+
+B. Module dtype mismatch is not fail-loud
+  - Source: pool_dynamic.py:457-463 checks module device, but no module dtype.
+    Inputs are forced to float32 at pool_dynamic.py:468-477.
+  - Failure point: if pool.double() is called, validation passes and q_proj at
+    pool_dynamic.py:188 raises RuntimeError "mat1 and mat2 must have the same
+    dtype, but got Float and Double".
+  - Fix: require q_proj/k_proj parameter dtype == torch.float32, or relax the
+    input dtype contract consistently. Add a pool.double() regression.
+
+C. Non-finite scalar hyperparameters are accepted and propagate NaN
+  - Source: constructor only checks local_radius < 1, max_chain_chunk_len < 1,
+    temperature <= 0, temporal_stride < 1 at pool_dynamic.py:105-112. NaN passes
+    comparisons. locality_alpha and mincut_lambda have no finite checks at all.
+  - Use sites:
+      pool_dynamic.py:209 uses locality_alpha in assignment scores.
+      pool_dynamic.py:236 divides by temperature.
+      pool_dynamic.py:359 multiplies by mincut_lambda.
+  - Probe:
+      temperature_nan passed assignment_finite False mincut_finite False locality_finite False
+      locality_alpha_nan passed assignment_finite False mincut_finite False locality_finite False
+      mincut_lambda_nan passed assignment_finite True mincut_finite False locality_finite True
+  - Fix: reject non-finite scalar hparams in __init__; make local_radius,
+    max_chain_chunk_len, and temporal_stride strict int/non-bool if they are API
+    integers.
+
+
+Q3. GO / NO-GO FOR M1.3 pool_deterministic.py
+
+NO-GO.
+
+Must-fix list:
+  1. Fix #19 exact Floyd seal: use exact equality on finite values
+     (torch.equal after masking, or allclose with atol=0 and rtol=0) and add a
+     sub-1e-6 mismatch regression plus a finite-pattern mismatch regression.
+  2. Fix #20 padded adjacency leak: reject or mask padded adjacency rows/cols;
+     add polluted-padded-edge regression.
+  3. Finish #18 override-device handling: fail-loud or normalize override tensors
+     before validation; add regression.
+  4. Add module dtype guard/regression.
+  5. Add finite scalar hyperparameter guards/regressions.
+
+Rationale:
+  - The main forward path is close, and the green 50-test suite is meaningful.
+  - But the remaining issues are not cosmetic: #19 violates the exact-value
+    convergence claim, #20 silently changes training loss under padded graph
+    pollution, and #18 still has a fail-deep device path.

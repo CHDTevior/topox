@@ -1,0 +1,68 @@
+Codex review — M1.2 pool_dynamic.py round 10
+Model: gpt-5.5, reasoning effort: xhigh
+Thread: 019e45ae-bd7f-73a1-b59e-862fc943a5df (FRESH)
+Date: 2026-05-20
+
+Files:
+- /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py (753 LoC)
+- /scratch/ts1v23/workspace/noKslot_clean/tests/test_pool_dynamic.py (538 LoC, 39 cases)
+
+Local verification: `python tests/test_pool_dynamic.py -v` ran 39 tests and passed in 0.162s. The implementation file is 753 LoC; the test file is 538 LoC.
+
+**Q1 R12 Seal Check**
+
+1. **NOT-SEALED**: mincut orthogonality is implemented per-sample at `src/models/graph_salad/pool_dynamic.py:337-357` (`sts_norm`, `C_valid`, target all `[B]`), but tests only check aux losses are finite at `tests/test_pool_dynamic.py:94-96` and `:531-534`. No test proves per-sample vs batch-aggregate behavior.
+
+2. **SEALED**: parent length match is checked at `pool_dynamic.py:599-612`; tested at `test_pool_dynamic.py:176-182`.
+
+3. **SEALED**: full anchor-source XOR, meaning parent path vs override path both/neither, is checked at `pool_dynamic.py:587-598`; tested at `test_pool_dynamic.py:204-217`.
+
+4. **SEALED**: partial override XOR, only `anchor_indices` or only `coarse_mask`, is checked at `pool_dynamic.py:580-586`; tested at `test_pool_dynamic.py:316-326`.
+
+5. **NOT-SEALED**: inactive coarse slots are zeroed by implementation through `P` column masking at `pool_dynamic.py:239-243`, pooled feature mass normalization at `:262-264`, and pooled skeleton masking at `:732-735`. Tests only assert assignment columns are zero at `test_pool_dynamic.py:171-174`; they do not assert inactive `pooled_features` or `pooled_skeleton_embeddings` are zero.
+
+6. **SEALED**: odd/non-divisible `T` is fail-loud at `pool_dynamic.py:569-575`; tested with odd `T=5` at `test_pool_dynamic.py:449-460`. This covers the same guard that would reject `T=1` or `T=3` for stride 2.
+
+7. **SEALED**: all-false `joint_mask` is rejected at `pool_dynamic.py:540-548`; tested at `test_pool_dynamic.py:372-384`.
+
+8. **SEALED**: override anchors must be strictly ascending and unique at `pool_dynamic.py:688-697`; duplicate and unsorted cases tested at `test_pool_dynamic.py:386-404`.
+
+9. **SEALED**: override zero-active slots rejected at `pool_dynamic.py:657-663`; tested at `test_pool_dynamic.py:439-447`.
+
+10. **SEALED**: `coarse_mask` prefix-active invariant checked at `pool_dynamic.py:664-676`; tested at `test_pool_dynamic.py:406-425`.
+
+11. **SEALED**: `joint_mask` prefix-active invariant checked at `pool_dynamic.py:549-567`; tested at `test_pool_dynamic.py:339-370`.
+
+12. **SEALED**: override missing root rejected at `pool_dynamic.py:698-707`; tested at `test_pool_dynamic.py:427-437`.
+
+13. **SEALED by code, partially tested**: `joint_features` finite check rejects NaN/Inf at `pool_dynamic.py:456-461`; NaN tested at `test_pool_dynamic.py:243-248`. Inf is covered by `torch.isfinite` but lacks an explicit test.
+
+14. **SEALED by code, partially tested**: `skeleton_embeddings` finite check rejects NaN/Inf at `pool_dynamic.py:462-465`; NaN tested at `test_pool_dynamic.py:250-255`. Inf lacks an explicit test.
+
+15. **SEALED**: adjacency finite/symmetric/zero-diagonal/[0,1] checks are at `pool_dynamic.py:468-494`; symmetry, self-loop, negative, and >1 tests are at `test_pool_dynamic.py:257-269` and `:300-314`.
+
+16. **SEALED**: geodesic NaN, -Inf, negative finite, symmetry, and valid-node diagonal checks are at `pool_dynamic.py:495-538`; tests are at `test_pool_dynamic.py:235-241` and `:271-298`.
+
+17. **NOT-SEALED**: strict int and float32 checks are implemented at `pool_dynamic.py:96-100` and `:443-455`. Tests cover `d_model=16.0`, `max_coarse=4.5`, `max_coarse=True`, and `joint_features.double()` at `test_pool_dynamic.py:57-62` and `:229-234`; missing explicit tests for `d_model=True` and float32 rejection on `skeleton_embeddings`, `adjacency`, and `geodesic_dist`.
+
+**Q2 18th Failure Mode**
+
+Found one pool_dynamic-owned fail-loud gap: **device consistency is not validated before mixed-device indexing/compute**.
+
+Evidence: `forward` records `device = joint_features.device` at `pool_dynamic.py:614` and moves only generated/provided anchors and `coarse_mask` at `:618-620` / `:708-710`. It never checks that `joint_features`, `skeleton_embeddings`, `adjacency`, `geodesic_dist`, `joint_mask`, `frame_mask`, and module parameters share a device. Mixed CPU/CUDA inputs can therefore fail deep at `_compute_assignment` gather/projection (`pool_dynamic.py:188-204`), override validation indexing (`:677-683`), or feature pooling einsum (`:262`) instead of raising a clear contract error. Tests are all CPU-created via helpers at `test_pool_dynamic.py:37-47`; no device mismatch test exists.
+
+No gradient-flow blocker found: the detached returns are only diagnostic `mincut_cut`/`mincut_ortho` at `pool_dynamic.py:382-385`; trainable `mincut` remains attached at `:359` and returned at `:385`.
+
+**Q3 Pool_Deterministic Unblock**
+
+**NO-GO.** The implementation is close, but not all 17 requested categories are sealed by code+test evidence, and the device-consistency gap is pool_dynamic's responsibility if this module is the contract template for `pool_deterministic.py`.
+
+FIX-1: Add a direct per-sample mincut orthogonality regression test, not just finite aux checks @ `tests/test_pool_dynamic.py:94`.
+
+FIX-2: Add assertions that inactive coarse slots have zero `pooled_features` and zero `pooled_skeleton_embeddings` @ `tests/test_pool_dynamic.py:148`.
+
+FIX-3: Add missing dtype/strict-int tests for `d_model=True`, `skeleton_embeddings.double()`, `adjacency.double()`, and `geodesic_dist.double()` @ `tests/test_pool_dynamic.py:52` and `:229`.
+
+FIX-4: Add explicit device-consistency validation before anchor override indexing and compute @ `src/models/graph_salad/pool_dynamic.py:443`.
+
+VERDICT: NEEDS-FIX

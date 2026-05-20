@@ -1,0 +1,407 @@
+M1.2 step 2 DynamicGraphPool review
+Date: 2026-05-20
+Verdict: NEEDS-FIX
+Step 3 pool_deterministic unblock: NO-GO
+
+Scope inspected:
+- src/models/graph_salad/pool_dynamic.py
+- tests/test_pool_dynamic.py
+- src/models/graph_salad/__init__.py
+- outside_docs/graph_salad_implementation_plan.md sections 6, 7, 8, 10, 13.3
+- docs/PLAN_GAP_REPORT.md sections 1.2, 3.3, 4.2, 5, 6
+- docs/graph_vae_lit_survey.md section 4.2
+- src/models/graph_salad/graph_utils.py anchor, coarse-adj, Floyd helpers
+
+Verification:
+- Ran: python tests/test_pool_dynamic.py
+- Result: 9 tests OK in 0.120s.
+
+Executive summary:
+The core assignment and feature-pooling algebra is mostly right, but the module
+does not pass as the M1.2 centerpiece. There is one concrete MinCut math bug and
+one concrete R12 silent-failure path. There is also a multi-level-pooling
+contract mismatch: the implementation requires parent_indices in forward, but
+the plan's second pool call has no such argument and the output does not return
+pooled parent metadata. Do not use this contract as the template for
+pool_deterministic.py until these are fixed.
+
+MUST-FIX-NOW findings
+
+1. MinCut orthogonality target uses C_max instead of per-sample valid C.
+
+Location:
+- src/models/graph_salad/pool_dynamic.py:332-342
+
+Evidence:
+- The implemented formula builds I_C with C = self.max_coarse:
+  src/models/graph_salad/pool_dynamic.py:338.
+- It then masks invalid coarse rows/cols:
+  src/models/graph_salad/pool_dynamic.py:339-342.
+- Masking invalid rows/cols is not enough, because the target diagonal remains
+  1 / sqrt(C_max), not 1 / sqrt(C_valid).
+
+Why broken:
+- The MinCutPool orthogonality term is
+  || S^T S / ||S^T S||_F - I_C / sqrt(C) ||_F^2.
+- For padded dynamic pools, C must be the number of valid coarse nodes for that
+  sample, not the padded tensor width.
+- With C_valid=3 and C_max=8, a perfectly orthogonal 3-cluster assignment has
+  normalized diagonal 1/sqrt(3)=0.577. The current target is
+  1/sqrt(8)=0.354, so the code penalizes the exact optimum.
+- Manual probe on the current formula:
+  current_loss_ortho_for_perfect_3_of_8 = 0.150255
+  correct_valid_C_loss_ortho = 0.0
+
+Suggested fix:
+- Compute the identity scale per sample:
+  valid_count = coarse_mask.sum(dim=1).clamp(min=1).to(P.dtype)
+  I_scaled = eye[None] / torch.sqrt(valid_count)[:, None, None]
+  diff_sq = (sts_normalized - I_scaled).pow(2) * valid_pair.to(P.dtype)
+- Equivalently, loop over batch samples and apply the formula to the valid
+  submatrix only.
+- Add a unit test where C_valid < max_coarse and a perfect hard balanced
+  assignment gives zero or near-zero orthogonality loss.
+
+2. Public forward does not seal R12 validation; parent_indices/joint_mask mismatch can silently select padded anchors.
+
+Location:
+- src/models/graph_salad/pool_dynamic.py:388-421 only checks rank/shape for the
+  main tensors, bool masks, and outer parent_indices length.
+- src/models/graph_salad/pool_dynamic.py:125-156 selects anchors from
+  parent_indices without checking per-sample length against joint_mask.
+- src/models/graph_salad/pool_dynamic.py:186-204 gathers skeleton embeddings and
+  geodesic columns at anchor_indices, then scores them as real anchors.
+- src/models/graph_salad/pool_dynamic.py:206-212 treats coarse_mask=True anchors
+  as valid candidates.
+- src/models/graph_salad/batch.py:273-285, 347-355, 378-394, 396-472 show that
+  GraphMotionBatch has many of these guards upstream, but pool_dynamic.py does
+  not enforce them itself.
+
+Concrete silent failure:
+- If J_max=4, joint_mask marks only joints 0..2 valid, but parent_indices has
+  length 4, find_anchors_rulebased can return anchor 3.
+- Because coarse_mask for that anchor is True, the padded joint becomes a valid
+  coarse node.
+- A manual probe with zero Q/K projections and padded geodesic left at 0
+  produced:
+  anchor_indices = [[0, 3, -1, -1]]
+  pooled_mask = [[True, True, False, False]]
+  assignment of valid rows to padded-anchor column = [0.5, 0.731, 0.881]
+  hard_assignment = [[0, 1, 1, 0]]
+- This is exactly the padded-token trap: output is finite and plausible, but it
+  pooled valid joints into a padded anchor.
+
+Other missing validation categories:
+- dtype/device: only masks are checked; float tensors are not required to be
+  floating and tensors are not required to share device.
+  src/models/graph_salad/pool_dynamic.py:397-416.
+- finite-input: no NaN/Inf guard for joint_features, skeleton_embeddings,
+  adjacency, or valid geodesic pairs.
+  src/models/graph_salad/pool_dynamic.py:388-421.
+- topology-validation: no local check that adjacency is binary, symmetric,
+  zero-diagonal, padded-zero, or parent-derived.
+- cross-consistency: no local check that geodesic_dist matches adjacency/Floyd,
+  parent_indices length equals joint_mask.sum, or masks are prefix-contiguous.
+- mask-coverage: no local check that each sample has at least one valid joint
+  and one valid frame.
+- NaN-gradient-trap: tests check finite aux values, but no backward/gradient
+  finite/nonzero test exists in tests/test_pool_dynamic.py:66-218.
+
+Suggested fix:
+- Add a _validate_inputs method similar in spirit to GraphMotionBatch's guards.
+- Minimum for this module:
+  - all tensors are torch.Tensor, same device, expected floating dtype except masks;
+  - finite joint_features, skeleton_embeddings, adjacency; finite geodesic on
+    valid-valid pairs, with +Inf allowed only on padded/unreachable out-of-contract
+    positions if explicitly desired;
+  - joint_mask/frame_mask are nonempty prefix masks;
+  - len(parent_indices[b]) == int(joint_mask[b].sum());
+  - parent_indices[b] is list[int], valid rooted tree, root=0, parents[j]<j;
+  - adjacency valid subgraph is binary/symmetric/zero-diagonal and matches
+    parent_indices; padded rows/cols are zero;
+  - geodesic valid subgraph is nonnegative, symmetric, zero diagonal, adjacency
+    edges have distance 1, and preferably equals floyd_shortest_path(adjacency).
+- Add regression tests for the padded-anchor case above, NaN input, dtype/device
+  mismatch, parent length mismatch, all-False masks, and gradient finite/nonzero.
+
+3. Multi-level pooling contract mismatch: forward requires parent_indices, but the plan's pool2 path has no parent metadata.
+
+Location:
+- Plan section 6.1 forward signature takes graph_meta: dict | None and returns
+  pool_meta: outside_docs/graph_salad_implementation_plan.md:326-349.
+- Current forward requires parent_indices as a positional argument:
+  src/models/graph_salad/pool_dynamic.py:378-387.
+- Current return dict has anchor_indices but no pool_meta or pooled_parent_indices:
+  src/models/graph_salad/pool_dynamic.py:457-468.
+- Plan section 8.1 calls pool1 using out1 pooled features, embeddings,
+  adjacency, geodesic, mask, and frame_mask, but no parent_indices:
+  outside_docs/graph_salad_implementation_plan.md:548-556.
+- Plan section 7.1 says unpool consumes pool_meta:
+  outside_docs/graph_salad_implementation_plan.md:470-478.
+- PLAN_GAP_REPORT requires coarse ordering to preserve a derived parent order:
+  docs/PLAN_GAP_REPORT.md:90-93.
+
+Why broken:
+- pool0 can use the original batch parent_indices.
+- pool1 needs a parent list or a different anchor-selection path for the
+  coarse graph. The current output gives only pooled_adjacency/geodesic/mask,
+  not a derived tree parent list.
+- A quotient graph from hard assignments is not guaranteed to be a clean tree
+  unless cluster connectivity is enforced. Current code does not enforce that.
+- Therefore M1.3 cannot implement the planned DynamicGraphPool x2 stack from
+  the current output dict without inventing missing metadata outside this
+  module.
+
+Suggested fix:
+- Decide and encode the level-2 contract before deterministic pool is written:
+  - Option A: return pool_meta containing assignment, hard_assignment,
+    anchor_indices, pooled_parent_indices, masks, and frame_mask_down.
+  - Option B: change DynamicGraphPool to accept graph_meta containing either
+    parent_indices or an explicit precomputed anchor set for already-pooled
+    graphs.
+  - Option C: make pool2 a separate adjacency-driven coarsener and document it.
+- Add a test that actually runs two pool stages on one valid skeleton.
+
+Question-by-question review
+
+1. Math correctness
+
+1a. Bilinear assignment score Q.K + locality bias.
+- PASS.
+- Code computes Wq(s_j), Wk(anchor_c), dot product, division by sqrt(D), and
+  subtracts locality_alpha * geodesic:
+  src/models/graph_salad/pool_dynamic.py:182-204.
+- Plan asks dot(Wq(s_j), Wk(anchor_c)) - alpha * geodesic plus optional chain
+  terms: outside_docs/graph_salad_implementation_plan.md:379-389.
+- The sqrt(D) scale is not written in the plan snippet, but it is standard for
+  dot-product logits and is mathematically safe here.
+- Sign is correct: larger geodesic lowers score.
+
+1b. Mass-normalized pool.
+- PASS for this plan; note it is an intentional deviation from original
+  DiffPool feature summation.
+- Code: src/models/graph_salad/pool_dynamic.py:255-259.
+- Plan explicitly specifies the same einsum, mass sum, clamp, and division:
+  outside_docs/graph_salad_implementation_plan.md:407-415.
+- Lit survey cites DiffPool for soft S and pooled adjacency machinery:
+  docs/graph_vae_lit_survey.md:12-15 and 61-63.
+- Original DiffPool's X' = S^T X is a sum. Here mass normalization makes the
+  coarse feature an average, which is preferable for motion tokens because
+  feature magnitude should not grow with limb length.
+
+1c. MinCut cut term.
+- PASS conditional on clean adjacency.
+- Code computes -tr(S^T A S) / tr(S^T D S):
+  src/models/graph_salad/pool_dynamic.py:323-330.
+- Degree = adjacency.sum(dim=-1), which is the diagonal D for an unweighted
+  undirected graph: src/models/graph_salad/pool_dynamic.py:327.
+- Caveat: because pool_dynamic.py itself does not validate padded-zero
+  adjacency, degree can be polluted by padded edges if called outside
+  GraphMotionBatch. That is covered by MUST-FIX 2.
+
+1d. MinCut ortho term masked over valid coarse only.
+- NEEDS-FIX.
+- It masks valid rows/cols but uses I_C / sqrt(C_max), not I_C_valid /
+  sqrt(C_valid): src/models/graph_salad/pool_dynamic.py:332-342.
+- See MUST-FIX 1.
+
+1e. Locality + entropy losses vs plan section 13.3.
+- Locality PASS: code gathers geodesic(j, anchor_c) and averages
+  sum P * distance over valid joints:
+  src/models/graph_salad/pool_dynamic.py:346-357.
+- Plan asks sum P[j,c] * geodesic_dist(j, anchor_c):
+  outside_docs/graph_salad_implementation_plan.md:829-838.
+- Entropy PARTIAL: code returns raw per-row entropy:
+  src/models/graph_salad/pool_dynamic.py:359-365.
+- Plan says entropy should control sharpness, neither too diffuse nor too early
+  hard-collapse: outside_docs/graph_salad_implementation_plan.md:837-838.
+- A raw positive entropy term, if minimized, only encourages hard assignments.
+  A negative entropy term only encourages uniform assignments. To enforce the
+  plan's two-sided contract, losses.py should treat this as a metric or use a
+  band/target penalty. Rename to entropy_metric if it is not meant to be summed
+  as a normal positive loss.
+
+2. Validation order + R12 categories
+
+2a. All checks present?
+- NO. Shape is partial; dtype, finite-input, topology-validation,
+  cross-consistency, mask-coverage, and gradient tests are missing locally.
+- Current validation: src/models/graph_salad/pool_dynamic.py:388-421.
+- Tests cover constructor shape errors, outer parent_indices length, anchor
+  overflow, no-candidate, padded assignment zeroing, and Bat smoke:
+  tests/test_pool_dynamic.py:52-218.
+- They do not cover dtype/device/nonfinite/topology/geodesic consistency,
+  parent cardinality vs joint_mask, all-False masks, two-stage pooling, or
+  backward gradients.
+
+2b. Silent failure in _select_anchors CPU side?
+- YES.
+- find_anchors_rulebased validates the parent list as a tree:
+  src/models/graph_salad/graph_utils.py:368-413.
+- But _select_anchors never checks that the parent list length equals valid
+  joints in joint_mask, because joint_mask is not passed in:
+  src/models/graph_salad/pool_dynamic.py:125-156.
+- It also does not assert root=0 and parent-before-child; that is only upstream
+  in GraphMotionBatch:
+  src/models/graph_salad/batch.py:378-394.
+- The concrete padded-anchor probe under MUST-FIX 2 is a silent failure.
+
+2c. _compute_assignment no-candidate raise.
+- PASS.
+- Candidate mask is geodesic <= local_radius, coarse_mask, and joint_mask:
+  src/models/graph_salad/pool_dynamic.py:206-212.
+- Valid rows with no candidates raise ValueError with sample/joint:
+  src/models/graph_salad/pool_dynamic.py:214-229.
+- Test coverage: tests/test_pool_dynamic.py:131-140.
+
+2d. _pool_features temporal stride > T degenerates.
+- PASS for stride > T.
+- T_lat == 0 raises:
+  src/models/graph_salad/pool_dynamic.py:261-269.
+- Additional DEFERRED fail-loud gap: if T is not divisible by temporal_stride,
+  avg_pool1d floors the feature length but frame_mask.view(B, T_lat, s) crashes
+  with an opaque RuntimeError:
+  src/models/graph_salad/pool_dynamic.py:271-278.
+- Add explicit T % temporal_stride == 0 validation or define truncation.
+
+2e. _build_pooled_graph argmax on padded slots.
+- Mostly PASS for padded joints/columns under valid input.
+- P is zeroed for padded joints and padded coarse columns:
+  src/models/graph_salad/pool_dynamic.py:231-238.
+- hard_assignment masks padded joints to 0:
+  src/models/graph_salad/pool_dynamic.py:297-303.
+- build_coarse_adjacency_from_hard_assign ignores padded fine joints and
+  validates valid assignments:
+  src/models/graph_salad/graph_utils.py:202-253.
+- Remaining risk is upstream: a padded joint can become a coarse_mask=True
+  anchor if parent_indices length is wrong. See MUST-FIX 2.
+
+3. Plan section 6 adherence
+
+3a. Section 6.1 forward signature.
+- NEEDS-FIX / contract mismatch.
+- Plan signature includes graph_meta and output pool_meta:
+  outside_docs/graph_salad_implementation_plan.md:326-349.
+- Implementation uses mandatory parent_indices and no pool_meta:
+  src/models/graph_salad/pool_dynamic.py:378-387 and 457-468.
+- This matters for pool x2; see MUST-FIX 3.
+
+3b. Section 6.2 anchor rules.
+- PASS.
+- Implementation calls find_anchors_rulebased:
+  src/models/graph_salad/pool_dynamic.py:142-146.
+- Helper implements root, branch, leaf, and chain chunking:
+  src/models/graph_salad/graph_utils.py:368-457.
+- Plan anchor rules: outside_docs/graph_salad_implementation_plan.md:352-377.
+
+3c. Section 6.3 score formula and deferred same_chain/body_part terms.
+- PASS with DEFERRED note.
+- Implemented terms are Q.K - alpha * geodesic:
+  src/models/graph_salad/pool_dynamic.py:182-204.
+- Plan also lists beta same_chain and gamma same_body_part:
+  outside_docs/graph_salad_implementation_plan.md:383-389.
+- Deferral is acceptable for M1.2 if documented because graph-local radius and
+  geodesic penalty enforce the main locality prior. Add these terms only after
+  visual QA/diagnostics show cross-limb mixing.
+
+3d. Section 6.4 feature pool + temporal.
+- Feature pool PASS:
+  src/models/graph_salad/pool_dynamic.py:255-259 matches
+  outside_docs/graph_salad_implementation_plan.md:407-415.
+- Temporal pool PASS for divisible T:
+  src/models/graph_salad/pool_dynamic.py:261-278 matches
+  outside_docs/graph_salad_implementation_plan.md:417-427.
+- Add explicit odd-T validation as noted in 2d.
+
+3e. Section 6.5 pooled adjacency from hard argmax.
+- PASS.
+- src/models/graph_salad/pool_dynamic.py:283-304 uses
+  build_coarse_adjacency_from_hard_assign.
+- Helper implements crossing-edge coarse adjacency:
+  src/models/graph_salad/graph_utils.py:153-253.
+- Plan: outside_docs/graph_salad_implementation_plan.md:431-452.
+
+3f. Section 6.6 pooled geodesic = Floyd of pooled adjacency.
+- PASS.
+- src/models/graph_salad/pool_dynamic.py:300-304 calls floyd_shortest_path.
+- Floyd helper: src/models/graph_salad/graph_utils.py:91-150.
+- Plan: outside_docs/graph_salad_implementation_plan.md:454-462.
+
+4. pooled_skeleton_embeddings semantics: raw anchor embeddings vs Wk projection
+
+Verdict: RAW gathered skeleton_embeddings are correct. Do not expose Wk(s_anchor)
+as pooled_skeleton_embeddings.
+
+Evidence:
+- Current code gathers raw skeleton_embeddings at anchor positions and masks
+  padded coarse nodes:
+  src/models/graph_salad/pool_dynamic.py:446-450.
+- Plan uses out1["pooled_skeleton_embeddings"] as the skeleton_embeddings input
+  for the next pool:
+  outside_docs/graph_salad_implementation_plan.md:548-556.
+- The decoder interface treats skeleton_embeddings as target static topology
+  embeddings, not private assignment keys:
+  outside_docs/graph_salad_implementation_plan.md:628-640.
+- Existing motion decoder adds raw skeleton_embeddings to unpooled joint
+  features as topology conditioning:
+  src/models/motion_decoder.py:150-174.
+
+Reasoning:
+- Wk is an internal projection used to score assignment logits. Exposing it
+  would leak one module's private key space into downstream modules and then
+  pool2 would project it again with a different k_proj/q_proj.
+- Raw embeddings preserve the semantic/topology representation expected by
+  M1.3 VAE and M2 denoiser.
+- If anchor-only raw embeddings prove too sparse later, the alternative should
+  be mass-normalized raw skeleton pooling, not Wk projection.
+- Minor cleanup: the comment at src/models/graph_salad/pool_dynamic.py:446 says
+  "gather Wk-targets to expose"; rename it to "gather raw anchor skeleton
+  embeddings" to avoid future confusion.
+
+5. R3 surgical scope
+
+Verdict: PASS for implementation scope.
+- git status before writing this review showed only:
+  M src/models/graph_salad/__init__.py
+  ?? src/models/graph_salad/pool_dynamic.py
+  ?? tests/test_pool_dynamic.py
+- That is exactly src/models/graph_salad plus tests.
+- This review adds docs/codex_reviews artifacts by user request; treat them as
+  review artifacts, not implementation scope creep.
+
+6. R2 simplicity
+
+Verdict: PASS.
+- pool_dynamic.py is 468 LoC, not about 430 LoC by wc -l.
+- The extra size over the user-stated 368-LoC slot_assignment.py is justified:
+  this module handles dynamic anchor generation, masked assignment, temporal
+  pooling, pooled graph construction, Floyd geodesic, and MinCut/locality/entropy
+  aux returns.
+- The problem is not over-engineering; it is that the fail-loud validation and
+  multi-level metadata contract are incomplete.
+
+7. pool_deterministic.py unblock
+
+Verdict: NO-GO.
+- Do not copy this contract into pool_deterministic.py yet.
+- Fix the valid-C MinCut bug, the public input validation/padded-anchor trap,
+  and the level-2 pool metadata/signature contract first.
+- After that, deterministic pool can share the same validation and metadata
+  shape, with learnable assignment/MinCut omitted.
+
+Deferred / non-blocking notes
+
+1. same_chain and same_body_part assignment biases are acceptable deferrals.
+They are in the plan as optional positive terms, but the current geodesic
+locality mask is enough for M1.2 unless visual QA shows cross-limb mixing.
+
+2. Entropy should be treated carefully in losses.py. Raw entropy is a useful
+metric, but not a two-sided "not too hard, not too uniform" loss by itself.
+
+3. Add explicit T % temporal_stride validation or define truncation semantics.
+The current code raises only for stride > T and otherwise can crash with an
+opaque view error on odd T.
+
+4. Tests should add at least one backward pass checking finite gradients through
+q_proj/k_proj and pooled_features. Current tests only check finite forward aux
+values.

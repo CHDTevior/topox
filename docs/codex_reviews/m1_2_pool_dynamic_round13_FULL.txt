@@ -1,0 +1,106 @@
+M1.2 pool_dynamic.py Round 13 — codex review FULL
+Model: gpt-5.5
+Reasoning effort: xhigh
+Thread: FRESH (no codex-reply continuation); threadId 019e45ce-9e22-76d1-b5ae-cfa01d36629f
+Date: 2026-05-20
+Repo root: /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+
+Scope read directly from disk:
+  - src/models/graph_salad/pool_dynamic.py (~824 LoC)
+  - tests/test_pool_dynamic.py (~722 LoC, 53 tests)
+  - src/models/graph_salad/graph_utils.py
+  - src/models/graph_salad/batch.py
+  - src/models/graph_salad/denoiser_stub.py
+  - docs/codex_reviews/m1_2_pool_dynamic_round12_FULL.txt
+
+Local verification:
+  - python tests/test_pool_dynamic.py            -> 53 tests OK.
+  - python -m unittest discover -s tests         -> 169 tests OK.
+
+==============================================================================
+Q1 - 20 R12 SEAL TABLE
+==============================================================================
+
+| #  | Status                                       | Evidence                                                                                                                                                                                                                                                                                                                                                                                                              |
+|----|----------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1  | SEALED                                       | Per-sample C_valid used in ortho target: src/models/graph_salad/pool_dynamic.py:355-371; regression tests/test_pool_dynamic.py:383-417.                                                                                                                                                                                                                                                                                |
+| 2  | SEALED                                       | parent_indices[b] length checked against joint_mask.sum: pool_dynamic.py:670-683; test tests/test_pool_dynamic.py:194-200.                                                                                                                                                                                                                                                                                            |
+| 3  | SEALED                                       | full parent-vs-override XOR: pool_dynamic.py:651-669; tests tests/test_pool_dynamic.py:222-235.                                                                                                                                                                                                                                                                                                                       |
+| 4  | SEALED                                       | partial override XOR rejected: pool_dynamic.py:651-657; test tests/test_pool_dynamic.py:500-510.                                                                                                                                                                                                                                                                                                                      |
+| 5  | SEALED                                       | inactive assignment cols zeroed pool_dynamic.py:252-253, pooled features mass-normalized to zero pool_dynamic.py:273-275, pooled skeleton masked pool_dynamic.py:803-806; tests tests/test_pool_dynamic.py:166-192, 275-295.                                                                                                                                                                                          |
+| 6  | SEALED                                       | T % temporal_stride checked before view: pool_dynamic.py:640-646; test tests/test_pool_dynamic.py:633-644.                                                                                                                                                                                                                                                                                                            |
+| 7  | SEALED                                       | all-false joint_mask rejected: pool_dynamic.py:587-595; test tests/test_pool_dynamic.py:556-568.                                                                                                                                                                                                                                                                                                                      |
+| 8  | SEALED                                       | override anchors strictly ascending, hence sorted+unique: pool_dynamic.py:759-768; tests tests/test_pool_dynamic.py:570-588.                                                                                                                                                                                                                                                                                          |
+| 9  | SEALED                                       | zero active coarse slots rejected: pool_dynamic.py:729-734; test tests/test_pool_dynamic.py:623-631.                                                                                                                                                                                                                                                                                                                  |
+| 10 | SEALED                                       | coarse_mask contiguous prefix enforced: pool_dynamic.py:735-747; tests tests/test_pool_dynamic.py:590-609.                                                                                                                                                                                                                                                                                                            |
+| 11 | SEALED                                       | joint_mask contiguous prefix enforced: pool_dynamic.py:596-614; tests tests/test_pool_dynamic.py:523-554.                                                                                                                                                                                                                                                                                                             |
+| 12 | SEALED                                       | first active anchor must be root 0: pool_dynamic.py:769-778; test tests/test_pool_dynamic.py:611-621.                                                                                                                                                                                                                                                                                                                 |
+| 13 | SEALED                                       | joint_features finite guard: pool_dynamic.py:500-505; tests tests/test_pool_dynamic.py:360-365, 427-432.                                                                                                                                                                                                                                                                                                              |
+| 14 | SEALED                                       | skeleton_embeddings finite guard: pool_dynamic.py:506-509; tests tests/test_pool_dynamic.py:367-372, 434-439.                                                                                                                                                                                                                                                                                                         |
+| 15 | SEALED in source, partial regression coverage | adjacency finite/sym/diag/range guards: pool_dynamic.py:510-538; tests cover asym/diag/range at tests/test_pool_dynamic.py:441-498. No direct pool test for adjacency NaN/Inf despite the source guard.                                                                                                                                                                                                              |
+| 16 | SEALED                                       | geodesic NaN/-Inf/negative/symmetry/diag guards: pool_dynamic.py:539-585; tests tests/test_pool_dynamic.py:419-482.                                                                                                                                                                                                                                                                                                   |
+| 17 | SEALED for named dtypes/constructor checks   | strict d_model/max_coarse: pool_dynamic.py:97-105; tensor dtype guard pool_dynamic.py:487-499; module dtype guard pool_dynamic.py:478-485; tests tests/test_pool_dynamic.py:70-88, 247-273, 303-309. Non-finite hparam source guard covers mincut_lambda at pool_dynamic.py:115-123, but test only covers locality_alpha and temperature: tests/test_pool_dynamic.py:297-301.                                          |
+| 18 | NOT-SEALED                                   | Core tensor/module devices are checked: pool_dynamic.py:457-477; tests tests/test_pool_dynamic.py:340-358. But override tensors are validated before device normalization: pool_dynamic.py:693-781, with .item() uses before .to(device) at pool_dynamic.py:719-720, 772-777. Author's defer is NOT defensible for M1.3 because override mode is the documented level-2 path: pool_dynamic.py:419-425.                |
+| 19 | NOT-SEALED                                   | Floyd recompute exists: pool_dynamic.py:621-638; gross mismatch test exists: tests/test_pool_dynamic.py:374-381. But value check uses torch.allclose(..., atol=1e-6, rtol=0.0): pool_dynamic.py:631-634. The "fp32 noise floor" defense is NOT defensible for hop-count Floyd here: graph_utils.floyd_shortest_path initializes exact 0/1/+Inf and min-adds integer hop counts: src/models/graph_salad/graph_utils.py:125-146. A +5e-7 symmetric geodesic perturbation passes. |
+| 20 | SEALED                                       | mincut masks adjacency by joint_mask before numerator and denominator: pool_dynamic.py:339-348; pooled graph also masks valid fine edges in graph_utils.py:238-240; regression tests/test_pool_dynamic.py:311-338.                                                                                                                                                                                                    |
+
+==============================================================================
+Q2 - 21ST R12 HUNT
+==============================================================================
+
+FOUND: parent topology can silently disagree with adjacency/geodesic in the
+direct `parent_indices` path.
+
+Code path:
+  pool_dynamic.py:670-683 only checks parent_indices list length. Then
+  pool_dynamic.py:688-691 selects anchors from parent_indices. Floyd consistency
+  checks only adjacency vs geodesic_dist at pool_dynamic.py:621-638; it never
+  checks parent_indices matches adjacency. find_anchors_rulebased validates
+  that the parent list is a tree at graph_utils.py:406-413, then derives anchors
+  from that tree at graph_utils.py:421-457. Batch-level construction does have
+  the missing consistency guard at batch.py:426-472, but direct
+  DynamicGraphPool.forward bypasses it.
+
+Concrete input:
+  J=6, line adjacency/geodesic, joint_mask=all True, max_coarse=6,
+  local_radius=5, but pass star parents [-1,0,0,0,0,0] instead of line parents
+  [-1,0,1,2,3,4].
+
+Predicted failure:
+  No ValueError. Floyd passes because geodesic matches line adjacency. Anchor
+  selection uses the star and emits [0,1,2,3,4,5] instead of line anchors
+  [0,5]. The model now pools using anchor topology from one graph and
+  distances/adjacency from another, silently corrupting the pool geometry.
+
+Additional hardening gap:
+  Integer constructor hparams are not strict. local_radius,
+  max_chain_chunk_len, temporal_stride are annotated as ints at
+  pool_dynamic.py:88-92, but only value-compared at pool_dynamic.py:106-113.
+  temporal_stride=2.0 reaches _pool_features and fails deep at
+  pool_dynamic.py:279-293; max_chain_chunk_len=float("nan") passes both
+  pool_dynamic.py:108-109 and graph_utils.py:406-407, then disables chunk
+  promotion because consec >= nan is false at graph_utils.py:452.
+
+==============================================================================
+Q3 - GO / NO-GO FOR M1.3 pool_deterministic.py
+==============================================================================
+
+NO-GO.
+
+Must-fix before M1.3:
+  1. Add direct parent_indices <-> adjacency consistency validation, OR
+     explicitly require a GraphMotionBatch-validated path and remove the unsafe
+     direct contract.
+  2. Fix #18 override tensor device handling before any .item() / indexing
+     validation.
+  3. Fix #19 if exact Floyd equality is the stated R12 contract: use exact
+     equality or allclose(..., atol=0, rtol=0), then add a sub-1e-6 mismatch
+     regression.
+  4. Add strict int/non-bool validation for local_radius, max_chain_chunk_len,
+     and temporal_stride.
+  5. Fill the small regression gaps: adjacency NaN/Inf and mincut_lambda
+     non-finite.
+
+==============================================================================
+VERDICT: NEEDS-FIX
+==============================================================================

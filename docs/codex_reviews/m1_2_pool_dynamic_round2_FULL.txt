@@ -1,0 +1,258 @@
+Graph-SALAD M1.2 pool_dynamic.py ROUND 2 review
+
+VERDICT: NEEDS-FIX
+pool_deterministic.py unblock: NO-GO
+
+Files read in full:
+- src/models/graph_salad/pool_dynamic.py
+- tests/test_pool_dynamic.py
+
+Additional implementation references inspected for imported behavior:
+- src/models/graph_salad/graph_utils.py:floyd_shortest_path
+- src/models/graph_salad/graph_utils.py:build_coarse_adjacency_from_hard_assign
+
+Verification run:
+- python tests/test_pool_dynamic.py
+- Result: 15 tests passed in 0.126s.
+
+Summary:
+Round-2 fixes Q1 and Q2 are correct. Q3 is mostly fixed for the complete
+anchor override case, but the XOR contract is not fully clean: partial
+anchor-source arguments can be silently ignored when parent_indices is also
+provided. There is also an override validation hole for inactive anchor slots:
+coarse_mask=False slots are not range/sentinel checked, but later gather paths
+still index them before masking. Separately, _pool_features crashes on legal
+T//stride behavior when T is not divisible by temporal_stride.
+
+Q1. MinCut ortho fix correctness
+
+PASS.
+
+For B=2, C_max=8, sample 0 C_valid=3 and sample 1 C_valid=5, the code uses:
+- src/models/graph_salad/pool_dynamic.py:336-338 masks P by valid joints and
+  valid coarse columns.
+- src/models/graph_salad/pool_dynamic.py:339 computes S^T S per sample.
+- src/models/graph_salad/pool_dynamic.py:340 builds valid_pair from coarse_mask,
+  so only valid coarse row/col pairs are considered.
+- src/models/graph_salad/pool_dynamic.py:342-345 computes the Frobenius norm
+  from valid-pair entries only and zeroes invalid pairs after normalization.
+- src/models/graph_salad/pool_dynamic.py:347-350 computes per-sample
+  C_valid and target I / sqrt(C_valid), masked to valid pairs.
+- src/models/graph_salad/pool_dynamic.py:351-352 squares the valid-pair
+  difference and averages across batch.
+
+I also ran a direct synthetic check with one-hot identity assignments for
+C_valid=3 and C_valid=5 under C_max=8; aux_losses["mincut_ortho"] returned 0.0.
+No off-by-one, mask leakage, or C_max scaling leak found in the ortho term.
+
+Caveat: as in standard MinCut orthogonality, zero loss assumes equal column
+norms after normalization. Orthogonal but highly imbalanced one-hot clusters
+will still produce nonzero loss, which is expected for this regularizer.
+
+Q2. parent_indices length check
+
+PASS.
+
+- src/models/graph_salad/pool_dynamic.py:451-456 first validates the outer
+  parent_indices container is a list of length B.
+- src/models/graph_salad/pool_dynamic.py:458-464 loops over every sample b and
+  checks len(parent_indices[b]) == int(joint_mask[b].sum()).
+- The error names the offending sample and both lengths:
+  "parent_indices[{b}] length ... != joint_mask[{b}].sum() = ...".
+- tests/test_pool_dynamic.py:170-176 covers a mismatch case.
+
+The test is single-sample, but the implementation is explicitly per-sample, not
+first-sample-only.
+
+Q3. Multi-level contract: XOR + validation
+
+NEEDS-FIX.
+
+What is correct:
+- Complete "both provided" case raises at
+  src/models/graph_salad/pool_dynamic.py:439-445.
+- Complete "neither provided" case raises at
+  src/models/graph_salad/pool_dynamic.py:446-450. There is no legacy default
+  single-level fallback; callers must provide one anchor source.
+- Provided anchor_indices shape [B, max_coarse] is validated at
+  src/models/graph_salad/pool_dynamic.py:475-479.
+- dtype torch.long is validated at
+  src/models/graph_salad/pool_dynamic.py:480-483.
+- coarse_mask shape/dtype is validated at
+  src/models/graph_salad/pool_dynamic.py:484-488.
+- Active anchors are validated as joint indices in [0, J), not [0, C_max), at
+  src/models/graph_salad/pool_dynamic.py:490-498.
+- Active anchors are checked against joint_mask at
+  src/models/graph_salad/pool_dynamic.py:499-503.
+
+Blocking gaps:
+1. Partial anchor-source arguments are not rejected cleanly.
+   src/models/graph_salad/pool_dynamic.py:438-450 computes
+   has_anchors = anchor_indices is not None and coarse_mask is not None.
+   If parent_indices is provided together with anchor_indices but coarse_mask is
+   omitted, has_parents=True and has_anchors=False, so the provided
+   anchor_indices is silently ignored and _select_anchors(parent_indices) is
+   used. Same issue for parent_indices plus coarse_mask only. This violates the
+   advertised XOR contract.
+
+2. Inactive anchor slots are not validated.
+   src/models/graph_salad/pool_dynamic.py:490-503 validates only
+   anchor_indices[b][coarse_mask[b]]. However _compute_assignment gathers
+   skeleton embeddings and geodesics for all C slots before applying coarse_mask
+   at src/models/graph_salad/pool_dynamic.py:186-199, and the returned raw
+   pooled skeleton embeddings gather all C slots again at
+   src/models/graph_salad/pool_dynamic.py:526-528. If a caller passes
+   coarse_mask=False with anchor_indices=99, validation passes and the forward
+   fails later with a low-level RuntimeError: "index 99 is out of bounds".
+   If the padded-slot contract is -1, enforce it. Otherwise globally enforce
+   anchor_indices in [-1, J) and clamp both min and max before masked gathers.
+
+3. Override tensors are not moved to joint_features.device.
+   The parent path moves generated anchor_indices/coarse_mask to device at
+   src/models/graph_salad/pool_dynamic.py:470-472. The override path validates
+   but does not normalize device before gather. This will fail on GPU if a caller
+   supplies CPU override tensors while features are CUDA. Either move them after
+   validation or raise a clear device mismatch.
+
+Test coverage:
+- Both anchor sources: tests/test_pool_dynamic.py:198-205.
+- No anchor source: tests/test_pool_dynamic.py:207-211.
+- Active anchor out of range: tests/test_pool_dynamic.py:213-221.
+- Active anchor points to padded joint: tests/test_pool_dynamic.py:223-245.
+- Missing tests: wrong anchor_indices shape, wrong dtype, partial pair
+  anchor_indices-only/coarse_mask-only, inactive-slot bad value, and GPU/device
+  mismatch.
+
+Q4. R12 silent failure scan
+
+Findings:
+
+1. Partial anchor-source inputs can be silently ignored.
+   Lines: src/models/graph_salad/pool_dynamic.py:438-472.
+   Case: parent_indices plus anchor_indices but no coarse_mask. The extra
+   anchor_indices is ignored and rule-based anchors are used. This is silent
+   contract violation and must be fixed now.
+
+2. Inactive anchor slots can bypass validation and crash later at gather.
+   Lines: validation at src/models/graph_salad/pool_dynamic.py:490-503; gathers
+   at src/models/graph_salad/pool_dynamic.py:186-199 and 526-528.
+   Case: anchor_indices=[[0, 2, 99]], coarse_mask=[[True, True, False]].
+   This does not corrupt silently, but it bypasses the intended validation and
+   fails with a lower-level RuntimeError instead of a clear ValueError.
+
+3. Non-finite feature/embedding inputs are not checked locally.
+   Lines: shape-only validation at src/models/graph_salad/pool_dynamic.py:410-427;
+   q/k score path at 183-193; softmax at 231-233; feature pool at 257-259.
+   NaN in skeleton_embeddings can produce NaN assignments and aux losses. NaN in
+   joint_features propagates into pooled_features. If GraphMotionBatch is the
+   only caller this may be an upstream contract, but this module is public and
+   tests do not cover it.
+
+4. adjacency/geodesic_dist semantic validation is local-shape-only.
+   Lines: src/models/graph_salad/pool_dynamic.py:423-427.
+   Padded nonzero adjacency is mostly suppressed by P/joint_mask, but NaN in
+   adjacency can contaminate MinCut einsum at src/models/graph_salad/pool_dynamic.py:325-330
+   because zero times NaN can still produce NaN. Asymmetric adjacency will pass
+   and can produce asymmetric pooled adjacency through graph_utils.py:242-251.
+   geodesic_dist NaN usually becomes a no-candidate error when it controls
+   in_radius at src/models/graph_salad/pool_dynamic.py:206-221, but there is no
+   clear finite/topology validation here.
+
+5. T not divisible by temporal_stride crashes in frame_mask_down.
+   Lines: src/models/graph_salad/pool_dynamic.py:261-278.
+   h_down uses avg_pool1d, which floors to T_lat = T // stride. But
+   frame_mask.view(B, T_lat, s) at line 277 requires exactly T_lat*s elements.
+   For T=5, stride=2, the feature path produces T_lat=2 but frame_mask.view
+   raises RuntimeError. Since the documented output uses T // stride, either
+   slice frame_mask[:, :T_lat*s] before view or raise a clear ValueError when
+   T % stride != 0.
+
+Suspect checks that are handled correctly:
+- Assignment all -inf: valid rows with no candidate raise at
+  src/models/graph_salad/pool_dynamic.py:219-229. Padded rows are zeroed after
+  softmax at 236-237, so they do not emit NaN.
+- Mass normalization: denominator is clamped at
+  src/models/graph_salad/pool_dynamic.py:258-259. Zero-mass active clusters
+  would return zero features, not NaN. With valid distinct anchors and correct
+  geodesic diagonal, every active anchor is its own candidate.
+- pooled_mask vs valid joints: parent path cannot select more anchors than the
+  valid parent list length, and override path requires active anchors to point
+  to valid joints. It does not check uniqueness, so duplicate active anchors are
+  allowed; that is probably a deferred contract decision.
+- padded rows/cols: assignment is zeroed at 236-237, hard padded joints are set
+  to 0 at 297-299, and coarse adjacency rows/cols are zeroed in graph_utils.py:246-251.
+
+Q5. Math sanity
+
+PASS with caveats above.
+
+(a) Bilinear score:
+- q = Wq(skeleton_embeddings) at src/models/graph_salad/pool_dynamic.py:182-183.
+- anchor embeddings gathered at 186-190.
+- score = einsum("bjd,bcd->bjc") / sqrt(D) at 192-193.
+- geodesic[j, anchor[c]] gathered at 197-199 and subtracted at 204.
+Dims/broadcasting are correct. Positive locality_alpha lowers farther anchors,
+which matches the stated sign convention.
+
+(b) Mass-normalized pool:
+- numerator sum_j P[j,c] * x[j] at src/models/graph_salad/pool_dynamic.py:255-257.
+- denominator mass = P.sum(dim=1).clamp(min=1e-8) at 258.
+- division at 259.
+Eps is denominator-only, which is correct.
+
+(c) Argmax pooled adjacency:
+- hard = P.argmax(dim=-1), padded joints set to 0 at
+  src/models/graph_salad/pool_dynamic.py:297-299.
+- build_coarse_adjacency_from_hard_assign is called at 300-302.
+- graph_utils.py:242-244 computes OR-by-sum over fine edges after one-hot hard
+  assignment.
+- graph_utils.py:247 binarizes, 248-249 removes self-loops, and 250-251 masks
+  padded coarse rows/cols.
+The OR semantics are correct. Symmetry is preserved if fine_adjacency is
+symmetric; this module does not enforce symmetry locally.
+
+(d) Floyd recomputation:
+- src/models/graph_salad/pool_dynamic.py:303 calls floyd_shortest_path.
+- graph_utils.py:126-138 initializes distance to 1 for valid edges, inf for
+  non-edges/unreachable pairs, and 0 on valid diagonals.
+- graph_utils.py:141-146 runs standard dense Floyd-Warshall relaxation.
+Unreachable valid coarse pairs remain inf by contract. That is acceptable only
+if downstream attention/loss code explicitly handles inf.
+
+Q6. R3 surgical scope
+
+PASS for implementation/test scope.
+
+Observed status/diff:
+- Tracked diff: src/models/graph_salad/__init__.py only, exporting
+  DynamicGraphPool.
+- Untracked implementation/test files: src/models/graph_salad/pool_dynamic.py
+  and tests/test_pool_dynamic.py.
+- Existing/requested review artifacts live under docs/codex_reviews/.
+
+No implementation drift outside src/models/graph_salad/ and tests/ was found.
+The docs/codex_reviews files are review outputs, not implementation changes.
+
+Q7. pool_deterministic.py unblock decision
+
+NO-GO.
+
+MUST-FIX-NOW before proceeding to pool_deterministic.py:
+1. Enforce the anchor-source contract strictly:
+   - exactly one of parent_indices or the complete pair
+     (anchor_indices, coarse_mask);
+   - reject partial anchor override args even when parent_indices is present.
+2. Validate inactive override slots before any gather:
+   - either require anchor_indices[~coarse_mask] == -1, or require all entries
+     are in [-1, J) and clamp safely before gathers.
+3. Normalize or validate override tensor device so GPU callers fail clearly or
+   work consistently.
+4. Fix temporal_stride non-divisible T handling at frame_mask_down.
+
+DEFERRED but recommended:
+1. Add finite checks or document that GraphMotionBatch is the sole boundary for
+   finite adjacency/geodesic/features.
+2. Add tests for anchor_indices wrong shape, wrong dtype, partial pair,
+   inactive-slot bad value, odd T with stride 2, and if available, CPU override
+   tensors with CUDA features.
+3. Decide whether duplicate active anchors should be forbidden.

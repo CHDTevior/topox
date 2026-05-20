@@ -1,0 +1,59 @@
+M1.2 pool_dynamic.py — Round 5 codex review (fresh thread)
+Model: gpt-5.5, reasoning effort: xhigh
+threadId: 019e4589-dfc6-7d21-8bef-26e90e65e8ca
+Date: 2026-05-20
+
+============================================================
+
+## Verdict
+NEEDS-FIX
+
+## Q1 — 10 R12 categories
+Tests use `unittest.assertRaisesRegex`, not `pytest.raises`; cited lines are the actual negative tests.
+
+1. SEALED — mincut orthogonality: `pool_dynamic.py:332-354`; no negative raises test, only finite aux checks at `test_pool_dynamic.py:88-90` and `395-396`. Precision: code masks valid pairs and uses per-sample `C_valid`, but lacks a numeric regression oracle.
+
+2. SEALED — parent length per topology: `pool_dynamic.py:478-491`; test `test_pool_dynamic.py:170-176`. Precision: exact `len(parent_indices[b]) == joint_mask[b].sum()`.
+
+3. SEALED — full XOR: `pool_dynamic.py:466-477`; tests `test_pool_dynamic.py:198-211`. Precision: catches both “parents plus override pair” and “no source”.
+
+4. SEALED — partial XOR: `pool_dynamic.py:459-465`; test `test_pool_dynamic.py:223-233`. Precision: exactly one of `anchor_indices/coarse_mask` raises before source selection.
+
+5. SEALED — inactive slot range: `pool_dynamic.py:516-529`; test `test_pool_dynamic.py:235-244`. Precision: all anchor slots, including inactive slots, must be in `[-1, J)`.
+
+6. SEALED — odd T padding: `pool_dynamic.py:448-454`; test `test_pool_dynamic.py:311-322`. Precision: any `T % temporal_stride != 0` raises before `view`.
+
+7. SEALED — all-false joint_mask: `pool_dynamic.py:438-446`; test `test_pool_dynamic.py:246-258`. Precision: per-sample nonempty check.
+
+8. SEALED — override ascending + unique: `pool_dynamic.py:556-576`; tests `test_pool_dynamic.py:260-278`. Precision: `diffs <= 0` catches duplicate and unsorted active anchors.
+
+9. SEALED — override zero-active slots: `pool_dynamic.py:537-542`; test `test_pool_dynamic.py:301-309`. Precision: per-sample all-false `coarse_mask` rejected.
+
+10. SEALED — coarse_mask prefix-active: `pool_dynamic.py:543-555`; tests `test_pool_dynamic.py:280-299`. Precision: no hole or padded-region True can pass; second padded-region branch is redundant but harmless.
+
+## Q2 — 11th R12 search
+NEW R12 #11: non-prefix `joint_mask` causes compact/raw index aliasing.
+
+Adversarial input:
+```python
+B,T,J,D = 1,4,6,4
+pool = DynamicGraphPool(d_model=4, max_coarse=4, local_radius=10, max_chain_chunk_len=100)
+joint_mask = [[True, True, True, False, True, True]]
+parent_indices = [[-1, 0, 1, 2, 3]]  # compact 5-joint line
+# raw valid graph is 0-1-2-4-5; slot 3 is a padding hole
+```
+With finite `joint_features [1,4,6,4]`, `skeleton_embeddings [1,6,4]`, adjacency for edges `(0,1),(1,2),(2,4),(4,5)`, and matching finite geodesics, it passes all assertions. I ran it: output was finite and `anchor_indices == [[0, 4, -1, -1]]`.
+
+Why it slips through: `pool_dynamic.py:441` only rejects all-false masks, and `pool_dynamic.py:487` only checks parent length equals `joint_mask.sum()`. `_select_anchors()` returns compact parent-list indices, then `_compute_assignment()` and raw gathers use them as raw tensor indices at `pool_dynamic.py:186` and `601`. Compact leaf index `4` should map to raw joint `5`, but the module anchors raw joint `4`.
+
+Where to add guard: `pool_dynamic.py:441-446`, immediately after all-false check. Require each `joint_mask[b]` to be a contiguous True prefix, or explicitly remap compact parent indices to raw valid indices. Add `test_joint_mask_hole_raises`.
+
+## Q3 — R3 surgical compliance
+Within the two scoped files, round-5 surface is surgical: the new coarse prefix guard is `pool_dynamic.py:543-555`, and the two new tests are `test_pool_dynamic.py:280-299`. I saw no movement in assignment, pooling, mincut, or graph math. Caveat: `git diff` cannot mechanically prove this because these files are currently untracked; workspace status also shows an unrelated modified `src/models/graph_salad/__init__.py` and untracked review docs.
+
+## Q4 — pool_deterministic.py unblock
+NO-GO — deterministic pooling will share the same compact/raw mask assumption, so the dynamic side still has a live index-aliasing R12.
+
+## Fix list
+1. Add a per-sample `joint_mask` contiguous-prefix guard in `forward()` before parent/anchor selection.
+2. Add a negative test with `joint_mask=[[T,T,T,F,T,T]]` and compact `parent_indices=[[-1,0,1,2,3]]`, expecting `ValueError`.

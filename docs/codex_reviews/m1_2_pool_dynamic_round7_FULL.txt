@@ -1,0 +1,61 @@
+M1.2 pool_dynamic.py — Round 7 Codex Review (FULL)
+=====================================================
+
+Reviewer: codex / gpt-5.5 / model_reasoning_effort=xhigh
+Thread: 019e459a-136e-71f0-af5f-cfeababca83f (FRESH — no prior context, no codex-reply continuation)
+Date: 2026-05-20
+Files reviewed:
+  - /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py (651 lines)
+  - /scratch/ts1v23/workspace/noKslot_clean/tests/test_pool_dynamic.py (445 lines, 27 cases)
+
+Round 7 patch under review:
+  - Override path: requires valid_anchors[0] == 0 per sample (root = joint 0).
+  - 1 new test: anchor_indices_missing_root_raises.
+  - 27/27 tests PASS in 0.07s.
+
+Review questions:
+  Q1. All 12 R12 sealed? (concrete file:line for each)
+  Q2. 13th R12 lurking? (convergence after 6 NEEDS-FIX rounds?)
+  Q3. pool_deterministic.py unblock — GO / NO-GO?
+
+=====================================================
+RAW CODEX OUTPUT
+=====================================================
+
+**Q1**
+
+`python tests/test_pool_dynamic.py` passes 27/27, but the 12 listed R12 are **not all sealed**.
+
+| R12 | Code trace | Test trace | Status |
+|---|---:|---:|---|
+| 1. anchor count overflow | `pool_dynamic.py:148` | `test_pool_dynamic.py:128` | sealed |
+| 2. K_total / C_max shape mismatch | `pool_dynamic.py:521`, `pool_dynamic.py:530` | missing negative test | partial |
+| 3. slot/model dim mismatch | `pool_dynamic.py:410`, `pool_dynamic.py:418` | `test_pool_dynamic.py:396` only covers `joint_features` | partial |
+| 4. empty graph `V=0` | `pool_dynamic.py:416`; all-false mask at `pool_dynamic.py:441` | missing `J=0` test; all-false test at `test_pool_dynamic.py:290` | partial |
+| 5. NaN/Inf in features | **missing** finite guard before `pool_dynamic.py:611` | missing | unsealed |
+| 6. adjacency not symmetric | **missing**; only shape checked at `pool_dynamic.py:423` | missing | unsealed |
+| 7. adjacency self-loop policy | **missing** input rejection; output diag-only smoke at `test_pool_dynamic.py:102` | missing rejection test | unsealed |
+| 8. undefined distance / no reachable anchor | `pool_dynamic.py:224` | `test_pool_dynamic.py:139` | sealed |
+| 9. joint coverage < 100% | `pool_dynamic.py:221` / `pool_dynamic.py:224` | `test_pool_dynamic.py:139` | sealed |
+| 10. slot assignment ties | **missing**; hard `argmax` tie path at `pool_dynamic.py:297` | missing | unsealed |
+| 11. override invalid anchors | range `pool_dynamic.py:540`; duplicate/unsorted `pool_dynamic.py:589`; padded joint `pool_dynamic.py:581` | `test_pool_dynamic.py:219`, `:299`, `:309`, `:389` | sealed |
+| 12. override missing root | `pool_dynamic.py:599` / `pool_dynamic.py:600` | `test_pool_dynamic.py:342` | sealed |
+
+**Q2**
+
+Convergence: **NO**.
+
+Concrete remaining silent paths:
+- `joint_features[0,0,0,0]=NaN` reaches pooling and returns non-finite `pooled_features`; no raise.
+- `skeleton_embeddings[0,0,0]=NaN` returns non-finite assignment/losses; no raise.
+- asymmetric adjacency and non-zero diagonal adjacency both return successfully; no raise.
+- tie repro: `locality_alpha=0`, zero `skeleton_embeddings`, anchors `[0,2,5]` gives uniform assignment `[1/3,1/3,1/3]`; `pool_dynamic.py:297` silently chooses slot 0 by `argmax`.
+- extra candidate R12: invalid `geodesic_dist` NaN/-Inf is accepted. `pool_dynamic.py:203` / `:361` substitute all `isinf`, including `-Inf`, and NaN can be masked at `pool_dynamic.py:232` without raising.
+
+No `try/except: pass` or `warnings.warn` found. The problematic fallback is missing semantic validation plus `isinf` substitution on geodesics.
+
+**Q3**
+
+**NO-GO**. `pool_deterministic.py` would inherit unresolved finite-input, graph-topology, geodesic, and tie-policy contract gaps from `pool_dynamic.py`.
+
+VERDICT: `--NEEDS-FIX (#5 finite features, #6 adjacency symmetry, #7 self-loop rejection, #10 tie handling, geodesic NaN/-Inf validation, plus missing negative tests for #2/#3/#4)`

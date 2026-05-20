@@ -1,0 +1,63 @@
+=== M1.2 POOL_DYNAMIC ROUND 3 CODEX REVIEW (FRESH THREAD) ===
+
+Model: gpt-5.5
+Reasoning effort: xhigh
+Thread ID: 019e457c-49bb-72d1-ad2d-894f4af2615b
+Fresh thread: YES (no continuation, no threadId at request)
+Date: 2026-05-20
+
+Files reviewed:
+  /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_dynamic.py  (~560 LoC)
+  /scratch/ts1v23/workspace/noKslot_clean/tests/test_pool_dynamic.py             (~390 LoC, 18 cases)
+
+Round-3 fixes under review (round 2 surfaced 3 MUST-FIX R12 holes):
+  4. Partial XOR — `(anchor is not None) + (coarse is not None) == 1` raises.
+  5. Inactive slot range — `(anchor < -1).any() or (anchor >= J).any()` raises with offending position.
+  6. Odd T — `if T % temporal_stride != 0: raise ValueError(...)` early in forward.
+  + device normalization (`anchor_indices.to(device)`, `coarse_mask.to(device)`).
+  + 3 new tests (partial_anchor_args / inactive_slot_anchor_value / odd_temporal_stride).
+  Test count: 18 cases, all PASS in 0.06s.
+
+------------------------------------------------------------
+=== FULL CODEX RESPONSE ===
+------------------------------------------------------------
+
+=== M1.2 POOL_DYNAMIC ROUND 3 REVIEW ===
+
+VERDICT: NEEDS-FIX
+
+(1) R12 budget check (6 categories from r1+r2):
+  - mincut ortho per-sample: sealed. `src/models/graph_salad/pool_dynamic.py:336-352` masks valid coarse pairs, computes `C_valid` per batch item at `:347`, and scales target identity by `1/sqrt(C_valid_b)` at `:349-350`.
+  - parent length mismatch: sealed. `pool_dynamic.py:468-481` requires `parent_indices` length `B`, then checks each `len(parent_indices[b]) == joint_mask[b].sum()`.
+  - multi-level XOR (full): sealed. `pool_dynamic.py:449-461` sets `has_parents`/`has_anchors`; both present raises `"pass either parent_indices OR ..."`.
+  - partial XOR (one of two): sealed. `pool_dynamic.py:449-455` counts `anchor_indices` + `coarse_mask`; exactly one raises immediately.
+  - inactive slot anchor range: sealed in code. `pool_dynamic.py:511-519` validates all entries are in `[-1, J)`, including masked-out slots; `:520-534` then rejects active `-1` and anchors into padded joints.
+  - odd T % stride: sealed. `pool_dynamic.py:438-444` raises before `_pool_features` if `T % temporal_stride != 0`.
+
+  CONCLUSION: all 6 sealed YES. Tests also pass: `python tests/test_pool_dynamic.py` ran 18/18 OK. Minor test-note: the code covers `< -1`, but the current inactive-slot test at `tests/test_pool_dynamic.py:235-244` only exercises `>= J`.
+
+(2) 7th R12 lurking? CONCRETE answer:
+  - YES. Override-anchor invariants are still not fail-loud. The module doc promises sorted anchor order preserving root/parent ordering at `pool_dynamic.py:25-28`, and rule-based anchors are unique/sorted via `graph_utils.py:421` + `:457`. But the override path only validates range/padded-joint validity at `pool_dynamic.py:520-534`; it accepts duplicate or unsorted active anchors silently. Concrete probe `anchor_indices=[[0,0,2,3]], coarse_mask=all True` returns successfully, creating duplicate active coarse slots and breaking the stated anchored ordering contract.
+  - Also found a semantic-empty sample hole: `pool_dynamic.py:416-417` checks `J > 0` but not `joint_mask.any()` per sample. With `joint_mask` all-False and `parent_indices=[[]]`, `:474-481` accepts length 0, `_select_anchors` returns all inactive, `:219-221` does not raise because there are no valid joints, and mass/loss clamps return finite zero outputs. This should fail loud.
+
+(3) Math correctness: PASS for implemented math, with scope caveat.
+  - Feature pooling is soft `S^T X` with mass normalization: `pool_dynamic.py:257-259`.
+  - Pooled adjacency is not literal DiffPool `S^T A S`; it intentionally uses hard argmax then binary coarse adjacency at `pool_dynamic.py:297-303` and `graph_utils.py:242-247`.
+  - MinCut cut + per-sample ortho are coherent: `pool_dynamic.py:323-354`.
+  - DMoN / TopK are not present in this file; there is no method-string dispatch to validate or silently default.
+
+(4) R3 surgical: FAIL.
+  - Allowed roots have changes: `src/models/graph_salad/__init__.py`, untracked `src/models/graph_salad/pool_dynamic.py`, untracked `tests/test_pool_dynamic.py`.
+  - Drift outside allowed roots exists: untracked `docs/codex_reviews/m1_2_pool_dynamic*_*.{md,txt}`.
+
+(5) pool_deterministic unblock: NO-GO
+  Reason: the six named R12s are sealed, but override-anchor invariant validation and semantic-empty sample rejection are still fail-loud holes in the shared pooling contract.
+
+FIX LIST:
+  1. `src/models/graph_salad/pool_dynamic.py:520-534` — for active override anchors, require nonempty, strictly ascending unique indices, and root/ordering invariant if downstream TreeIK requires root-first. Add duplicate, unsorted, and root-missing tests.
+  2. `src/models/graph_salad/pool_dynamic.py:428-437` — after `joint_mask` validation, reject any batch item with zero valid joints. Add an all-False `joint_mask` test.
+  3. Clean or intentionally exclude untracked `docs/codex_reviews/*` before claiming R3 surgical PASS.
+
+------------------------------------------------------------
+=== END FULL CODEX RESPONSE ===
+------------------------------------------------------------

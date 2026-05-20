@@ -1,0 +1,49 @@
+M1.2 pool_dynamic.py — Round 16 Codex Review (FULL trace)
+
+Model: gpt-5.5, model_reasoning_effort=xhigh, FRESH thread (no codex-reply continuation)
+Thread: 019e45f4-a00d-7ac2-89b8-7dee4c9f8fcf
+Date: 2026-05-20
+Reviewer mandate: iterate to PASS, no round cap; declare CONVERGENCE if no concrete runnable R12 remains.
+
+================================================================================
+BRIEF
+================================================================================
+Q1 PASS. Round-16 seal is correct: override path rejects any
+`anchor_indices[~coarse_mask] != -1` at `pool_dynamic.py:745-757`; the R15
+repro now raises, and `test_padded_anchor_not_minus_one_raises` passes.
+Full suite: 59/59 PASS via `python tests/test_pool_dynamic.py`.
+
+Q2 CONVERGENCE. I found no concrete runnable 24th R12 in override,
+padded-anchor, scatter/gather, pooled graph, or return post-condition paths.
+No speculative concern met the required input -> exact line -> observed silent
+failure bar.
+
+Q3 GO. `pool_dynamic.py` is solid enough to start `pool_deterministic.py`.
+
+================================================================================
+FULL TRACE
+================================================================================
+- Read `pool_dynamic.py`, `tests/test_pool_dynamic.py`, and R15 brief.
+- Confirmed R15 issue: padded override anchor could previously return non-`-1`.
+- Current guard at `pool_dynamic.py:745-757` checks padded slots before range/gather.
+- Repro: `anchor_indices=[[0,2,5,0]]`, `coarse_mask=[[T,T,T,F]]`.
+- Observed: `ValueError: anchor_indices[coarse_mask=False] must be -1 sentinel`.
+- Targeted test passes.
+- Full unittest suite passes: 59 tests OK.
+- `pytest` unavailable; used repository's `unittest` entrypoint.
+
+================================================================================
+CONVERGENCE NOTES
+================================================================================
+- 23 R12 categories sealed over 15 rounds + Round 16 seal of the 23rd (padded
+  anchor must be -1 sentinel).
+- Codex spot-checked override path, padded-anchor logic, scatter, and
+  post-condition asserts. No concrete runnable 24th R12 surfaced.
+- Per user mandate, speculative concerns do not count; honest verdict =
+  CONVERGENCE.
+
+================================================================================
+NEXT STEP — UNBLOCK
+================================================================================
+pool_deterministic.py: GO. Start implementation under the same Fail-Loud +
+Karpathy 4 + Mnimiy R7/R8/R12 (+ R9/R10 retold) discipline.
