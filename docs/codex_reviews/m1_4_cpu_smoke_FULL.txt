@@ -1,0 +1,109 @@
+M1.4 CPU SMOKE REVIEW — graph_salad VAE end-to-end on mixed-J batch
+Reviewer: Codex MCP, gpt-5.5, xhigh reasoning effort, FRESH thread
+Thread ID: 019e46ec-8918-7c63-a307-3674ab4548e9
+Date: 2026-05-20
+
+==================================================================
+VERDICT: PASS
+==================================================================
+
+1. Acceptance Gate #2
+
+Satisfied for the executed smoke. `_check_z_shape` enforces rank-4, `B`, `T // 4`,
+final dim `D`, `C <= expected_C_upper`, and explicitly rejects `C == 7` in
+[scripts/self_test_graph_vae.py](/scratch/ts1v23/workspace/noKslot_clean/scripts/self_test_graph_vae.py:123).
+The VAE also uses `nn.Linear(d_model, 2*d_model)`, not a hard-coded `7` latent head,
+in [vae.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/vae.py:171).
+
+The `none` result `z=(2,4,54,64)` is semantically correct: no-pool keeps skeletal
+`J` unchanged, sets `coarse_mask=batch.joint_mask`, and only temporal-pools in
+[vae.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/vae.py:271).
+Actual Bat/Crab skeletons are `J=48/54`, so `C=J_max=54`.
+
+Gap: the harness does not explicitly assert `C == J_max` for `pool_type="none"`
+or `C == max_coarse` for pooled variants. It would reject the historical `C=7`,
+but a wrong non-7 `C` could pass.
+
+
+2. Acceptance Gate #3
+
+Mostly satisfied. `_check_padded_excluded` checks `pred_pos` and `pred_vel`
+padded joint rows and padded frames in
+[scripts/self_test_graph_vae.py](/scratch/ts1v23/workspace/noKslot_clean/scripts/self_test_graph_vae.py:132).
+For this batch, only Bat has padded joints: `48:54`; both samples have `T=16`,
+so there are no padded frames to exercise.
+
+The model also reapplies masks to decoded `pos/vel` in
+[vae.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/vae.py:386),
+and masks latent `z` by `coarse_mask` and `frame_mask_lat` in
+[vae.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/vae.py:306).
+Loss exclusion is real in code: pos/vel losses multiply by joint/frame masks in
+[losses.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/losses.py:60),
+KL masks coarse/frame positions in
+[losses.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/losses.py:162),
+and bone loss iterates valid parents/frames only in
+[losses.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/losses.py:207).
+
+Grad-flow guard is acceptable for smoke: `backward()`, at least one non-zero
+grad, and no non-finite grad in
+[scripts/self_test_graph_vae.py](/scratch/ts1v23/workspace/noKslot_clean/scripts/self_test_graph_vae.py:207).
+
+The `1e-5` padding threshold is too loose for a fail-loud gate. I probed it: a
+`9e-6` padded leak passes, `1.1e-5` fails. Since the model zeroes by mask
+multiplication, exact zero or `<=1e-7` is more appropriate.
+
+
+3. R12 / Failure-Loud Gaps
+
+The smoke catches crash-class failures across dynamic/deterministic/none, but
+it is thin as an R12 harness.
+
+It does not directly assert deterministic anchor invariants. The deterministic
+pool has root/sorted/prefix checks in override mode and parent/adjacency checks
+in [pool_deterministic.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/pool_deterministic.py:399),
+and rule anchors come from
+[graph_utils.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/graph_utils.py:368).
+But `GraphMotionVAE.encode()` does not expose `anchor_indices`, so the smoke
+cannot verify root-first, sorted unique anchors, active counts, or prefix
+`coarse_mask`.
+
+Dynamic pad-leak is only partially covered. The batch uses random padded
+motion/skeleton rows, which helps, but the smoke does not poison padded rows
+with large sentinels and compare valid outputs/loss under fixed seed. So a
+finite but wrong valid-output dependency on padded rows could pass.
+
+No-pool aux behavior is not asserted. The `none` branch correctly returns zero
+aux losses in [vae.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/vae.py:291),
+and `forward()` wraps them as `pool_aux_outputs` in
+[vae.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/vae.py:407).
+But the smoke would not fail if this path returned an empty aux list.
+
+`gt_pos = motion_features[..., :3]` is correct: `UnifiedMotionDataset` defines
+`motion_features = [local_pos(3), velocity(3)]` in
+[unified_dataset.py](/scratch/ts1v23/workspace/noKslot_clean/src/data/unified_dataset.py:4)
+and concatenates that layout in
+[unified_dataset.py](/scratch/ts1v23/workspace/noKslot_clean/src/data/unified_dataset.py:133).
+
+Random `motion_features`, `skeleton_features`, root, and rotations are fine for
+wiring smoke, but this is not a real motion reconstruction test. It validates
+tensor plumbing, masks, finite loss, and gradients, not data-scale behavior or
+meaningful reconstruction.
+
+
+4. M1.5 GO / NO-GO
+
+GO with caveats. This CPU smoke is sufficient to spend GPU time on M1.5,
+because it exercises all three variants end-to-end on mixed real skeleton
+topology and fwd/bwd/loss/grad are finite. I reran
+`python scripts/self_test_graph_vae.py`; it passed.
+
+Must address in M1.5 setup: add exact variant-specific shape asserts, a real
+`UnifiedMotionDataset` Bat/Crab minibatch dry-run, fp32/loss dtype asserts,
+gradient max bound, and wandb/log key sanity for all three variants. Also log
+pool diagnostics from `PLAN_GAP_REPORT.md`: active coarse count, mass ratio,
+assignment entropy, and per-topology recon.
+
+Residual risks GPU training will surface: real motion scale, stochastic VAE
+stability, dynamic pool collapse, per-species failures, Dragon/large-J memory,
+and whether the random-data smoke hid padded-row dependence. Visual QA remains
+mandatory before claiming recon success.
