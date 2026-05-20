@@ -1,0 +1,38 @@
+Codex Review — M1.1 GraphMotionBatch + GraphSaladDenoiserStub (Round 5)
+========================================================================
+Model: gpt-5.5
+Reasoning effort: xhigh
+Thread ID: 019e437d-259e-7491-bc71-b27fadb23658
+Protocol: FRESH thread (no threadId continuation, no round 1-4 brief loading)
+Date: 2026-05-20
+
+## VERDICT
+NEEDS-FIX
+
+## R12 silent-failure categories
+- (a) Schema drift on tensors: SEALED — `batch.py:172-205`, square checks at `batch.py:211-218`.
+- (b) Cross-tensor T/J consistency: SEALED — `batch.py:245-267`.
+- (c) Scalar value out-of-range + mask consistency: SEALED for range/sum — `batch.py:273-311`; LEAK for mask contiguity because `joint_mask.sum()` / `frame_mask.sum()` can match while valid entries are non-prefix holes, `batch.py:279-294`.
+- (d) NaN/Inf in tensors AND scalars: SEALED for float tensors + `fps` — `batch.py:205-209`, `batch.py:303-311`.
+- (e) bool-as-int in lists: SEALED — `batch.py:357-365`.
+- (f) per-sample list cardinality + parent tree validity: SEALED — cardinality at `batch.py:351-356`, `_validate_parent_tree` call at `batch.py:374-382`, tree validator at `graph_utils.py:31-84`.
+- 7th category: graph semantics are still silent. `adjacency` / `geodesic_dist` are only checked for square/finite shape at `batch.py:211-218`; they are never checked against `parent_indices`, `joint_mask`, symmetry, binary values, zero diagonal, or padded rows/cols. The producer also allows zero graph tensors when skeleton graph fields are missing at `unified_dataset.py:201-214` while still emitting non-empty `parent_indices` at `unified_dataset.py:269-273`. The synthetic happy-path test literally passes zero adjacency with a valid tree: `tests/test_scaffolding.py:48`, `tests/test_scaffolding.py:64`, `tests/test_scaffolding.py:77-80`.
+
+## R2 over-engineering
+- none. The validation branches are load-bearing. I would only update stale validation-order comments/docstring around `batch.py:128-134`; I would not collapse the guards.
+
+## M1.2 unblock
+NO-GO — M1.2 can receive `parent_indices[b]` as a valid tree while `adjacency[b]` / `geodesic_dist[b]` describe a different graph or no graph at all.
+
+## Fix list
+1. `batch.py:211-218` plus after `batch.py:374-382`: validate graph semantics per sample. Build expected undirected adjacency from `parent_indices[b]`, compare to `adjacency[b, :nj, :nj]`, require binary/symmetric/zero diagonal, and require padded rows/cols zero under `joint_mask`.
+2. `batch.py:279-294`: strengthen mask checks from sum-only to prefix-contiguous masks: `joint_mask[b, :num_joints[b]].all()` and `~joint_mask[b, num_joints[b]:].all()`, same for `frame_mask` / `num_frames`.
+3. `batch.py:211-218`: either validate `geodesic_dist` against `adjacency` or recompute it from adjacency. Current finite-only validation can silently accept all-zero distances for disconnected/non-edge pairs.
+4. `graph_utils.py:31`, `batch.py:26`: make `_validate_parent_tree` public as `validate_parent_tree` if it is meant for cross-module reuse; keep `_validate_parent_tree = validate_parent_tree` as a compatibility alias if needed.
+
+## Brief summary
+- The six advertised R12 hardening rounds mostly landed; the cardinality and parent-tree path is real, not a no-op.
+- Validation order is dependency-safe: cardinality uses `num_joints.tolist()` only after scalar dtype/shape and value/mask checks. It is not exactly the order described in the prompt/docstring because batched scalars are checked before cross-tensor T/J.
+- Tests all pass: `Ran 39 tests ... OK`. No Round-5 tree tests look preempted by cardinality now.
+- The main test gap is graph semantics: no test mutates `adjacency` / `geodesic_dist` away from `parent_indices`, and the synthetic success fixture currently normalizes zero adjacency as acceptable.
+- Denoiser stub has no M1 blocker, but it is signature-only, not a real forward-shape validator; bad init values like negative `d_model`/`n_heads` are accepted because no modules are allocated.

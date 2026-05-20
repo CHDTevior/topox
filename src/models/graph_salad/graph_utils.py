@@ -28,7 +28,7 @@ import torch
 _FLOYD_INF = float("inf")
 
 
-def _validate_parent_tree(parent_indices: list[int]) -> None:
+def validate_parent_tree(parent_indices: list[int]) -> None:
     """Validate that parent_indices forms a single-rooted, acyclic, connected tree.
 
     Looser than ``assert_root_first_parent_order``: does NOT require root=0
@@ -82,6 +82,10 @@ def _validate_parent_tree(parent_indices: list[int]) -> None:
         raise ValueError(
             f"_validate_parent_tree: disconnected — joints {unreached} unreachable from root {root}"
         )
+
+
+# Back-compat alias: kept until M1.x cleanup pass renames all call sites.
+_validate_parent_tree = validate_parent_tree
 
 
 def floyd_shortest_path(

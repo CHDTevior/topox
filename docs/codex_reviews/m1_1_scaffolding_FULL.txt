@@ -1,0 +1,150 @@
+================================================================================
+Codex review: M1.1 scaffolding (GraphMotionBatch + GraphSaladDenoiserStub)
+Model: gpt-5.5 | reasoning effort: xhigh
+Thread: 019e4357-1996-7fb3-aacd-13712dfca05f
+Date: 2026-05-20
+================================================================================
+
+Files reviewed:
+- /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/batch.py
+- /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/denoiser_stub.py
+- /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/__init__.py
+- /scratch/ts1v23/workspace/noKslot_clean/tests/test_scaffolding.py
+
+Context consulted:
+- src/data/unified_dataset.py (__getitem__ output + collate_fn)
+- docs/PLAN_GAP_REPORT.md (§1.2 Q-C, §3.5, §3.6, §6 gate #6)
+- outside_docs/graph_salad_implementation_plan.md (§10, §11)
+
+================================================================================
+FINDINGS
+================================================================================
+
+Q1. GraphMotionBatch Schema Completeness — OBSERVATION
+
+All UnifiedMotionDataset.__getitem__ keys from unified_dataset.py:301 are
+represented in GraphMotionBatch.
+
+| dataset key                                                                   | collate output       | dataclass field    |
+|-------------------------------------------------------------------------------|---------------------:|--------------------|
+| motion_features, skeleton_features, joint_mask, frame_mask, adjacency,        | stacked tensors      | batch.py:75-88     |
+| geodesic_dist, name_hashes, root_position, root_velocity, local_rotations_6d, |                      |                    |
+| foot_contact, bone_lengths, rest_offsets                                      |                      |                    |
+| parent_indices, joint_names, canonical_names, bone_lengths_rest               | list[...] per sample | batch.py:96-100    |
+| text, skeleton_id, motion_id                                                  | list[str]            | batch.py:102-105   |
+| num_joints, num_frames, fps, has_rotations                                    | tensors from         | batch.py:90-94     |
+|                                                                               | torch.tensor([...])  |                    |
+
+No missing collate field. No dead dataclass field. Type annotations are too
+loose for batched scalars: current collate emits tensors for num_joints,
+num_frames, fps, and has_rotations via unified_dataset.py:359-360, but
+dataclass allows lists.
+
+Q2. No-Copy Contract — PASS
+
+Constructor passes direct references only: every field is assigned as d["..."]
+at batch.py:156-180. No torch.as_tensor, .clone(), .detach(), or .to().
+
+The mutation test at test_scaffolding.py:68-74 proves the contract for
+motion_features. It does not automatically cover every tensor/list field, but
+the constructor is visually direct for all fields, so this is adequate as a
+smoke guard.
+
+Q3. Schema Validation Rigor — NEEDS-FIX
+
+PASS:
+- Missing tensor keys: batch.py:115-122.
+- Missing list/string keys: batch.py:123-130.
+- Missing batched scalar keys: batch.py:131-139.
+- Wrong type for tensor/list groups: batch.py:118-129.
+- Tensor batch-dim mismatch: batch.py:141-148.
+- List length mismatch for list/string groups: batch.py:149-154.
+
+FAIL:
+- Batched scalar wrong type is silently accepted. After presence check, there
+  is no Tensor | list validation for num_joints, num_frames, fps,
+  has_rotations at batch.py:131-135.
+- Batched scalar length / batch dim is not checked.
+- Dtypes are not checked: joint_mask/frame_mask could be float, name_hashes
+  could be float, has_rotations could be int/string-list.
+- Non-batch shapes are not checked. This matters for M1.2: pool/VAE will
+  assume motion_features [B,T,J,6], skeleton_features [B,J,9], masks [B,J] /
+  [B,T], graph tensors [B,J,J], and root/rest shapes.
+- Extra keys are silently ignored. That may be acceptable, but it does not
+  fully match the docstring claim that schema drift is caught at construction
+  (batch.py:6-7).
+
+Q4. has_rotations Special-Casing — NEEDS-FIX
+
+has_rotations should be forced to torch.Tensor for this collate contract.
+
+UnifiedMotionDataset returns Python bool at unified_dataset.py:316. Because
+isinstance(True, int) == True, collate takes the scalar branch at
+unified_dataset.py:359-360. In current PyTorch, torch.tensor([True, False])
+is torch.bool, not a list.
+
+So the comment at batch.py:55-57 is misleading. The synthetic test using
+torch.tensor([True, True]) at test_scaffolding.py:42-43 is correct; I would
+add an assertion that dtype is torch.bool.
+
+Q5. Denoiser Stub Signature Match — PASS
+
+Arg names and order match the locked gate: denoiser_stub.py:65-75 matches
+PLAN_GAP_REPORT.md:167-169 and gate #6 at PLAN_GAP_REPORT.md:201.
+level2_meta defaults to None, so M1 callers can omit it.
+
+Shape docs match plan §10.1 / §11: z_t [B,T_lat,C_max,d_model], graph tensors
+[B,C_max,C_max], coarse_mask [B,C_max], frame_mask [B,T_lat] at
+denoiser_stub.py:78-91 and graph_salad_implementation_plan.md:671-750.
+
+text: list[str] | torch.Tensor is wider than §11's actual call path, which
+uses batch.text (graph_salad_implementation_plan.md:743-747). I'd treat
+tensor text as plausible pre-encoded Phase-2 support, not blocking.
+
+Q6. Stub No-Params Guarantee — PASS
+
+Current stub allocates only Python attrs at denoiser_stub.py:56-63. No
+submodule, parameter, or buffer. The test checks both parameters() and
+state_dict() at test_scaffolding.py:139-145.
+
+Future violation would be caught only if tests run; there is no class-level
+assertion or pre-commit guard visible. That is acceptable for now, but CI
+must keep this test.
+
+Q7. Karpathy Invariants — NEEDS-FIX
+
+- R2: OBSERVATION. The dataclass is not meaningfully over-engineered; most
+  fields are direct collate fields. The Tensor | list scalar relaxation is
+  unnecessary.
+- R3: PASS. Git diff shows only batch.py, denoiser_stub.py,
+  tests/test_scaffolding.py, and additive exports in __init__.py. Existing
+  exports are preserved at __init__.py:10-32.
+- R8: OBSERVATION. The schema is complete, including text, but has_rotations
+  collate behavior is misunderstood in the comment.
+- R12: NEEDS-FIX. from_collate_dict never returns partially populated known
+  fields, but it silently accepts invalid batched scalars, wrong dtypes, and
+  wrong non-batch shapes.
+
+Verification: python tests/test_scaffolding.py passes all 11 tests.
+python -m unittest tests.test_scaffolding -v fails because tests is not an
+importable package; the file's documented command is the working one.
+
+================================================================================
+OVERALL VERDICT: NEEDS-FIX
+M1.2 unblock status: NO-GO
+================================================================================
+
+Minimal blocking fixes:
+1. Force num_joints, num_frames, fps, has_rotations to tensors from this
+   collate contract; validate shape == [B].
+2. Fix the has_rotations comment and annotation to torch.Tensor; assert dtype
+   torch.bool.
+3. Add dtype checks for masks, hashes, batched scalars, and core float
+   tensors.
+4. Add rank/cross-shape checks for the M1.2-critical contract: T, J, graph
+   square shape, mask shapes, root/rest/contact/rotation feature dims.
+
+Advisory:
+- Add identity assertions for all tensor fields in test_no_tensor_copy.
+- Consider whether extra keys should raise or remain ignored; current
+  behavior is permissive despite the "schema drift caught" docstring.

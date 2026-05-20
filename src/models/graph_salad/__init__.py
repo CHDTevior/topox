@@ -7,6 +7,8 @@ dynamic learned / deterministic-anchor / no-pool) + Phase 2 denoiser interface s
 See docs/PLAN_GAP_REPORT.md for design decisions and acceptance gates.
 """
 
+from .batch import GraphMotionBatch
+from .denoiser_stub import GraphSaladDenoiserStub
 from .graph_utils import (
     floyd_shortest_path,
     build_coarse_adjacency_from_hard_assign,
@@ -17,6 +19,10 @@ from .graph_utils import (
 )
 
 __all__ = [
+    # M1.1 scaffolding
+    "GraphMotionBatch",
+    "GraphSaladDenoiserStub",
+    # M1.0 graph utilities
     "floyd_shortest_path",
     "build_coarse_adjacency_from_hard_assign",
     "find_anchors_rulebased",

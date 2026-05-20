@@ -1,0 +1,86 @@
+Codex MCP review — M1.1 GraphMotionBatch + GraphSaladDenoiserStub round 6
+Model: gpt-5.5
+Reasoning effort: xhigh
+Thread: 019e4385-faea-7cb2-9b8c-7c91b9db6218 (FRESH — no threadId continuation)
+Date: 2026-05-20
+Cwd: /scratch/ts1v23/workspace/noKslot_clean
+
+================================================================================
+PROMPT SUMMARY
+================================================================================
+Round 6 review of M1.1 scaffolding after R5 NEEDS-FIX fixes:
+1. validate_parent_tree promoted to public API (graph_utils.py)
+2. Mask prefix-contiguity check (batch.py:316-345)
+3. Graph-semantics check vs parent_indices (batch.py:347-395)
+   - binary, symmetric, zero-diag, matches parent edges, padded zero
+4. 7 new regression tests (3 mask + 5 adj-semantics)
+5. Deliberately deferred geodesic_dist vs adjacency cross-check (tautology
+   against upstream skeleton_graph.py BFS + O(B*J^3) cost)
+
+Total: 46 tests, all PASS in 8.6s incl. real-dataset roundtrip.
+
+Order-of-validation NOTE: padded-True branch of mask check mathematically
+unreachable in isolation given prior checks; kept as defense-in-depth.
+
+Questions: Q1 8th R12 category? Q2 convergent vs open? Q3 geodesic defer?
+Q4 padded-True defense? Q5 surgical scope? Q6 M1.2 GO/NO-GO? Q7 denoiser?
+
+================================================================================
+CODEX RESPONSE (verbatim)
+================================================================================
+**Verdict**: NEEDS-FIX
+
+**Q1 8th Category Audit**: found one new R12 category: parent ordering / FK topology invariant.
+
+[batch.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/batch.py:374) validates `parent_indices` with `validate_parent_tree`, but [graph_utils.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/graph_utils.py:34) explicitly allows root not at 0 and parent-after-child order. Concrete accepted failure: `parent_indices=[2, 2, -1]` with matching adjacency passes `GraphMotionBatch.from_collate_dict`. Downstream FK code requires root `[0]` and parent-before-child order at [treeik_decoder.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/treeik_decoder.py:66). Minimal fix: import/call `assert_root_first_parent_order(inner)` after `validate_parent_tree(inner)`, plus tests for root-not-zero and parent-after-child.
+
+**Q2 Convergent Vs Open**: open. The validation is converging, but the parent-order invariant is a specific remaining R12, not open-ended fishing.
+
+**Q3 Geodesic Defer**: AGREE. Exact geodesic-vs-adjacency recompute is not worth doing per batch now; defer to M1.x unless geodesic becomes M1.2 load-bearing.
+
+**Q4 Padded-True Defense**: AGREE-KEEP. It is currently unreachable after mask-sum + prefix checks, but it is cheap and protects future validation reordering.
+
+**Q5 Surgical**: FAIL. Current `git status` shows changes outside `src/models/graph_salad/` + `tests/test_scaffolding.py`: `tests/test_graph_utils.py`, untracked `docs/codex_reviews/m1_1_scaffolding_*`, and `outside_docs/animo_metric_borrowing_plan_for_graph_salad.md`.
+
+**Q6 M1.2 Unblock**: NO-GO. Consumers can trust tree connectivity and adjacency semantics, but cannot trust `parent_indices[b]` has root=0 + parent-before-child ordering yet.
+
+**Q7 Denoiser Stub**: PASS. Signature lock, empty params/state_dict, and `NotImplementedError` behavior are fine.
+
+**Fix List**
+MUST-FIX-NOW: [batch.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/batch.py:374) add root=0 + parent-before-child validation for `parent_indices`; test accepted bad cases `[2,2,-1]` and `[-1,2,0]`.
+
+MUST-FIX-NOW: clean or explicitly exclude Q5 spillage before claiming surgical R3 scope.
+
+DEFERRED-TO-M1.x: exact `geodesic_dist` cross-check against adjacency/parents.
+
+Verification run: `python tests/test_scaffolding.py -v` passed 46 tests; `python tests/test_graph_utils.py -v` passed 39 tests.
+
+================================================================================
+ORCHESTRATOR NOTES (post-review, fact-check)
+================================================================================
+Q5 spillage verification via `git status -s`:
+  M tests/test_graph_utils.py            <- confirmed modified (codex correct)
+  ?? outside_docs/animo_metric_borrowing_plan_for_graph_salad.md  <- confirmed (codex correct)
+  ?? docs/codex_reviews/m1_1_scaffolding_*  <- review artifacts (expected;
+     these are the review outputs themselves, not source spillage)
+
+The docs/codex_reviews/ untracked items are review-artifact byproducts and
+arguably should NOT count as R3 spillage — they're the audit trail of the
+review process itself, not implementation drift. However, tests/test_graph_utils.py
+modifications and outside_docs/animo_metric_borrowing_plan_for_graph_salad.md
+ARE legitimate R3 spillage to address.
+
+Q1 R12 category #8 (parent ordering / FK topology) — concrete failure case
+`parent_indices=[2, 2, -1]` is sharp and actionable. graph_utils.py:34 docstring
+explicitly says "allows root not at 0", which IS exactly the invariant gap codex
+caught. treeik_decoder.py:66 dependency is real downstream consumer.
+
+R12 categories now stand at 8 (was 7 going in):
+  1. tensor schema (rank/dtype/last-dim/square/annotation)
+  2. cross-tensor T/J consistency
+  3. scalar value-range + mask sum
+  4. NaN/Inf scalars + tensors
+  5. bool-as-int
+  6. list cardinality + tree-validity
+  7. graph semantics + mask prefix-contiguity
+  8. NEW: parent ordering / FK topology (root=0 + parent-before-child)

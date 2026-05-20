@@ -1,0 +1,85 @@
+CODEX REVIEW — M1.1 scaffolding round 3
+========================================
+
+Thread: 019e4365-de22-7de0-92d3-18765076c511 (FRESH; per user 2026-05-20 fresh-thread-per-milestone rule)
+Model:  gpt-5.5
+Effort: xhigh
+Date:   2026-05-20
+Scope:  src/models/graph_salad/batch.py (~370 LoC after round 2 R12 fixes)
+        src/models/graph_salad/denoiser_stub.py (~107 LoC, unchanged since round 1)
+        src/models/graph_salad/__init__.py
+        tests/test_scaffolding.py (27 unittest cases, ALL PASS in ~1.8s)
+
+Trigger: Round 2 fresh thread (019e435e) returned NEEDS-FIX with 5 R12 leaks. All 5
+        fixes applied. Round 3 fresh thread asked to verify from scratch.
+
+========================================
+RESPONSE (verbatim from codex MCP)
+========================================
+
+## VERDICT
+NEEDS-FIX
+
+## Remaining silent-failure modes (R12)
+- `num_joints` / `num_frames` values are only checked for tensor type, shape, dtype, and device. Invalid values like `[-1, 999]`, or values inconsistent with `joint_mask.sum(1)` / `frame_mask.sum(1)`, are silently accepted and will surprise M1.2 length-based code.
+- `fps` can be `NaN`/`Inf`; scalar float tensors are not covered by the finite guard.
+- Minor strictness gap: `parent_indices` uses `isinstance(item, int)`, so `True`/`False` are accepted as parent indices because `bool` subclasses `int`.
+
+## R2 simplicity assessment
+- The 4-stage validation is not over-engineered. The split by padded tensors, batched scalars, per-sample nested lists, and per-sample strings is the natural minimum because each category has different failure modes and clearer error messages.
+- I would not merge the spec tables. Only add the missing scalar semantic checks after the scalar loop.
+
+## M1.2 unblock status
+- NO-GO — tensor schema is mostly locked, but M1.2 will consume `num_joints` / `num_frames` as lengths, and those can currently be nonsensical while passing construction.
+
+## Per-question answers
+Q1. Mostly complete for the requested structural checks. Padded tensor checks cover type/rank/batch/last-dim/dtype/device/finite at batch.py:170-207; square graph checks at batch.py:209-216; cross T/J checks at batch.py:296-334. The remaining silent mode is scalar length value consistency.
+
+Q2. The finite guard runs on all `_TENSOR_SHAPE_SPEC` float tensors, including padded regions, at batch.py:203. `unified_dataset.py` pads with zeros for motion/root/contact/rot/bones/rest and initializes adjacency/geodesic with zeros at unified_dataset.py:158-214. I found no legitimate Inf sentinel path for adjacency/geodesic in this collate path.
+
+Q3. Yes. Padded tensor devices are checked at batch.py:197-202; batched scalar devices at batch.py:237-241.
+
+Q4. Stub is OK. It stores only plain attrs, allocates no params/buffers, and has empty `state_dict`; see denoiser_stub.py:55-63. `forward()` includes `level2_meta: dict | None = None` at denoiser_stub.py:65-75 and always raises `NotImplementedError` at denoiser_stub.py:101.
+
+Q5. Tests ran clean: `python tests/test_scaffolding.py` passed 27/27. The meta-device test is real: `adjacency.to("meta")` hits the device check before finite checking, at tests/test_scaffolding.py:177-183. The parent regex matches the emitted `"parent_indices...[i][j] type"` message. The zero-B test reaches the explicit B guard before loop validation. Coverage gap: no non-vacuous regression for scalar device consistency, scalar finite values, or length/mask consistency.
+
+Q6. Not over-engineered. Current structure is clear and proportional to R12.
+
+Q7. R3 currently fails at worktree level. `git status --short` shows untracked files under `docs/codex_reviews/`, outside the allowed `src/models/graph_salad/` + `tests/` scope. `src/data/unified_dataset.py` is not modified.
+
+Q8. Shapes/dtypes/devices for M1.2 attribute access are mostly aligned: `motion_features`, graph tensors, masks, and properties are present. The surprise risk is `num_joints` / `num_frames`: M1.2 will treat them as authoritative lengths, but construction does not verify they are positive, within `[J_max/T_max]`, or equal to the masks.
+
+## Fix list
+- batch.py:218 — after scalar validation, add value guards: `num_joints > 0`, `num_joints <= J_max`, `num_joints == joint_mask.sum(1)`, and analogous checks for `num_frames` / `frame_mask`.
+- batch.py:218 — add finite/positive check for `fps`.
+- batch.py:272 — exclude `bool` from `parent_indices` integer validation.
+- tests/test_scaffolding.py — add regression tests for scalar mixed-device, invalid length/mask mismatch, `fps=nan`, and bool parent index.
+- Worktree — remove or separately account for untracked `docs/codex_reviews/m1_1_scaffolding*` files before claiming R3 surgical PASS.
+
+========================================
+CLAUDE'S NOTES (post-review)
+========================================
+
+Worktree state at time of review (git status --short):
+   M src/models/graph_salad/__init__.py
+  ?? docs/codex_reviews/m1_1_scaffolding_BRIEF.md
+  ?? docs/codex_reviews/m1_1_scaffolding_FULL.txt
+  ?? docs/codex_reviews/m1_1_scaffolding_round2_BRIEF.md
+  ?? docs/codex_reviews/m1_1_scaffolding_round2_FULL.txt
+  ?? src/models/graph_salad/batch.py
+  ?? src/models/graph_salad/denoiser_stub.py
+  ?? tests/test_scaffolding.py
+
+The untracked docs/codex_reviews/ files are review artifacts (Claude's own audit
+trail), not source-code spillover. Codex's R3 worry is procedurally correct in
+that they exist outside the granted scope, but they are documentation of the
+review process itself — not a behavior-changing edit. User can confirm whether
+to commit them with M1.1, defer to a separate docs commit, or .gitignore them.
+
+Tests verified locally: `python tests/test_scaffolding.py` → 27/27 PASS in 1.81s
+(includes real-dataset compat smoke at val/Bat+Crab samples).
+
+The three real R12 findings (num_joints/num_frames value consistency, fps NaN,
+bool-as-parent-int) are legitimate gaps that round 2 did not surface because
+round 2 focused on tensor-level structural drift; round 3 fresh eyes caught
+value-level semantic drift that downstream M1.2 will rely on.

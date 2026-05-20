@@ -1,0 +1,65 @@
+Codex review — M1.1 scaffolding Round 2 (post-R12 fail-loud fixes)
+threadId: 019e435e-680f-7330-a740-e20aaecb86fa
+model: gpt-5.5, model_reasoning_effort: xhigh
+date: 2026-05-20
+fresh thread (no continuation of round 1 thread 019e4357)
+
+================================================================================
+
+## Verdict — NEEDS-FIX
+
+## Summary
+Core tensor schema validation is mostly solid and matches `UnifiedMotionDataset.collate_fn`, and the denoiser stub satisfies the locked M1 signature. The remaining R12 gaps are not huge, but they are real: `motion_features` scalar rank can raise an unfriendly `IndexError`, per-sample list/string element types are not validated, `B=0` is accepted even though `collate_fn` cannot emit it, and mixed-device / non-finite tensors are silently accepted.
+
+## Q1 Schema Validation Completeness
+**Verdict: NEEDS-FIX**
+
+- Missing keys: PASS. All required tensor/scalar/list/string keys are assembled and checked before construction (batch.py:137).
+- Wrong tensor type / `None`: PASS. Each tensor key is checked with `isinstance(..., torch.Tensor)` (batch.py:157).
+- Wrong rank: MOSTLY PASS, but `motion_features=torch.tensor(1.0)` fails before the rank check because `shape[0]` is read first (batch.py:150, batch.py:164).
+- Dtypes: PASS for declared tensors/scalars via `_TENSOR_SHAPE_SPEC` and `_BATCHED_SCALAR_SPEC` (batch.py:31, batch.py:50).
+- Last dims: PASS for `6/9/3/4` fields (batch.py:174).
+- Square adjacency/geodesic: PASS (batch.py:185).
+- Cross `T_max/J_max`: PASS per axis; T fields checked against `motion_features.shape[1]`, J fields against `shape[2]` (batch.py:226).
+- Per-sample list length: PASS for outer length only (batch.py:214).
+- Per-sample element types: FAIL. `parent_indices=[0, 1]`, `text=[1, None]`, or `joint_names=["a", "b"]` can pass if length equals `B`; annotations require nested/list string structure (batch.py:112, batch.py:118).
+- Batched scalar shape/dtype: PASS (batch.py:194).
+- Empty batch: FAIL/unsupported. `from_collate_dict` accepts `B=0`, but source `collate_fn` indexes `batch[0]`, so it cannot produce an empty collate output (unified_dataset.py:351).
+- Mixed device: FAIL. No device-uniformity check exists before returning tensor references (batch.py:266).
+- Non-finite values: FAIL. No `torch.isfinite` check on float tensors; this can defer NaN/Inf to opaque VAE/loss failures.
+- Also missing: scalar/mask semantic consistency, e.g. `num_joints` vs `joint_mask.sum()` and `num_frames` vs `frame_mask.sum()`; scalars are only shape/dtype checked (batch.py:203).
+
+## Q2 Denoiser Stub Correctness
+**Verdict: PASS**
+
+The signature includes `z_t, timesteps, text, adjacency, geodesic_dist, coarse_mask, frame_mask, level2_meta=None` exactly as gate #6 requires (denoiser_stub.py:65, PLAN_GAP_REPORT.md:201). `level2_meta` defaults to `None` (denoiser_stub.py:74). No params/submodules are allocated, preserving empty `state_dict()` intent (denoiser_stub.py:57). The `NotImplementedError` message is clear (denoiser_stub.py:101). No required CFG/dropout/text-mask arg is missing from the current locked plan; CFG is mentioned as retained workflow, but the M1 call site passes text directly without a CFG flag (graph_salad_implementation_plan.md:743).
+
+## Q3 Karpathy Invariants
+- R3 surgical: PASS for exports. `__init__.py` exports only the two M1.1 symbols plus existing graph utilities (__init__.py:21).
+- R12 fail loud: NEEDS-FIX for inner list/string validation, `B=0`, mixed-device, non-finite, and scalar-rank `motion_features`.
+- R2/R8 simplicity/read-before-write: PASS. The wrapper follows the existing `collate_fn` schema and does not invent a new collate path (batch.py:9).
+- R9 tests catch failures: PARTIAL. Existing tests catch missing keys, tensor type, dtype, scalar shape/dtype, cross T/J, square adjacency, stub params/signature (test_scaffolding.py:76). They do not catch the R12 gaps above.
+
+## Q4 Test Coverage
+**Verdict: PARTIAL**
+
+The 19 tests pass via `python tests/test_scaffolding.py` in 1.803s. Coverage includes synthetic construction, no-copy behavior, required-key/type/dtype/shape checks, cross-axis checks, real dataset smoke, and denoiser stub checks (test_scaffolding.py:58, test_scaffolding.py:183).
+
+Missing from the requested list: empty `B=0`, `None` tensor, mixed-device tensors, `local_rotations_6d` last-dim, `bone_lengths` rank, `rest_offsets` J mismatch, per-sample element type, and non-str `text`. Some would be caught by production code if added as tests; mixed-device, element types, non-str text, and `B=0` currently would not.
+
+`test_real_dataset_compat` is meaningful as a source-schema smoke, but not a 39-species proof: it constructs a dataset with `max_joints=160` and collates only `ds[0]` and `ds[1]` (test_scaffolding.py:165, test_scaffolding.py:171).
+
+## Q5 Schema-vs-Source-of-Truth
+**Verdict: PASS**
+
+The 13 tensor specs align with `__getitem__` outputs and `collate_fn` stacking: motion `[T,J,6]`, skeleton `[J,9]`, masks bool, graph matrices float32 square, hashes int64, root tracks `[T,3]`, rotations `[T,J,6]`, contact `[T,4]`, bones `[T,J]`, rest offsets `[J,3]` (unified_dataset.py:301, batch.py:31). `has_rotations` is a Python bool from the dataset and goes through the scalar branch; `torch.tensor([bools])` is bool, matching the spec (unified_dataset.py:316, unified_dataset.py:359, batch.py:54). `fps` is returned as Python float and collated through the same scalar branch, matching float32 under normal PyTorch defaults (unified_dataset.py:332, batch.py:53).
+
+## Q6 M1.2 Unblock
+**NO-GO as an R12 gate until the minimal fixes below land.** Tensor shape/dtype scaffolding is good enough for encoder/pool/VAE development, but the batch boundary still accepts malformed metadata and some failure modes that will become opaque once M1.2 uses lists, masks, devices, and losses.
+
+## Minimal Fix List
+1. batch.py:150: validate `motion_features` rank before reading `shape[0]`; reject `B <= 0`.
+2. batch.py:214: validate inner payload types: `parent_indices list[list[int]]`, `joint_names/canonical_names list[list[str]]`, `bone_lengths_rest list[list[float]]`, and string fields `list[str]`.
+3. batch.py:194: validate `num_joints/num_frames` values against masks and bounds.
+4. batch.py:157: add same-device check across all tensors; add finite check for floating tensors.
+5. test_scaffolding.py:76: add regression tests for the missing cases listed in Q4.

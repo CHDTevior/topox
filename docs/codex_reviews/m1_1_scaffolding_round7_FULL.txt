@@ -1,0 +1,187 @@
+Verdict: NEEDS-FIX (Q3 repository hygiene only). R12 convergence achieved: no new category #9 found.
+Thread: 019e438e-bf5e-7731-a2f0-71fafa11f9d3
+Date: 2026-05-20
+Reviewer stance: fresh read of current files and git state, not trusting the prompt summary.
+
+Files read:
+- src/models/graph_salad/batch.py
+- src/models/graph_salad/graph_utils.py
+- src/models/graph_salad/denoiser_stub.py
+- src/models/graph_salad/__init__.py
+- tests/test_scaffolding.py
+- tests/test_graph_utils.py
+- docs/codex_reviews/m1_1_scaffolding_round6_BRIEF.md
+- src/data/unified_dataset.py
+- src/models/treeik_decoder.py
+- docs/PLAN_GAP_REPORT.md
+
+Q1. All 8 R12 categories sealed?
+
+Answer: YES for the GraphMotionBatch fail-loud invariant landscape. I did not find a concrete new R12 category #9 that both passes GraphMotionBatch.from_collate_dict() and would crash the M1.2 pool/VAE/FK consumer. Category #8 is sealed by the Round 7 fix.
+
+Sealed categories:
+1. Tensor schema: tensor type, rank, dtype, last-dim, square graph tensors, device consistency.
+2. Cross-tensor T_max/J_max consistency.
+3. Scalar value range plus mask-sum match for num_joints/num_frames/fps.
+4. NaN/Inf for floating tensors and fps.
+5. Bool-as-int strict typing for per-sample numeric lists.
+6. Per-sample list cardinality plus parent tree validity.
+7. Graph semantics plus mask prefix: adjacency binary/symmetric/zero-diagonal/matches parents/padded-zero; joint/frame masks prefix-contiguous.
+8. FK topology ordering: parent_indices root is index 0 and every parent precedes its child.
+
+Evidence for category #8:
+- batch.py imports assert_root_first_parent_order and validate_parent_tree.
+- batch.py parent_indices block calls validate_parent_tree(inner) first, then assert_root_first_parent_order(inner).
+- tests/test_scaffolding.py includes:
+  - test_parent_indices_root_not_zero_raises with [1, 2, -1]
+  - test_parent_indices_parent_after_child_raises with [-1, 2, 0]
+- treeik_decoder.py validates the same FK invariant before fk_one(), so this is the correct downstream dependency.
+
+Category #9 search candidates and decisions:
+
+1. Parent ordering variants.
+   - Candidate bad inputs: [1, 2, -1] and [-1, 2, 0].
+   - Result: now rejected with "FK ordering" before adjacency/FK consumers. Not new.
+
+2. geodesic_dist inconsistent with adjacency.
+   - Candidate accepted input: synthetic fixture has line adjacency but all-zero geodesic_dist.
+   - Result: GraphMotionBatch currently accepts it. This is a known deferred semantic check from prior rounds, not a new R12 #9 under this round's criterion. TreeGraphAttention uses geodesic_dist as an attention bias via clamp/projection; wrong finite distances can hurt learning, but they do not crash pool/VAE/FK. I also checked real skeleton npz files: stored geodesic matrices are finite, symmetric, zero-diagonal, and shape-consistent with adjacency in the sampled data tree.
+   - Recommendation: keep deferred to M1.x or recompute from adjacency when the first real graph attention/pool consumer lands.
+
+3. rest_offsets / bone-length physical semantics.
+   - Candidate accepted input: non-root rest_offsets all-zero.
+   - Result: accepted. This cannot be promoted to a strict batch invariant now: a quick scan of data/cs_sparse2full_tgt/skeletons found zero non-root rest offsets in real skeleton files. FK consumes rest_offsets without crashing; zero offsets are a data/model-quality issue, not a wrapper schema-crash issue.
+
+4. foot_contact range/binary semantics.
+   - Candidate accepted input: foot_contact[0,0,0] = 2.0.
+   - Result: accepted. Current M1.2 VAE plan is not load-bearing on contact loss in this wrapper, and real checked motion files had foot_contact min=max=0. This is not a pool/VAE/FK crash invariant. Defer any [0,1]/binary enforcement to the contact-loss module if that loss becomes active.
+
+5. bone_lengths negative or bone_lengths_rest non-finite.
+   - Candidate accepted inputs: bone_lengths[0,0,1] = -1.0; bone_lengths_rest[0][1] = NaN.
+   - Result: accepted. Negative tensor bone lengths would be bad supervision if a bone-length loss consumes them, but current wrapper's load-bearing FK path consumes rest_offsets and parent_indices, not bone_lengths_rest. For bone_lengths_rest NaN, this is a per-sample benchmark/eval data-health issue, not an immediate M1.2 pool/VAE/FK crash. If benchmark metrics become a gate, add a metric-side finite/nonnegative check.
+
+6. skeleton_features / motion_features value ranges.
+   - Result: finite/rank/dtype/dim are sealed. Normalization scale and semantic ranges are producer/model assumptions, not fail-loud schema invariants at this dataclass boundary.
+
+7. text / skeleton_id / motion_id ambiguity.
+   - Result: list length and str type are sealed. Empty strings may be valid upstream fallback; no M1.2 structural crash found.
+
+Conclusion for Q1: convergence achieved for R12. No new category #9 found despite searching parent-order variants, graph/geodesic consistency, rest/bone/contact semantics, numeric list finiteness, feature value ranges, and string metadata ambiguity.
+
+Q2. Validation order - monotone structural-before-value?
+
+Answer: PASS on dependency order.
+
+The actual order is:
+1. Required key presence.
+2. Padded tensor type/rank/batch/last-dim/dtype/device, plus floating finite scan.
+3. Square adjacency/geodesic shape.
+4. Batched scalar type/shape/dtype/device.
+5. Cross-tensor T_max/J_max structural consistency.
+6. num_joints/num_frames/fps value-level guards.
+7. Per-sample list outer/inner type and cardinality.
+8. parent_indices tree validity plus FK ordering.
+9. joint/frame mask prefix-contiguity.
+10. adjacency graph semantics.
+11. per-sample string list type/length.
+
+I found no later-validated value being used unsafely earlier. num_joints is used for nj_list only after dtype/shape/range/mask-sum checks. num_frames is used in frame-mask prefix only after dtype/shape/range/mask-sum checks. adjacency comparison runs only after parent_indices element type, cardinality, tree validity, and ordering are validated.
+
+Nit: the method docstring's "Validates (in order)" list is stale. It still says per-sample lists precede cross-tensor consistency and omits the added value/mask/graph/FK substeps. This is not an R12 blocker, but it should be cleaned when touching batch.py next.
+
+Q3. Karpathy R3 surgical scope.
+
+Answer: FAIL due to one remaining outside-scope untracked file.
+
+Commands run before writing this Round 7 report:
+- git status -s
+- git diff --stat HEAD
+- git diff --name-status HEAD
+- git ls-files --others --exclude-standard
+
+Observed tracked diff:
+- src/models/graph_salad/__init__.py
+- src/models/graph_salad/graph_utils.py
+- tests/test_graph_utils.py
+
+Observed untracked implementation/test files:
+- src/models/graph_salad/batch.py
+- src/models/graph_salad/denoiser_stub.py
+- tests/test_scaffolding.py
+
+Those are inside src/models/graph_salad/ or tests/ and are compatible with the stated implementation/test scope.
+
+Observed review artifacts:
+- docs/codex_reviews/m1_1_scaffolding_*.txt/md through round6, plus this round7 report after writing.
+
+Those are review deliverables, not implementation spillage.
+
+Remaining outside-scope untracked file:
+- outside_docs/animo_metric_borrowing_plan_for_graph_salad.md
+
+This is the same outside_docs file Round 6 flagged. It is still present and untracked. Therefore the repository cannot honestly claim clean surgical scope until that file is either removed, tracked as an intentional doc, or explicitly excluded from the M1.1 change set.
+
+Q4. Denoiser stub.
+
+Answer: PASS on content; caveat on git proof.
+
+The stub remains signature-only:
+- __init__ stores plain attributes only.
+- No nn submodules or parameters are allocated.
+- state_dict() is expected to be empty and covered by tests.
+- forward signature includes z_t, timesteps, text, adjacency, geodesic_dist, coarse_mask, frame_mask, level2_meta=None.
+- forward always raises NotImplementedError.
+
+git caveat: src/models/graph_salad/denoiser_stub.py is untracked, so git diff cannot prove "unchanged since round 1" against HEAD. Prior round reports also describe it as unchanged and parameter-free; the current file content matches that signature-lock description.
+
+Q5. M1.2 forward compatibility.
+
+Answer: GO at the GraphMotionBatch invariant level after Q3 cleanup. With the current code, M1.2 consumers can trust the listed load-bearing fields:
+
+- batch.parent_indices[b]: list length equals num_joints[b], strict ints, valid connected single-root tree, root index 0, parent-before-child ordering.
+- batch.adjacency[b,:nj,:nj]: finite float32, binary, symmetric, zero diagonal, exactly matches parent_indices edges; padded rows/cols are zero.
+- batch.joint_mask[b]: bool, prefix-contiguous True then False, sum equals num_joints[b].
+- batch.frame_mask[b]: bool, prefix-contiguous True then False, sum equals num_frames[b].
+- batch.num_joints[b] / num_frames[b]: int64 [B], in range, mask-consistent.
+- batch.fps[b]: float32 [B], finite and positive.
+
+Remaining non-blocking surprises:
+- geodesic_dist is finite/square/J-consistent but not recomputed from adjacency. This can affect graph-attention bias quality, not crash FK/pool/VAE construction.
+- rest_offsets are finite and shape-consistent, but zero non-root offsets exist in real skeleton data; do not enforce nonzero in the batch wrapper.
+- foot_contact has shape/dtype/finite checks but no [0,1] or binary check. Defer to contact-loss/metric code if used.
+- bone_lengths and bone_lengths_rest are not physically range-checked beyond tensor finiteness/type/cardinality. Defer to loss/metric-side validators if those become load-bearing.
+- skeleton_features/motion_features are schema-checked, not semantically normalized/range-checked.
+- string metadata is type-checked only; empty text or arbitrary id format is permitted by upstream fallback behavior.
+
+Verification.
+
+Requested pytest commands:
+- .venv/bin/python -m pytest tests/test_scaffolding.py -v 2>&1 | tail -30
+- .venv/bin/python -m pytest tests/test_graph_utils.py -v 2>&1 | tail -30
+
+Both failed because .venv/bin/python does not exist in this workspace:
+  /usr/bin/bash: .venv/bin/python: No such file or directory
+
+The available Python is /scratch/ts1v23/.conda/bin/python 3.12.9, but pytest is not installed there:
+  No module named pytest
+
+Equivalent unittest entry points were run:
+- python tests/test_scaffolding.py -v 2>&1 | tail -30
+  Result: Ran 48 tests in 1.851s, OK. Real dataset compat test ran and loaded 112 val motions / 39 skeleton types.
+- python tests/test_graph_utils.py -v 2>&1 | tail -30
+  Result: Ran 39 tests in 0.046s, OK.
+
+Final verdict.
+
+NEEDS-FIX, but not because of a new GraphMotionBatch R12 failure.
+
+MUST-FIX-NOW:
+- Resolve or explicitly scope-document outside_docs/animo_metric_borrowing_plan_for_graph_salad.md before claiming R3 surgical compliance.
+
+DEFERRED-TO-M1.x:
+- Optional geodesic_dist recompute/cross-check when the graph-attention/pool consumer lands.
+- Optional semantic validators for contact/bone/rest metrics in the modules that consume those fields.
+
+M1.2 unblock status:
+- NO-GO as a clean handoff until Q3 outside_docs spillage is resolved.
+- GO for the typed GraphMotionBatch R12 invariants themselves; no category #9 was found.

@@ -30,8 +30,8 @@ from src.models.graph_salad.graph_utils import (
     floyd_shortest_path,
     topological_order_with_root_first,
 )
-# Private validator — exposed only for tests.
-from src.models.graph_salad.graph_utils import _validate_parent_tree
+# Validator now public; alias retained for back-compat.
+from src.models.graph_salad.graph_utils import validate_parent_tree as _validate_parent_tree
 
 
 def _adj_from_parents(parents: list[int]) -> torch.Tensor:

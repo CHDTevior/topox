@@ -244,4 +244,77 @@ After user answers Q-A through Q-D:
 
 ---
 
-**End of report**. User decision needed on Q-A through Q-D before M1 starts.
+## 9. Evaluation strategy (added 2026-05-20 per user)
+
+Source: `outside_docs/animo_metric_borrowing_plan_for_graph_salad.md` (21.5KB) — AniMo-borrowing plan for our open-topology evaluation needs.
+
+**Core rule (user 2026-05-20)**: **VAE recon (M1.0-M1.6) needs ONLY loss**; metrics infrastructure is **not** in M1 scope. Phase 2 (denoiser/t2m training) is where metrics become mandatory.
+
+### 9.1 What we borrow from AniMo (CVPR 2025)
+
+- Reconstruction eval ↔ generation eval **separation** (`eval_graph_vae.py` + `eval_graph_denoiser.py`)
+- Metric **concepts**: FID / R-Precision / Matching / Diversity / Multimodality
+- Text-motion **evaluator embedding-space** evaluation paradigm
+- `repeat_time=10` + 95% confidence interval statistics
+- Root-aligned **MPJPE** thinking
+- `eval.log` + checkpoint-sweep engineering organization
+
+### 9.2 What we do NOT borrow
+
+- Fixed `nb_joints=30` / `dim_pose=359` canonical pose
+- `EvaluatorModelWrapper` (binds to 30-joint flat vector)
+- `recover_from_ric(num_joint=30)`
+- AnimalML3D-style OOD ≠ unseen-topology
+
+### 9.3 New `metrics/` module needed before Phase 2 starts
+
+```
+metrics/
+  reconstruction.py           — masked pos/vel MAE + masked root-aligned MPJPE
+  physical.py                 — bone length error / edge stretch / contact sliding
+  pool_metrics.py             — compression / mass / entropy / locality / connectivity / edge recall
+                                (Animo has nothing equivalent — we are inventing this)
+  graph_text_motion_evaluator.py — graph-aware contrastive text-motion model
+                                (replaces Animo's fixed 30-joint EvaluatorModelWrapper)
+  generation_metrics.py       — Graph-FID / Graph-R@K / Matching / Diversity / Multimodality
+                                computed in our graph-aware embedding space
+  split_report.py             — per-topology split reporting (seen/unseen species,
+                                J-bucket, body-plan, limb-count). Animo has no equivalent.
+  logging.py                  — eval.log + stdout consistent with Animo organization
+```
+
+### 9.4 Hard constraints (forbidden actions during metric implementation)
+
+- ❌ Don't remap to fixed 30 joints
+- ❌ Don't set `dim_pose=359`
+- ❌ Don't fix root index across samples
+- ❌ Don't fix contact to foot joints — use `node_attr.can_contact`
+- ❌ Don't include padded joints/coarse nodes in any metric
+- ❌ Don't equate AnimalML3D OOD with unseen-topology protocol
+
+### 9.5 Acceptance gates for metric infrastructure (Phase 2 entry-block)
+
+1. Mixed-J batch (B=2, J=22 + J=37) → all reconstruction metrics work
+2. Padded joints/coarse nodes excluded from every metric
+3. `edge_index` varies per sample → `bone_length_error` works
+4. Dynamic pool's `K_i` varies → `pool_metrics` work
+5. `GraphTextMotionEvaluator` accepts `[B,T,J,F] + graph` (no `dim_pose=359`)
+6. `Graph-FID` / `Graph-RPrecision` topology-agnostic
+7. `split_report` reports seen + unseen topology separately
+8. `eval_graph_denoiser.py` repeats 10× + outputs mean ± 95% CI
+
+### 9.6 Integration with M1 milestones
+
+- M1.0-M1.6 (VAE) — **no metrics yet**, only loss
+- M1.6 → Phase 2 transition gate: **build `metrics/` module first** as a separate milestone (M2.0 metric preflight, mirroring M1.0 graph_utils preflight pattern)
+- Phase 2 denoiser training reads `metrics/` for eval & paper claims
+
+---
+
+## 10. Phase 1 closeout
+
+- M1.0 codex PASS, committed at `3a41aa2`
+- M1.1 codex round 7 PASS (R12 convergence at 8 categories; 0 new in round 7)
+- M1.1 commit pending: source + tests + 7 codex review pairs + animo plan + this update
+
+**End of report**. M1.2 (pool/unpool/attention/losses) is the next active milestone.

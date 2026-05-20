@@ -1,0 +1,132 @@
+M1.1 Graph-SALAD Scaffolding — Codex Review (Round 4)
+=======================================================
+
+Date:           2026-05-20
+Reviewer:       Codex MCP (gpt-5.5, xhigh reasoning, fresh thread)
+Thread ID:      019e4374-2f42-7513-9d29-b8bbdce3d1ee
+Continuation:   NO (fresh thread per user 2026-05-20 rule)
+Round:          4 (rounds 1/2/3 = NEEDS-FIX, fresh-thread each)
+
+Files reviewed:
+  - src/models/graph_salad/batch.py            (~410 LoC)
+  - src/models/graph_salad/denoiser_stub.py    (~90 LoC, unchanged since round 1)
+  - src/models/graph_salad/__init__.py
+  - tests/test_scaffolding.py                  (~430 LoC, 34 unittest cases)
+
+Context (read on demand by codex):
+  - src/data/unified_dataset.py:225-363
+  - docs/PLAN_GAP_REPORT.md §6
+
+=======================================================
+VERBATIM CODEX VERDICT
+=======================================================
+
+### VERDICT
+NEEDS-FIX
+
+### Q1: R12 silent-failure categories — sealed?
+(a) NOT-SEALED — tensor schema drift is sealed, but per-sample per-joint list shape
+    is not: batch.py:323 checks outer length and inner types only, not
+    `len(parent_indices[b]) == num_joints[b]`.
+
+(b) SEALED — T/J cross-tensor consistency is explicit after square graph checks:
+    batch.py:243-265.
+
+(c) SEALED — `num_joints`/`num_frames` range and mask-sum consistency are enforced:
+    batch.py:271-297.
+
+(d) SEALED — floating tensors get finite checks, and `fps` gets finite plus
+    positive checks: batch.py:203, batch.py:301-309.
+
+(e) SEALED — bool-as-int is rejected before `isinstance(..., int)` accepts it:
+    batch.py:340-353.
+
+### Q2: Validation order monotonicity
+PASS. The literal order is slightly different from the prompt: batched-scalar
+structural checks happen before cross-tensor T/J checks at batch.py:218-265. That
+is still structural-before-value; value guards do not begin until batch.py:267. I
+see no dead branch or value-level guard masking tensor structural failures.
+Existing error messages are locally diagnosable.
+
+### Q3: R2 simplicity vs R12 fail-loud
+JUSTIFIED. The tensor/scalar guards are not redundant: rank/last-dim/dtype/
+device/finite/cross-shape/value checks catch different failure modes. The missing
+fix should be a compact per-sample-list cardinality/index guard, not deletion of
+existing checks.
+
+### Q4: M1.2 forward compatibility
+NO-GO. `num_joints`, `adjacency`, and `joint_mask` are exposed with usable tensor
+semantics, but `parent_indices` has an implicit contract not enforced here:
+upstream emits `list[int] length J` with `-1` root sentinel and no padding
+sentinel (unified_dataset.py:321, unified_dataset.py:328). M1.2 graph pool can
+silently consume a parent list whose length or parent ids disagree with
+`num_joints`.
+
+### Q5: Tests adequacy
+GAP. The 34 tests pass locally, including real dataset compat, but the synthetic
+helper itself demonstrates the blind spot: sample 1 uses `num_joints=J-2` via
+test_scaffolding.py:31-40, while `parent_indices`, `joint_names`,
+`canonical_names`, and `bone_lengths_rest` are still length `J` for every sample
+at test_scaffolding.py:63-66. `GraphMotionBatch.from_collate_dict` accepts
+`[24,22]` with parent lengths `[24,24]`. This is not a wrong-error-message issue
+from value-level ordering; it is an absent regression test and absent guard.
+
+### Q6: Denoiser stub
+PASS. Signature still includes `level2_meta=None` and remains parameter-free:
+denoiser_stub.py:46-75. No batch.py refinement forces a stub change.
+
+### Fix list
+1. R12, batch.py:323: after inner type/bool validation, require per-sample
+   per-joint lists to have `len(inner) == int(num_joints[i])`. For
+   `parent_indices`, also require exactly one `-1` root and all non-root parent
+   ids in `[0, num_joints[i])` or call the existing tree validator. This
+   prevents M1.2 pool from consuming padded or misindexed topology.
+
+2. R12, test_scaffolding.py:63: make the helper generate per-sample list
+   lengths from `nj[i]`, then add negative tests for parent length mismatch
+   and out-of-range parent ids. Also strengthen real-dataset smoke to assert
+   `len(parent_indices[b]) == num_joints[b]`.
+
+### Bottom line
+NO-GO for M1.2 until the `parent_indices`/per-joint-list cardinality and
+parent-index contract is fail-loud at batch construction.
+
+=======================================================
+INDEPENDENT EVIDENCE CHECK (CC agent verification)
+=======================================================
+
+The finding was independently verified against the source:
+
+1. batch.py:323-353 (read 2026-05-20): The per-sample-list validation loop checks
+   - outer list type → ValueError if not list
+   - outer length == B → ValueError on mismatch
+   - inner element is list → ValueError if not
+   - inner element type (int / str / int|float) → ValueError on mismatch
+   - bool rejected explicitly
+   It does NOT check `len(inner) == int(num_joints[i])`. Codex finding confirmed.
+
+2. tests/test_scaffolding.py:30-66 (read 2026-05-20): The synthetic helper sets
+   `nj = [J, max(J-2, 1), ...]` but `parent_indices`, `joint_names`,
+   `canonical_names`, `bone_lengths_rest` are all generated with `range(J)` /
+   `range(J-1)` / `[0.1] * J`. So sample 1 has num_joints=22 (with J=24) but
+   parent_indices of length 24. Codex finding confirmed.
+
+3. unified_dataset.py:271-291 (read 2026-05-20): Upstream emits
+   `parent_indices_list = ...tolist()[:J]` where `J = num_joints[b]` (the
+   actual per-sample joint count, not J_max). So at the collate boundary,
+   per-sample list lengths ARE variable across the batch in real data — the
+   guard codex calls for is materially required, not academic.
+
+   In particular, the contract at unified_dataset.py:321 explicitly says
+   "list[int] length J" (per-sample J, not J_max), and num_joints at line
+   328 is per-sample J. So a downstream consumer that does
+   `parent_indices[b][num_joints[b] - 1]` is reading a real element today
+   in real data, but would read a padded element if the lists were padded
+   to J_max — and the wrapper has no guard against the latter being
+   silently passed in.
+
+Conclusion: codex's R12 finding is real and load-bearing for M1.2.
+
+=======================================================
+END OF REVIEW
+=======================================================
