@@ -1,0 +1,241 @@
+M1.2 Step 1 Hostile Review: graph_salad GraphAttentionBlock
+================================================================
+
+Scope reviewed
+--------------
+
+Primary:
+- src/models/graph_salad/attention.py
+- src/models/graph_salad/__init__.py
+- tests/test_graph_attention.py
+
+References:
+- src/models/encoder.py:20-99
+- docs/PLAN_GAP_REPORT.md:136-188
+- outside_docs/graph_salad_implementation_plan.md:691-710
+- docs/graph_vae_lit_survey.md:41-64
+
+Commands/probes run:
+- python tests/test_graph_attention.py -> 6/6 PASS in 0.274s locally.
+- Compared state_dict keys/shapes for graph_salad.attention.GraphAttentionBlock vs encoder.GraphAttentionBlock: same names, same order, same shapes.
+- Probed dropout p values: p < 0 and p > 1 raise via PyTorch; p == 1.0 is accepted.
+- Probed nonfinite inputs: padded x NaN contaminates valid rows; geodesic NaN and adjacency NaN are silently converted/hidden into finite outputs; all-false node_mask returns finite nonzero outputs.
+
+Verdict
+-------
+
+NEEDS-FIX, but not because the attention algebra is wrong. The Q/K/V multi-head path, topology-bias insertion, and block-level checkpoint key layout are correct. The blocker is R12 fail-loud: the module silently accepts or hides invalid numerical inputs in a component that is explicitly planned for reuse by no-pool VAE, Phase 2 denoiser, and optional pool refinement.
+
+Q1 -- Correctness of multi-head attention + bias
+------------------------------------------------
+
+No axis bug found in the normal path.
+
+- Constructor derives d_head = d_model // n_heads after checking divisibility at attention.py:68-79.
+- Q/K/V projections are separate Linear(d_model, d_model) modules at attention.py:82-85.
+- Q/K/V reshape from [B, N, D] to [B, H, N, d_head] is correct at attention.py:133-135.
+- Scores use q @ k^T over the last two dims and divide by sqrt(d_head) at attention.py:138.
+- geodesic_bias and adjacency_bias project [B, N, N, 1] -> [B, N, N, H], then permute to [B, H, N, N] at attention.py:147-149.
+- Key-side mask broadcasts as [B, 1, 1, N] at attention.py:154-155.
+- Softmax is over keys at attention.py:157.
+- Attention @ V returns [B, H, N, d_head], then permutes/views back to [B, N, D] at attention.py:163-165.
+- Residual + output dropout and pre-norm FFN path at attention.py:166-169 matches the legacy encoder layout at encoder.py:91-97.
+
+Checkpoint key isomorphism:
+- New block parameters at attention.py:82-104 have the same block-level names as legacy encoder.py:35-54: q_proj, k_proj, v_proj, o_proj, geodesic_bias, adjacency_bias, norm1, norm2, ff.0, ff.3.
+- A direct state_dict probe confirmed exact same key order and shapes:
+  q_proj.weight/bias, k_proj.weight/bias, v_proj.weight/bias, o_proj.weight/bias, geodesic_bias.weight, adjacency_bias.weight, norm1.weight/bias, norm2.weight/bias, ff.0.weight/bias, ff.3.weight/bias.
+- Caveat: this is block-level isomorphism. A full SkeletonEncoder checkpoint still has parent prefixes such as graph_layers.0.*, so loading into graph_salad modules still needs ordinary prefix mapping/strict=False policy. There is no parameter-name drift inside the block itself.
+
+Q2 -- Bias projection sanity
+----------------------------
+
+Scalar geodesic projection is acceptable for M1.2, but do not over-claim it as Graphormer SPD bucketing.
+
+Evidence:
+- The implementation uses nn.Linear(1, n_heads, bias=False) for geodesic and adjacency bias at attention.py:87-90.
+- The M1 inventory says attention.py is "Graphormer SPD bias + adjacency bias" at PLAN_GAP_REPORT.md:156-158.
+- The implementation plan only requires score += geodesic_bias(graph2_geo) and score += adjacency_bias(graph2_adj), and explicitly says to reference the existing SkeletonEncoder.GraphAttentionBlock at outside_docs/graph_salad_implementation_plan.md:701-710.
+- The lit survey recommends Graphormer SPD structural bias and later GRPE-style edge-aware K/V at graph_vae_lit_survey.md:45-48 and 61-64.
+
+Trade-off:
+- Linear scalar distance is cheap, ckpt-compatible with encoder.py:41-42, and keeps M1.2 focused on plumbing the 3-way VAE ablation.
+- It is weaker than SPD bucketing: one learned slope per head cannot learn non-monotone or saturated distance preferences, and long-chain skeletons can make raw distances large.
+- For Phase 2 denoiser claims, call this "scalar geodesic bias", not "Graphormer SPD-bucketed bias", unless an actual bucket embedding is added.
+
+Recommendation:
+- Q2_SPD_BUCKETING = LATER.
+- Defer SPD buckets to a Phase 2/ablation milestone, unless the immediate no-pool VAE results show long-chain attention pathologies.
+
+Inf handling:
+- attention.py:145-146 replaces every non-finite geodesic value with 0.0.
+- The comment at attention.py:141-144 says "large finite sentinel", but the code uses 0.0. This comment is false and should be fixed.
+- For padded pairs, 0.0 before projection is acceptable only because padded keys are masked at attention.py:154-155 and padded query outputs are contracted to be ignored downstream.
+- For valid disconnected components, +inf -> 0.0 makes cross-component pairs share the geodesic value of self-distance, not adjacency. It is not exactly "same as adjacent nodes" because adjacent nodes also get adjacency_bias(1), but it still collapses "unreachable" into "zero hop" for the geodesic channel.
+- In no-pool VAE, valid skeletons should be connected trees, so this should not occur in valid data.
+- In Phase 2 denoiser, a disconnected pooled graph would be more plausible if pool_dynamic emits empty/isolated valid coarse nodes. The cleaner deferred representation is an unreachable SPD bucket. If staying scalar, substitute a finite out-of-range value such as max_finite_distance + 1 per sample, not 0.0, but that still depends on the learned slope sign and is less principled than a bucket.
+
+Q3 -- Mask semantics
+--------------------
+
+Key-side masking is the right attention contract for this module, given the stated downstream zeroing contract. Query-side masking is not required as a first-order design change.
+
+Evidence:
+- node_mask is True=valid per attention.py:54.
+- Mask is applied to key columns only at attention.py:154-155.
+- tests/test_graph_attention.py:85-113 verifies that perturbing finite padded x values does not change valid query rows.
+- The implementation plan likewise masks keys with coarse_mask[:, None, None, :] at outside_docs/graph_salad_implementation_plan.md:703-708.
+
+But the current "nan_to_num" explanation is not sound:
+- attention.py:157-160 says all-masked rows become NaN-stable/uniform and "Force to zero".
+- F.softmax([-1e9, -1e9, ...]) is uniform and finite, so nan_to_num does not zero it.
+- A probe with node_mask all False returned finite nonzero output. If all-false samples are invalid, forward() should reject them.
+
+Also, key-side masking does not protect against nonfinite padded x:
+- If padded x contains NaN, padded V contains NaN. Even with zero attention weight on padded keys, matmul can propagate 0 * NaN into valid rows. A probe confirmed valid outputs become nonfinite.
+- Query masking would not fully solve that. The correct R12 fix is to reject nonfinite x or sanitize padded x before Q/K/V. Since this is a fail-loud module, reject is cleaner.
+
+Recommendation:
+- Q3_MASK_QUERY_SIDE = OK_AS_IS.
+- Add fail-loud checks for nonfinite x and all-false node_mask. Do not rely on nan_to_num as a masking mechanism.
+
+Q4 -- R12 fail-loud
+-------------------
+
+Constructor checks:
+- Present: d_model > 0 and n_heads > 0 at attention.py:68-69.
+- Present: d_model divisible by n_heads at attention.py:70-73.
+- Present: d_ff > 0 at attention.py:74-75.
+- Missing: dropout p == 1.0 is accepted by PyTorch. p < 0 and p > 1 raise, but p == 1.0 silently degenerates the branch. If the project contract is [0, 1), reject p >= 1 explicitly.
+
+Forward checks:
+- Present: x rank and last dim at attention.py:113-116.
+- Present: adjacency/geodesic shape at attention.py:118-122.
+- Present: node_mask shape and bool dtype at attention.py:123-127.
+
+Silent failures still accepted:
+
+1. nonfinite_x
+   - No torch.isfinite(x) check before norm/projections at attention.py:129-135.
+   - Probe: NaN in a padded x row contaminates valid output rows despite key masking.
+   - Must fix now.
+
+2. geodesic_nan_or_minus_inf
+   - attention.py:145-146 replaces all non-finite values with 0.0.
+   - +inf is a valid sentinel per graph_utils.py:103-105 and attention.py:52-53, but NaN and -inf are corrupt input and should raise.
+   - Must fix now.
+
+3. adjacency_nan
+   - No finite check on adjacency before adjacency_bias at attention.py:148.
+   - Probe: adjacency NaN can be hidden into finite output because softmax/nan_to_num collapses the affected attention.
+   - Must fix now. Do not necessarily require binary adjacency here if pool_dynamic may later pass weighted coarse adjacency; just reject nonfinite values.
+
+4. all_false_node_mask
+   - attention.py accepts a sample with zero valid nodes and returns finite nonzero values.
+   - This violates fail-loud. Add node_mask.any(dim=1).all() validation.
+   - Must fix now.
+
+5. dropout_p_eq_1
+   - PyTorch accepts p == 1.0; project wording asks out of [0,1). Reject p >= 1 if that is the intended contract.
+   - Must fix now; cheap and unambiguous.
+
+Adjacency semantic validation:
+- The attention docstring says adjacency is binary and symmetric at attention.py:50-51.
+- GraphMotionBatch validates raw adjacency against parent_indices, including binary/symmetric/zero diagonal/padded-zero checks at batch.py:426-472.
+- Do not add a hard binary check inside attention.py unless pool_dynamic's coarse adjacency contract is also binary. Dynamic pooling may naturally produce weighted adjacency. A finite check is the right local defense-in-depth.
+
+Q5 -- R3 surgical scope
+-----------------------
+
+Implementation scope is clean.
+
+Before writing this review, git status showed only:
+- M src/models/graph_salad/__init__.py
+- ?? src/models/graph_salad/attention.py
+- ?? tests/test_graph_attention.py
+
+That is within the requested implementation/test scope. The two docs/codex_reviews files created by this review are requested deliverables, not implementation spill.
+
+__init__.py export is correct:
+- GraphAttentionBlock is imported at __init__.py:10.
+- It is included in __all__ at __init__.py:22-24.
+
+Q6 -- R2 simplicity
+-------------------
+
+Not over-engineered.
+
+The file is 171 physical lines, but a large fraction is docstring and validation. The actual block is the expected minimal transformer block:
+- projections,
+- two scalar topology-bias projections,
+- two norms,
+- FFN,
+- shape validation,
+- attention path.
+
+Given this module is reused by no-pool VAE, denoiser, and optional pool refinement, the standalone copy is justified. Inheritance from encoder.py would save little and would couple graph_salad to encoder refactors. The docstring rationale at attention.py:15-27 is defensible.
+
+Q7 -- Tests
+-----------
+
+Current tests are useful but incomplete.
+
+Covered:
+- forward shape at tests/test_graph_attention.py:43-51.
+- invalid constructor args at tests/test_graph_attention.py:53-59.
+- wrong x/adj/mask shape/dtype at tests/test_graph_attention.py:61-83.
+- finite padded-key isolation for valid queries at tests/test_graph_attention.py:85-113.
+- adjacency bias path participates at tests/test_graph_attention.py:115-136.
+- +inf geodesic does not produce nonfinite output at tests/test_graph_attention.py:138-154.
+
+Missing tests that should be added with the R12 fix:
+- nonfinite x raises, including NaN in padded nodes.
+- geodesic NaN and -inf raise, while +inf remains allowed.
+- adjacency NaN/Inf raises.
+- all-false node_mask raises.
+- dropout p == 1.0 raises if [0,1) is the contract.
+
+Missing robustness/regression tests:
+- backward pass gives finite gradients, including nonzero gradients for geodesic_bias and adjacency_bias under nonzero geo/adj.
+- eval-mode determinism with dropout > 0.
+- n_heads == 1 path.
+- B == 1 and B > 1 paths with mixed masks.
+- explicit state_dict key-isomorphism test against encoder.py::GraphAttentionBlock.
+- optional: if the module promises padded-query rows are irrelevant, keep current behavior documented; if it promises they are zero, add output masking and test it. Right now it does not zero padded query rows.
+
+Q8 -- M1.2 next-step forward compatibility
+------------------------------------------
+
+The design does not force awkward pool_dynamic adaptation.
+
+- GraphAttentionBlock is separable: it consumes node embeddings, adjacency/geodesic pair bias, and a node mask. It does not own pooling, assignment, anchors, or bilinear joint-anchor scoring.
+- pool_dynamic's bilinear scorer should be its own module/path. This attention block can be reused after pooling or in the no-pool path without contaminating assignment logic.
+- The one compatibility warning is adjacency semantics: attention.py docstring says binary adjacency at attention.py:50-51, but dynamic pooling may prefer weighted coarse adjacency. Keep attention.py validating shape/finite values only, and let pool_dynamic define whether it binarizes A_pool before attention.
+
+Required fix list
+-----------------
+
+MUST-FIX-NOW:
+1. Add forward fail-loud validation:
+   - x must be finite.
+   - adjacency must be finite.
+   - geodesic_dist must not contain NaN or -inf; +inf is allowed as the unreachable/padded sentinel.
+   - every batch item must have at least one valid node: node_mask.any(dim=1).all().
+2. Add constructor validation for dropout in [0, 1), especially reject p == 1.0.
+3. Fix the misleading comment at attention.py:141-146: the code substitutes 0.0, not a large finite sentinel. If valid disconnected components are in-scope, do not map +inf to 0.0; use an unreachable bucket later or a max_finite+1 scalar stopgap.
+4. Add tests for the R12 cases above.
+
+DEFERRED:
+1. Replace scalar geodesic Linear(1, H) with Graphormer-style SPD bucket embedding when Phase 2 denoiser or long-chain results justify it.
+2. Add explicit unreachable bucket semantics for valid disconnected coarse graphs.
+3. Add state_dict-isomorphism, finite backward-gradient, eval determinism, n_heads=1, and mixed-B tests.
+
+Final fields
+------------
+
+VERDICT: NEEDS-FIX
+Q2_SPD_BUCKETING: LATER
+Q3_MASK_QUERY_SIDE: OK_AS_IS
+Q4_SILENT_FAILURES: nonfinite_x, geodesic_nan_or_minus_inf, adjacency_nan, all_false_node_mask, dropout_p_eq_1
+NEXT_MODULE_UNBLOCK: NO-GO
+FIX_LIST: MUST-FIX-NOW: add fail-loud finite/sentinel/mask/dropout validation, fix the false geodesic sentinel comment, add R12 regression tests; DEFERRED: SPD bucket/unreachable bucket, state_dict/backward/eval/single-head/mixed-batch tests

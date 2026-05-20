@@ -1,0 +1,100 @@
+Codex MCP review — M1.2 attention.py round 6 (fresh thread)
+Model: gpt-5.5, reasoning_effort: xhigh
+Thread ID: 019e43cf-1ac2-7352-86df-b3e2ccc9955d
+Date: 2026-05-20
+
+Files reviewed:
+- src/models/graph_salad/attention.py (313 LoC)
+- tests/test_graph_attention.py (363 LoC, 25 test cases)
+
+Round 6 fixes under review:
+1. Floyd hop-count upper bound enforced: (finite_geo > N - 1).any() raises ValueError
+2. Dtype contract fail-loud at forward entry — all float inputs must be fp32/fp64
+   AND match module dtype
+3. Three new tests added (hop_bound_exceeded, fp16_input, mixed_dtype)
+4. 25/25 tests PASS in 0.07s
+
+================================================================================
+VERDICT: NEEDS-FIX
+UNBLOCK: NO-GO
+================================================================================
+
+**1. R12 Trace**
+
+I ran `python tests/test_graph_attention.py`: 25 tests PASS.
+
+| R12 item | Source gate | Test coverage |
+|---|---:|---:|
+| x NaN/Inf | `src/models/graph_salad/attention.py:169-172` | `tests/test_graph_attention.py:158-166` covers NaN; Inf is same `isfinite` branch but not separately tested |
+| adjacency NaN/Inf | `attention.py:177-180` | `test_graph_attention.py:168-176` covers NaN; Inf not separately tested |
+| geodesic NaN | `attention.py:204-207` | `test_graph_attention.py:178-186` |
+| geodesic -Inf | `attention.py:208-212` | `test_graph_attention.py:188-196` |
+| all-False node_mask | `attention.py:259-264` | `test_graph_attention.py:198-206` |
+| dropout out of range | `attention.py:85-86` | `test_graph_attention.py:208-212` |
+| empty B/N | `attention.py:132-135` | `test_graph_attention.py:214-232` |
+| topology: adj neg/asym/self-loop | `attention.py:181-200` | `test_graph_attention.py:236-265` |
+| topology: geo neg/asym/nonzero diag | `attention.py:214-218`, `242-253` | `test_graph_attention.py:267-296` |
+| large-absolute asym, `rtol=0` | adj `attention.py:189-190`; geo `242-243` | adj explicit at `test_graph_attention.py:300-311`; geo uses `rtol=0` but lacks a large-absolute-specific test |
+| finite-vs-+Inf pattern asym | `attention.py:233-240` | `test_graph_attention.py:313-324` |
+| Floyd hop upper bound | `attention.py:223-227` | `test_graph_attention.py:328-337` |
+| dtype contract | `attention.py:152-164` | `test_graph_attention.py:339-359` |
+
+**2. New Unsealed R12**
+
+Yes: adjacency/geodesic consistency is not sealed. Exact malformed input that passes all current validators:
+
+```python
+adj = torch.tensor([[[0., 1., 0., 0.],
+                     [1., 0., 1., 0.],
+                     [0., 1., 0., 1.],
+                     [0., 0., 1., 0.]]])
+geo = torch.tensor([[[0., 1., 2., 2.],   # wrong: 0->3 should be 3
+                     [1., 0., 1., 2.],
+                     [2., 1., 0., 1.],
+                     [2., 2., 1., 0.]]])
+x = torch.randn(1, 4, 16)
+mask = torch.ones(1, 4, dtype=torch.bool)
+GraphAttentionBlock(16, 2, 32, dropout=0.0)(x, adj, geo, mask)
+```
+
+This is finite, symmetric, non-negative, integer-valued, diagonal-zero, and within `N-1`, so it passes. Silent failure: the geodesic additive bias treats endpoints of a 4-node line as 2 hops instead of 3, corrupting topology without raising.
+
+Minimal fix sketch:
+
+- `src/models/graph_salad/attention.py:37`: import `floyd_shortest_path`.
+- After `attention.py:259-264`, compare `geodesic_dist` against `floyd_shortest_path(adjacency, node_mask)` on valid pairs only.
+- Add `tests/test_graph_attention.py` case where the malformed `geo[0,0,3]=geo[0,3,0]=2.0` raises.
+
+**3. Validation Order**
+
+Mostly monotone: shape first, then dtype, then content/topology, then compute. The dtype check correctly precedes `isfinite` and matmul. The topology checks depend on earlier shape/dtype checks being true.
+
+Minor redundancy: after `torch.equal(finite_g, finite_gt)` at `attention.py:236`, `both_finite = finite_g & finite_gt` at `241` could just be `finite_g`. Not harmful.
+
+One missing contract: no explicit device check. Mixed devices will raise opaquely, not silently corrupt, but it is the same class of fail-loud hygiene as dtype.
+
+**4. Hop Bound Edge Cases**
+
+N=1: with `adj=[0]`, `geo=[0]`, `mask=True`, `finite_geo > N-1` becomes `0 > 0`, so it passes. Diagonal check also passes at `attention.py:249-253`.
+
+N=2 line: max hop is 1; strict `>` at `attention.py:223` allows `1 == N-1`.
+
+Inclusive boundary: `test_geodesic_hop_bound_exceeded_raises` only tests rejection of `1e6 > 3`; it does not itself test `max == N-1` OK. `test_forward_shape` indirectly covers a line graph with max `N-1`, but a dedicated boundary test would be cleaner.
+
+Off-by-one risk in source: low. Off-by-one risk in test coverage: mild.
+
+**5. Surgical Scope**
+
+Tracked diff is scoped to `src/models/graph_salad/__init__.py`. Untracked files include allowed `src/models/graph_salad/attention.py` and `tests/test_graph_attention.py`, but also out-of-scope `docs/codex_reviews/*`. So: code changes are scoped; current worktree is not strictly scoped if those docs are part of the change set.
+
+**6. Simplicity**
+
+313 LoC is justified by the repeated fail-loud defects and explicit contract. I do not see dead code or premature abstraction in `attention.py`. The main issue is not over-engineering; it is one missing semantic contract between `adjacency` and `geodesic_dist`.
+
+**7. Unblock Decision**
+
+NO-GO. `pool_dynamic.py` could hand in a bounded but wrong geodesic matrix and attention would consume it silently.
+
+Required fix: add valid-pair Floyd consistency validation, plus a regression test for the exact malformed shorter-hop line graph above.
+
+UNBLOCK: NO-GO

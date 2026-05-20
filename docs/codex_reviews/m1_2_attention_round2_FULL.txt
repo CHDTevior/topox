@@ -1,0 +1,63 @@
+Codex review — M1.2 attention.py ROUND 2 (post R12 fail-loud fixes)
+Thread: 019e43a6-7c77-77a2-a208-642f07e1ae3a (FRESH, no continuation)
+Model: gpt-5.5, model_reasoning_effort=xhigh
+Date: 2026-05-20
+
+================================================================================
+1. **Verdict**: NEEDS-FIX
+
+2. **Round-1 R12 sealing audit**
+
+| claim | guard / source | regression test | enforced? |
+|---|---|---|---|
+| nonfinite_x | /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:139-142 uses `torch.isfinite(x)` | /scratch/ts1v23/workspace/noKslot_clean/tests/test_graph_attention.py:158-166 | Y |
+| geodesic_nan_or_minus_inf | /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:150-157 checks NaN and `-Inf` separately | /scratch/ts1v23/workspace/noKslot_clean/tests/test_graph_attention.py:178-196 | Y |
+| adjacency_nan | /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:144-147 uses `torch.isfinite(adjacency)` | /scratch/ts1v23/workspace/noKslot_clean/tests/test_graph_attention.py:168-176 | Y |
+| all_false_node_mask | /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:162-167 rejects per-row all-False masks | /scratch/ts1v23/workspace/noKslot_clean/tests/test_graph_attention.py:198-206 | Y |
+| dropout_p_eq_1 | /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:79-80 enforces `[0, 1)` | /scratch/ts1v23/workspace/noKslot_clean/tests/test_graph_attention.py:208-212 | Y |
+| comment lie | /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:181-189 now says `+inf -> 0.0` neutral bias and uses `torch.isinf`; no old geodesic "large finite sentinel" wording found | /scratch/ts1v23/workspace/noKslot_clean/tests/test_graph_attention.py:138-154 covers +Inf behavior, not comment wording | Y, source-only |
+
+3. **New silent-failure modes found**
+
+`B=0` is still a silent return. /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:118-132 accepts shapes with zero batch, /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:162-167 is vacuous for empty batch, and /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:214 returns an empty tensor. I verified `B=0,N=4` returns shape `(0,4,16)`.
+
+Other hunted cases: `x=-Inf` is caught by /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:139-142; `n_heads=1` works through /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:173-175; `N=0` with nonempty batch raises at /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:162-167; dim/head divisibility is caught at /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:70-73; dtype mismatch fails loudly via LayerNorm/Linear at /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:171 or :190-191; `dropout=0.0` is accepted by /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:79; geodesic input is cloned before substitution at /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:188-189.
+
+4. **Validation order & message clarity**
+
+Order is monotone: shape checks at /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:118-132, finite checks at :139-157, mask sanity at :162-167, compute starts at :169. The six R12 messages are explicit and regex-tested in /scratch/ts1v23/workspace/noKslot_clean/tests/test_graph_attention.py:158-212. Missing explicit message: `B=0` / empty batch.
+
+`python tests/test_graph_attention.py` passes 12/12.
+
+5. **R3 surgical scope confirmation**
+
+Not confirmed. `git status --short` shows extra touched files beyond the two requested targets: /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/__init__.py:10 and :22-24 are modified to export `GraphAttentionBlock`; /scratch/ts1v23/workspace/noKslot_clean/docs/codex_reviews/m1_2_attention_BRIEF.md:11-16 and /scratch/ts1v23/workspace/noKslot_clean/docs/codex_reviews/m1_2_attention_FULL.txt:18-22 are untracked stale review artifacts. No spillover found in `encoder.py`, `graph_utils.py`, `batch.py`, `denoiser_stub.py`, or scaffolding tests.
+
+6. **R2 simplicity assessment**
+
+The +30 LoC is mostly justified R12 fail-loud code. Only small waste: /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:162-163 recomputes `node_mask.any(dim=1)`; store it once if touching this file. No dead defensive branch found.
+
+7. **Ckpt-key isomorphism vs encoder.py**
+
+All block-level `state_dict()` keys and shapes match. Constructor signature also matches encoder: /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:60-66 vs /scratch/ts1v23/workspace/noKslot_clean/src/models/encoder.py:30.
+
+| key group | graph_salad source | encoder source | status |
+|---|---|---|---|
+| `q_proj`, `k_proj`, `v_proj`, `o_proj` weights/biases | /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:86-90 | /scratch/ts1v23/workspace/noKslot_clean/src/models/encoder.py:35-38 | match |
+| `geodesic_bias.weight`, `adjacency_bias.weight` | /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:92-95 | /scratch/ts1v23/workspace/noKslot_clean/src/models/encoder.py:40-42 | match |
+| `norm1`, `norm2` weights/biases | /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:97-99 | /scratch/ts1v23/workspace/noKslot_clean/src/models/encoder.py:44-45 | match |
+| `ff.0`, `ff.3` weights/biases | /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:101-108 | /scratch/ts1v23/workspace/noKslot_clean/src/models/encoder.py:47-53 | match |
+
+No temperature/scale buffers exist in either implementation.
+
+8. **MUST-FIX-NOW list**
+
+1. /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:122: add explicit `B > 0` and preferably `N > 0` validation before finite checks; add tests for empty batch and zero nodes in /scratch/ts1v23/workspace/noKslot_clean/tests/test_graph_attention.py.
+2. /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/__init__.py:10 and :22-24: either include this export edit in the approved M1.2 scope or remove it from the round-2 patch.
+3. /scratch/ts1v23/workspace/noKslot_clean/docs/codex_reviews/m1_2_attention_BRIEF.md:11-16 and /scratch/ts1v23/workspace/noKslot_clean/docs/codex_reviews/m1_2_attention_FULL.txt:18-22: remove/update stale untracked round-1 review artifacts before claiming surgical scope.
+
+9. **DEFERRED list**
+
+Add explicit regression tests for `x=-Inf`, `adjacency=+Inf`, and dtype/device mismatch if direct non-`GraphMotionBatch` use becomes common. Tighten /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:50-51 to document zero-diagonal/no-self-loop adjacency, matching /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/batch.py:427-452.
+
+10. **pool_dynamic.py unblock**: NO-GO, because `B=0` still silently returns and R3 scope is not clean.

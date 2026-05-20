@@ -1,0 +1,156 @@
+M1.2 graph_salad/attention.py ROUND 3 fresh review
+
+Scope reviewed:
+- /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py
+- /scratch/ts1v23/workspace/noKslot_clean/tests/test_graph_attention.py
+- /scratch/ts1v23/workspace/noKslot_clean/src/models/encoder.py:20-99 for interface/key-shape reference
+- /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/__init__.py for export wiring
+
+Local verification:
+- `pytest tests/test_graph_attention.py -v` could not run because `pytest` is not installed in the active environment.
+- `python -m pytest tests/test_graph_attention.py -v` also failed: No module named pytest.
+- `python tests/test_graph_attention.py` ran the unittest suite and passed 14/14 in 0.120s.
+
+1. R12 silent-failure coverage
+
+The named round-1/round-2/round-3 failure modes are mostly sealed in the code:
+
+- non-finite x: attention.py:146-149 raises `GraphAttentionBlock: x contains NaN or Inf`.
+- geodesic NaN: attention.py:157-160 raises `GraphAttentionBlock: geodesic_dist contains NaN`.
+- geodesic -Inf: attention.py:161-164 raises a clear -Inf error.
+- adjacency NaN/Inf: attention.py:151-154 raises `GraphAttentionBlock: adjacency contains NaN or Inf`.
+- all-False attention mask per batch element: attention.py:169-174 raises and names bad batch indices.
+- dropout probability out of range: attention.py:79-80 enforces `[0, 1)`.
+- B/N=0: attention.py:122-129 raises before shape-vacuous and finite-vacuous checks.
+
+However, I do not consider R12 fully sealed because the advertised graph topology contract is not validated. attention.py:49-53 documents:
+
+- adjacency: `[B, N, N]`, binary `{0,1}`, symmetric.
+- geodesic_dist: `[B, N, N]`, Floyd hop-count distances or `+inf`.
+
+The implementation validates only shape and non-finiteness for these tensors. It does not validate the semantic part of the contract. Concrete probes against the current code:
+
+```
+block = GraphAttentionBlock(d_model=16, n_heads=2, d_ff=32, dropout=0.0)
+x = torch.randn(1, 4, 16)
+geo = torch.zeros(1, 4, 4)
+mask = torch.ones(1, 4, dtype=torch.bool)
+
+adjacency = torch.full((1, 4, 4), 0.5)  # non-binary
+block(x, adjacency, geo, mask)          # returned (1, 4, 16), finite=True
+
+adjacency = torch.zeros(1, 4, 4)
+adjacency[0, 0, 1] = -1.0               # negative edge weight
+block(x, adjacency, geo, mask)          # returned (1, 4, 16), finite=True
+
+adjacency = torch.zeros(1, 4, 4)
+adjacency[0, 0, 1] = 1.0                # asymmetric
+block(x, adjacency, geo, mask)          # returned (1, 4, 16), finite=True
+
+adjacency = torch.eye(4).unsqueeze(0)   # self-loop diagonal; accepted too
+block(x, adjacency, geo, mask)          # returned (1, 4, 16), finite=True
+```
+
+The same issue exists for geodesic metric semantics:
+
+```
+geodesic_dist = torch.zeros(1, 4, 4)
+geodesic_dist[0, 0, 1] = -2.0           # negative finite distance
+block(x, adj, geodesic_dist, mask)      # returned (1, 4, 16), finite=True
+
+geodesic_dist = torch.zeros(1, 4, 4)
+geodesic_dist[0, 0, 0] = 3.0            # nonzero self-distance
+block(x, adj, geodesic_dist, mask)      # returned (1, 4, 16), finite=True
+
+geodesic_dist = torch.zeros(1, 4, 4)
+geodesic_dist[0, 0, 1] = 1.0
+geodesic_dist[0, 1, 0] = 3.0            # asymmetric undirected distance
+block(x, adj, geodesic_dist, mask)      # returned (1, 4, 16), finite=True
+```
+
+The non-binary, negative, and asymmetric adjacency probes are invalid under the current docstring. The self-loop probe is not explicitly excluded by attention.py's docstring, but it is another graph-semantic decision that the block currently leaves implicit. All of these values become learned additive topology bias at attention.py:195-200. That is a finite-but-wrong R12 failure for the stated contract: a graph construction bug would not trip at the attention boundary.
+
+There is also a residual comment-vs-code issue at attention.py:207-210. The code uses finite `-1e9` masking, so an all-key-masked row would produce a uniform softmax, not NaN. `attn.nan_to_num(0.0)` does not force that uniform row to zero. The all-False batch mask guard now makes this path unreachable for the current mask shape, so this is not the same runtime bug as before, but the comment still claims a protection that the code does not implement.
+
+2. B/N=0 guard placement and ordering
+
+2(a). Reachability
+
+The B/N guard is reachable. The x shape check at attention.py:118-121 validates rank and last dimension only. It accepts `x.shape == (0, 4, d_model)` and `x.shape == (1, 0, d_model)`, then attention.py:122 unpacks `B, N, _`, and attention.py:126-129 raises the new explicit ValueError.
+
+Local probe:
+
+```
+B0 RAISED ValueError GraphAttentionBlock: batch B=0 and node count N=4 must be > 0
+N0 RAISED ValueError GraphAttentionBlock: batch B=1 and node count N=0 must be > 0
+```
+
+So the new guard is not dead code.
+
+2(b). Should later checks run before the guard?
+
+No. Once `B <= 0` or `N <= 0`, the computation has no meaningful attention domain. Running adjacency/geodesic/node_mask shape checks first would only choose a different error for an already invalid empty graph. Running finite checks first would be actively weaker, because `torch.isfinite(...).all()` is vacuously true on zero-sized tensors. The current order prevents that vacuity.
+
+It is acceptable that a `B=0` call with also-bad adjacency gets the empty-batch error first. The more specific critical bug is the empty attention domain.
+
+2(c). Bypass path around forward()
+
+No normal GraphAttentionBlock path bypasses forward(). The module exposes ordinary PyTorch submodules (`q_proj`, `geodesic_bias`, etc.), but calling those directly is not the GraphAttentionBlock API and would not be a bypass inside this module. `nn.Module.__call__` dispatches to forward().
+
+3. Overall validation-order monotonicity
+
+Existing order is monotone for the checks it actually performs:
+
+1. Constructor checks `d_model`, `n_heads`, divisibility, `d_ff`, and dropout before creating dependent dimensions/modules.
+2. forward() checks `x` rank and last dimension before unpacking `B, N`.
+3. forward() rejects `B <= 0` or `N <= 0` before any vacuous shape/finite reductions.
+4. adjacency/geodesic shapes are checked before topology bias projection.
+5. node_mask shape and bool dtype are checked before `node_mask.any(dim=1)` and before mask broadcasting.
+6. finite checks occur after shapes, so reductions are over the intended tensors.
+7. geodesic `+inf` remains allowed by contract; NaN and -Inf are rejected before `torch.isinf` substitution.
+8. all-False per-batch masks are rejected before softmax.
+
+I did not find shadowing among these existing checks that makes a later, more specific existing check unreachable in a harmful way. The B/N guard intentionally shadows later empty-tensor shape/finite checks, and that is the right order.
+
+Missing critical-path validation:
+
+- adjacency semantic contract: binary and symmetric is documented but not checked in attention.py. If zero diagonal/no self-loops is also intended at this boundary, it should be documented and tested rather than left implicit.
+- geodesic semantic contract: Floyd hop-count metric or `+inf` is documented but negative finite values, nonzero valid-node diagonal, and asymmetry are not checked.
+- If the intended M1.2 contract is broader than the docstring, especially if pool_dynamic.py will pass weighted pooled adjacency, then the docstring and tests must be updated to say so explicitly. In that case, validate the broader invariant instead, for example finite, nonnegative, symmetric weighted adjacency on valid nodes rather than binary adjacency.
+
+This is a contract problem, not an algebra problem. The attention math itself is shape-consistent and matches the encoder block interface closely enough for key-shape isomorphism:
+
+- q/k/v/o projections, geodesic_bias, adjacency_bias, norm1/norm2, and ff layer layout match encoder.py:20-99.
+- The constructor signature matches the legacy encoder block except for the additional validation.
+
+4. R3 scope claim adjudication
+
+4(a). `src/models/graph_salad/__init__.py` export of GraphAttentionBlock
+
+Verdict: AGREE.
+
+The edit is inside `src/models/graph_salad/`, which is the package being built for M1.2. The diff is limited to importing `GraphAttentionBlock` and adding it to `__all__`. That is necessary downstream wiring for a new package-level module, and it does not change unrelated runtime behavior. I do not classify this as R3 scope creep.
+
+4(b). Untracked round-1/round-2 review artifacts
+
+Verdict: AGREE, with a bookkeeping caveat.
+
+The files under `docs/codex_reviews/` are review artifacts, not source code or runtime behavior. This repo already keeps milestone review artifacts in that directory, and the current task itself asks me to add two more. Their presence is not an attention.py implementation defect and should not block the code review on R3 grounds.
+
+Bookkeeping caveat: before finalizing M1.2, the author should make an intentional commit decision: include the review artifacts as part of the milestone audit trail, or remove only the ones the project does not want. Do not leave them accidentally untracked at final handoff.
+
+5. pool_dynamic.py unblock
+
+Verdict: NO-GO based on the current attention.py contract and tests.
+
+The B/N=0 blocker is fixed and the 14 attention tests pass under unittest. The remaining blocker is the topology input contract. pool_dynamic.py will depend on GraphAttentionBlock with generated pooled topology tensors. Today attention.py advertises strict graph semantics but only checks shape and non-finiteness. A bad pooled adjacency/geodesic tensor can silently become a finite learned attention bias.
+
+Specific gap blocking pool_dynamic.py:
+
+- Decide and enforce the topology contract at the GraphAttentionBlock boundary before building pool_dynamic.py on top of it.
+- If adjacency is truly binary/symmetric in attention.py, add mask-aware tests and ValueErrors for non-binary entries, negative entries, and asymmetry. If zero diagonal/no self-loops is intended at this boundary, document and test that too.
+- If dynamic pooling will pass weighted pooled adjacency, change the attention.py contract to weighted finite/nonnegative/symmetric adjacency and test that weighted values are intentional while negative/asymmetric values still raise.
+- Add geodesic tests for negative finite distance, nonzero valid-node diagonal, and asymmetry, or document and test a broader geodesic-bias contract if that is intended.
+- Fix the stale `nan_to_num` comment so it does not claim uniform all-masked softmax rows are forced to zero.
+
+FINAL VERDICT: NEEDS-FIX

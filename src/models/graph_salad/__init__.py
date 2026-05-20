@@ -7,6 +7,7 @@ dynamic learned / deterministic-anchor / no-pool) + Phase 2 denoiser interface s
 See docs/PLAN_GAP_REPORT.md for design decisions and acceptance gates.
 """
 
+from .attention import GraphAttentionBlock
 from .batch import GraphMotionBatch
 from .denoiser_stub import GraphSaladDenoiserStub
 from .graph_utils import (
@@ -19,6 +20,8 @@ from .graph_utils import (
 )
 
 __all__ = [
+    # M1.2 core modules
+    "GraphAttentionBlock",
     # M1.1 scaffolding
     "GraphMotionBatch",
     "GraphSaladDenoiserStub",

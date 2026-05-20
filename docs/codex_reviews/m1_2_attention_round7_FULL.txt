@@ -1,0 +1,127 @@
+Codex M1.2 attention.py Round 7 review (FULL)
+Thread: 019e43d7-e108-7d63-8216-7f115cebf3ee
+Model: gpt-5.5, reasoning effort: xhigh
+Fresh thread (no threadId passed).
+Date: 2026-05-20
+
+================================================================================
+Q1. All 11 R12 categories actually sealed, including round 6's adj/geo cross-consistency?
+================================================================================
+
+Yes, the 11 existing fail-loud categories I can identify are enforced:
+
+1. Constructor dimension/dropout contract: attention.py:76
+2. `x`, `adjacency`, `geodesic_dist`, `node_mask` shape/dtype contract: attention.py:126
+3. Non-empty `B` and `N`: attention.py:131
+4. Float dtype must be fp32/fp64 and match module dtype: attention.py:149
+5. `x` finite: attention.py:171
+6. `adjacency` finite/non-negative/symmetric/zero-diagonal: attention.py:179
+7. `geodesic_dist` no NaN/no `-Inf`/finite non-negative: attention.py:206
+8. `geodesic_dist` finite hop bound `<= N-1`: attention.py:222
+9. `geodesic_dist` reachability/value symmetry and valid-node diagonal zero: attention.py:230
+10. Per-sample all-False `node_mask` rejected before Floyd: attention.py:258
+11. Adj/geo cross-consistency against recomputed Floyd: attention.py:269
+
+Round-7 fix works for both advertised cases. `floyd_shortest_path` treats
+`adjacency > 0` as one-hop edges, masks invalid nodes, sets valid diagonal
+to zero, then Floyd-minimizes: graph_utils.py:125. Shortcut distances are
+caught by the finite-value compare at attention.py:286. Finite distances
+between disconnected valid nodes are caught by the finite-pattern compare
+at attention.py:277. The two new tests cover exactly these:
+test_graph_attention.py:363 and test_graph_attention.py:380.
+
+================================================================================
+Q2. 12th R12 lurking?
+================================================================================
+
+New R12 found: unbounded adjacency magnitude.
+
+Concrete malformed input: B=1, N=4, d_model=16, all nodes valid, line-graph
+adjacency with edge entries `1_000_000.0` instead of `1.0`, and geodesic
+equal to the correct line-graph hop distances. Current code accepts it
+because adjacency is finite, non-negative, symmetric, zero-diagonal, and
+Floyd only checks `adjacency > 0`, so cross-consistency still passes:
+attention.py:179, graph_utils.py:128.
+
+Why it corrupts behavior: `adjacency_bias(adjacency.unsqueeze(-1))` injects
+raw magnitude into attention logits at attention.py:318, then
+`scores = scores + topo_bias` at attention.py:320. This turns an otherwise
+identical graph topology into an arbitrary softmax-saturating bias.
+Verified smoke case: `adj * 1_000_000` was accepted and changed output by
+max abs diff about `0.74` versus binary adjacency.
+
+This is malformed relative to local producers: raw `GraphMotionBatch`
+requires binary adjacency (batch.py:426), and hard coarse adjacency is
+binarized (graph_utils.py:246). Fix should enforce a bounded adjacency
+contract, likely valid-pair values in `[0, 1]`, unless `pool_dynamic.py`
+deliberately defines and normalizes another range.
+
+================================================================================
+Q3. R2 simplicity — strictly redundant checks?
+================================================================================
+
+No strict redundancy found. Some geodesic checks overlap with the Floyd
+consistency check on valid pairs, but they also catch padded/invalid-pair
+garbage that the cross-consistency check intentionally masks out with
+`both_valid` at attention.py:276. The code is validation-heavy, but not
+over-engineered under R12 fail-loud goals.
+
+================================================================================
+Q4. R3 surgical scope — only src/models/graph_salad/ + tests/?
+================================================================================
+
+Scope is not clean.
+
+`git diff --stat HEAD` reports only one tracked edit:
+
+```text
+src/models/graph_salad/__init__.py | 3 +++
+```
+
+But `git status --short --untracked-files=all` shows untracked
+`src/models/graph_salad/attention.py`, untracked
+`tests/test_graph_attention.py`, and untracked review docs under
+`docs/codex_reviews/`. Code changes are inside `src/models/graph_salad/`
+and `tests/`; the docs are drift outside the stated round-7 scope.
+
+================================================================================
+Q5. Performance — keep always-on or add toggle?
+================================================================================
+
+Recommendation: add-toggle.
+
+Always-on Floyd is fine for a single module call at `N<=160`, but not fine
+as a repeated denoiser hot-path check across many diffusion steps and
+layers. It is also a Python-loop Floyd with `N` iterations, so on GPU it
+is not just "4M ops"; it is repeated kernel work per forward. Keep
+validation default-on, but add an explicit `validate_inputs: bool = True`
+path so callers can validate once at the batch/pool boundary and skip
+repeated Floyd checks in hot loops.
+
+================================================================================
+Q6. pool_dynamic.py unblock — GO / NO-GO?
+================================================================================
+
+NO-GO for `pool_dynamic.py` until the adjacency magnitude contract is
+fixed. Dynamic pooling is exactly where "soft adjacency" ambiguity will
+enter; letting unbounded values through now creates a bad interface for
+the next module.
+
+Could not run the exact pytest command because `pytest` is not installed.
+Ran the unittest file directly: 27 tests passed.
+
+================================================================================
+VERDICT BLOCK
+================================================================================
+
+VERDICT: NEEDS-FIX
+CONVERGED:   no
+PERFORMANCE: add-toggle
+UNBLOCK_POOL_DYNAMIC: NO-GO
+FIX_LIST:
+- src/models/graph_salad/attention.py:179 add an adjacency magnitude/range
+  contract, probably valid-pair adjacency in [0, 1], with a regression test
+  for symmetric huge adjacency that currently passes.
+- src/models/graph_salad/attention.py:119 add default-on validation control
+  for the Floyd cross-check, or equivalent caller-controlled hot-path
+  bypass after one explicit validation point.

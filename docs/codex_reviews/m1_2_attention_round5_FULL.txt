@@ -1,0 +1,67 @@
+M1.2 graph_salad/attention.py — ROUND 5 codex fresh-eyes review
+Model: gpt-5.5, reasoning effort: xhigh
+Thread: 019e43c6-fd24-7aa2-a964-7b17e75b69ec  (FRESH — no threadId continuation)
+Date: 2026-05-20
+Reviewer protocol: Fresh-eyes (no prior round briefs loaded). Codex read only the two
+target files plus `git status/diff --name-only` for scope; ran `python tests/test_graph_attention.py` (22/22 PASS).
+
+================================================================================
+FULL CODEX RESPONSE (verbatim)
+================================================================================
+
+I only read the two target files, plus `git status/diff --name-only` for scope. `python tests/test_graph_attention.py` passes: 22/22.
+
+**Q1**
+(a) Sealed. [attention.py](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:170) uses `torch.allclose(..., atol=1e-6, rtol=0.0)`. [test_graph_attention.py](/scratch/ts1v23/workspace/noKslot_clean/tests/test_graph_attention.py:300) sets `adj[0,0,1]=1e6`, `adj[0,1,0]=1e6+1.0`, and asserts `ValueError`. Float64 does not bypass for that diff; my probe raised correctly.
+
+(b) Sealed, and stronger than your summary: NaN is explicitly rejected before the finite-pattern check at [attention.py:185](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:185). The two-stage finite/+Inf symmetry check is at [attention.py:206](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:206)-217. A NaN cannot slip through as "infinite class".
+
+(c) Sealed. Docstring now says adjacency is "non-negative weighted (binary OK as special case), symmetric, zero diagonal" at [attention.py:50](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:50)-54. Validation matches: finite [158](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:158), non-negative [162](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:162), symmetric [170](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:170), zero diagonal [177](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:177).
+
+**Q2**
+There is a real 10th hole: dtype contract is not fail-loud.
+
+Runnable trace:
+`block.half(); x/adj/geo=float16 valid line graph; mask all True` passes validation, then crashes at [attention.py:268](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:268):
+`RuntimeError: value cannot be converted to type c10::Half without overflow`.
+
+Mixed dtype also reaches compute:
+`x=float32, adjacency/geodesic=float64` -> `RuntimeError expected m1 and m2 to have the same dtype`.
+
+Other probes:
+- Full disconnected `+Inf` geodesic sub-block passes and output is finite. This matches docstring allowing `+Inf` unreachable pairs.
+- `adj[0,1]=1.0`, `adj[1,0]=1.0+1e-6` passes; `allclose` boundary is inclusive. Not documented except by code tolerance.
+- Multi-spot geodesic pattern asymmetry is caught.
+- `adj=-1e-9` is caught, no tolerance.
+- adjacency NaN is caught.
+- geodesic diagonal is checked only at valid nodes; padded-node diagonal garbage passes, matching docstring wording.
+- adjacency/geodesic cross-consistency is not checked: `adj[0,1]=adj[1,0]=0`, `geo[0,1]=geo[1,0]=1` passes. I would not block on this unless upstream cannot guarantee both came from the same graph.
+
+**Q3**
+Floyd hop-count deferral is not defensible now. A corrupt finite `geo[0,9]=geo[9,0]=1e6` with `N=10` passes validation, then [attention.py:260](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:260)-263 projects it as a learned additive bias. Because `geodesic_bias` is unconstrained, it can silently dominate attention. Probe with `geodesic_bias.weight=1`, zero q/k, valid line graph: forward passed with finite output, but head-0 row-0 attention became `[0,0,0,0,0,0,0,0,0,1]`.
+
+**Q4**
+For existing checks, validation order is still monotonic: shape/mask checks happen at [124](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:124)-145; finite/topology checks at [150](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:150)-237; compute starts at [239](/scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/attention.py:239). Exception: dtype is not validated, so fp16/mixed dtype errors occur after compute begins.
+
+**Q5**
+Not cleanly confirmed. The two target files themselves do not show imports/refs requiring neighboring edits. But current worktree is not limited to those two files: `git status --short` shows `M src/models/graph_salad/__init__.py`, plus untracked review docs and the two target files. I did not open the review docs per instruction.
+
+**Q6**
+286 LoC is justified for typed self-attention plus fail-loud R12 checks. The validation block is verbose but readable. A `_validate_inputs(...)` helper would be reasonable after adding dtype and hop-bound checks, but not required. I do not see harmful redundancy: finite-pattern symmetry and finite-value symmetry are both necessary because `+Inf` is legal.
+
+**Q7**
+NO-GO for declaring M1.2 closed and starting M1.3 on this as a strict upstream dependency. Blocks: missing dtype fail-loud contract, and missing finite geodesic upper-bound check. Structural adjacency/geodesic consistency can remain deferred if upstream generation is trusted.
+
+FIX-1: Reject corrupt finite geodesic values above Floyd hop bound -> `src/models/graph_salad/attention.py:195-200` -> suggested patch:
+```python
+if (finite_geo > (N - 1)).any():
+    raise ValueError(f"GraphAttentionBlock: geodesic_dist finite entries exceed Floyd hop bound N-1={N - 1}")
+```
+
+FIX-2: Add explicit dtype compatibility before compute, rejecting fp16/mixed topology tensors fail-loud -> `src/models/graph_salad/attention.py:141-146` -> suggested patch:
+```python
+if x.dtype not in (torch.float32, torch.float64) or x.dtype != self.q_proj.weight.dtype or adjacency.dtype != x.dtype or geodesic_dist.dtype != x.dtype:
+    raise ValueError("GraphAttentionBlock: x/adjacency/geodesic_dist must be float32/float64 and match module dtype")
+```
+
+VERDICT: NEEDS-FIX

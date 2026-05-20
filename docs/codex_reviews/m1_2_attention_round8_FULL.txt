@@ -1,0 +1,69 @@
+# M1.2 attention.py — ROUND 8 review
+
+Codex thread: 019e43e0-01a6-7692-aad1-7c0654da6304
+Model: gpt-5.5
+Reasoning effort: xhigh
+Fresh thread: yes (no codex-reply continuation)
+Date: 2026-05-20
+
+## Verdict
+PASS
+
+29/29 tests pass via `python tests/test_graph_attention.py`.
+
+## R12 trace (12 categories)
+1. Constructor structural contract — enforced at `attention.py:L83-L95`; tested at `test_graph_attention.py:L53::test_invalid_dim_raises`, `L208::test_dropout_out_of_range_raises`.
+
+2. Forward shape / mask dtype / empty tensor contract — enforced at `attention.py:L140-L161`, `L148-L151`; tested at `L61::test_wrong_input_shape_raises`, `L214::test_empty_batch_raises`, `L224::test_empty_node_count_raises`.
+
+3. Float dtype consistency — enforced at `attention.py:L168-L180`; tested at `L341::test_fp16_input_raises`, `L352::test_mixed_dtype_raises`.
+
+4. `x` finite — enforced at `attention.py:L185-L188`; tested at `L158::test_x_nan_raises`.
+
+5. Adjacency finite / non-negative — enforced at `attention.py:L193-L201`; tested at `L168::test_adjacency_nan_raises`, `L236::test_adjacency_negative_raises`.
+
+6. Adjacency range cap `[0, 1]` — enforced at `attention.py:L202-L207`; tested at `L402::test_adjacency_above_one_raises`.
+
+7. Adjacency undirected + no self-loops, with `rtol=0` — enforced at `attention.py:L211-L222`; tested at `L247::test_adjacency_asymmetric_raises`, `L300::test_adjacency_subtle_asymmetry_raises`, `L257::test_adjacency_self_loop_raises`.
+
+8. Geodesic no NaN / no `-Inf` / non-negative finite / valid-node zero diagonal — enforced at `attention.py:L226-L241`, `L271-L276`; tested at `L178::test_geodesic_nan_raises`, `L188::test_geodesic_neg_inf_raises`, `L267::test_geodesic_negative_finite_raises`, `L288::test_geodesic_nonzero_diagonal_raises`.
+
+9. Geodesic hop-count upper bound — enforced at `attention.py:L245-L249`; tested at `L330::test_geodesic_hop_bound_exceeded_raises`.
+
+10. Geodesic symmetry, including finite/`+Inf` pattern and `rtol=0` finite values — enforced at `attention.py:L255-L269`; tested at `L277::test_geodesic_asymmetric_raises`, `L315::test_geodesic_finite_vs_inf_asymmetry_raises`.
+
+11. Per-sample non-empty `node_mask` — enforced at `attention.py:L282-L287`; tested at `L198::test_all_false_mask_raises`.
+
+12. Adjacency/geodesic Floyd cross-consistency — enforced at `attention.py:L295-L314`; tested at `L365::test_geodesic_inconsistent_with_adjacency_raises`, `L382::test_geodesic_reachability_inconsistent_raises`.
+
+## 13th R12 search
+No new `validate_inputs=True` fail-loud gap found.
+
+This looks convergent: earlier rounds moved from broad contract holes to narrow numeric/topology edge cases; Round 8 seals the last known magnitude hole by bounding adjacency before bias projection. Remaining ambiguous areas are policy choices, not uncaught silent corruption under the stated contract: soft adjacency treats any positive value as an edge for Floyd consistency, disconnected valid nodes are allowed to attend with neutralized `+Inf` geodesic bias, and padded-query rows are caller-masked downstream.
+
+## validate_inputs=False bypass safety
+Net: safe-with-contract, unsafe as a public unchecked API.
+
+Concrete invalid bypass behavior:
+- `adjacency > 1` or `adjacency < 0`: computes finite but semantically wrong biased attention. Out-of-contract.
+- `geodesic_dist` NaN: propagates NaN to output. I verified `validate_inputs=False` returns `has_nan=True`.
+- `geodesic_dist == -Inf`: `_compute()` treats it like `+Inf` at `attention.py:L346-L347`, silently neutralizing it. Out-of-contract.
+- all-False `node_mask`: returns finite garbage attention, not NaN. I verified finite `(1, 4, 16)` output.
+- batch singleton mismatch, e.g. `x` has `B=2` while adjacency/geodesic/mask have `B=1`: silently broadcasts and returns `(2, 4, 16)`. This is the biggest footgun, but default validation catches it.
+- integer/bool adjacency or mask dtype mismatch: usually crashes in `Linear` or `masked_fill`, not silent.
+- `d_model` not divisible by heads: impossible after constructor guard at `attention.py:L85-L88`.
+
+I do not count this as NEEDS-FIX because the flag is explicitly documented as "caller asserts inputs already validated" at `attention.py:L134-L138`. Hot-path callers must validate once before entering timestep loops.
+
+## R3 surgical scope
+Implementation scope: OK. Touched implementation/test paths are under `src/models/graph_salad/` and `tests/`.
+
+Repo cleanliness advisory: current worktree also has untracked `docs/codex_reviews/*` files outside `src/models/graph_salad/ + tests/`. If R3 is interpreted as strict commit scope, keep those out of the M1.2 code commit or stage them separately.
+
+## R2 simplicity / scope-creep
+Still minimum-viable for a fail-loud Graph-SALAD attention block. The length is mostly explicit contract checks plus explanatory comments; `_compute()` remains simple.
+
+No deletion recommended. The new `[0,1]` adjacency cap does not make prior checks redundant: finite is still needed because NaN comparisons do not catch NaN; non-negative gives a clearer lower-bound failure; symmetry/zero-diagonal remain independent; Floyd consistency still catches bounded but wrong geodesics.
+
+## M1.3 pool_dynamic.py
+GO — attention contract is sealed; only non-functional review-artifact drift needs commit hygiene.

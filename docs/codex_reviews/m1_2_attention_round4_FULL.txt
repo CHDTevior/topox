@@ -1,0 +1,184 @@
+M1.2 GraphAttentionBlock Round 4 FULL review
+Reviewer: fresh code read; no prior round briefs loaded.
+Date: 2026-05-20
+
+Verdict: NEEDS-FIX
+
+Summary
+The implementation is close and the ckpt-key isomorphism requirement is preserved, but Round 4 is not fully sealed. The current symmetry checks are weaker than the written contract in two ways:
+
+1. adjacency and geodesic symmetry use torch.allclose(..., atol=1e-6) without rtol=0, so PyTorch's default rtol=1e-5 permits large absolute asymmetry at large values.
+2. geodesic symmetry compares only entries where both directions are finite, so a finite distance in one direction and +Inf in the other direction is accepted. For an undirected graph geodesic, that is a corrupt reachability matrix and should fail loud.
+
+I also found a separate 9th R12 candidate: finite but impossible geodesic magnitudes, e.g. 1e20, pass validation and produce finite outputs. Softmax is numerically stable in the tested float32 case, but the learned geodesic bias is then dominated by a corrupt hop-count. If geodesic_dist is truly Floyd hop-count distance as documented, finite valid-valid entries should be bounded by valid_node_count - 1.
+
+Evidence read
+- src/models/graph_salad/attention.py:39-264
+- tests/test_graph_attention.py:1-300
+- src/models/encoder.py:20-99
+- src/models/graph_salad/__init__.py:10,22-35
+- src/models/graph_salad/batch.py:426-473 for upstream adjacency semantics
+
+Commands run
+- python tests/test_graph_attention.py
+  Result: 20 tests OK.
+- state_dict key/shape comparison for (d_model,n_heads,d_ff) = (32,4,64), (16,1,32), (16,16,32)
+  Result: exact key/shape match in all three cases.
+- git diff --name-only; git ls-files --others --exclude-standard
+  Result: tracked diff only src/models/graph_salad/__init__.py; untracked attention.py, tests/test_graph_attention.py, and codex review docs.
+
+Q1. R12 seal verification
+
+R1 nonfinite x: sealed. attention.py:144 rejects any NaN/Inf in x before LayerNorm/Linear.
+
+R2 nonfinite adj: sealed for NaN/Inf. attention.py:152 rejects nonfinite adjacency before value/symmetry checks.
+
+R3 all-False mask row: sealed. attention.py:210 checks each batch element has at least one valid node. This handles B >= 2; the regression test uses one valid row and one all-False row.
+
+R4 dropout always on in eval: sealed. The block uses nn.Dropout modules at attention.py:254,259 and inside ff at 102-108, so dropout follows self.training. I found no functional dropout call with training=True.
+
+R5 comment-vs-code lie: mostly sealed, but one contract comment remains inconsistent. The forward docstring says adjacency is binary {0,1} at attention.py:50-51, while the validation intentionally allows arbitrary non-negative weighted edges at attention.py:148-151. GraphMotionBatch enforces binary raw-batch adjacency at batch.py:426-473, but GraphAttentionBlock is exported and also intended for pooled/coarse adjacency. Decide the contract and align the docstring. This is a doc/contract fix, not a parameter or runtime fix.
+
+R6 B=0 or N=0 empty batch: sealed. attention.py:126-129 rejects either zero dimension before shape-only computation can return empty outputs.
+
+R7 adjacency contract: leaky on symmetry tolerance; otherwise sealed. Nonfinite, negative, and zero diagonal are checked at attention.py:152-170. The diagonal check is not mask-aware; it enforces zero diagonal for all padded rows too. That is stricter than "valid nodes only", but it matches the upstream GraphMotionBatch padded-zero contract. The leak is torch.allclose at attention.py:161: default rtol=1e-5 is still active. Example: adj[0,0,1]=1_000_000 and adj[0,1,0]=1_000_001 passes although the absolute asymmetry is 1.0, far above the stated 1e-6.
+
+R8 geodesic contract: leaky. NaN, -Inf, negative finite, and valid-node diagonal checks are present at attention.py:174-205. +Inf is accepted and neutralized before projection at 236-238, which is correct for the unreachable sentinel. The symmetry check at 190-198 is too weak: it masks to both_finite, so +Inf one way and finite the other way is accepted. It also inherits default rtol=1e-5, so large finite asymmetries can pass. A correct undirected geodesic check should also require the finite/+Inf pattern to be symmetric.
+
+Shape / B >= 2 / varied-N handling
+The block validates the padded tensor shapes against x-derived (B,N) at attention.py:130-139. Actual varied graph sizes are represented by node_mask, not ragged N. That is correct. The only caveat is adjacency diagonal enforcement over padded rows: callers that treat padded adjacency as don't-care may get false positives. Given batch.py:466-472 requires padded adjacency rows/cols to be zero, this is acceptable defense-in-depth.
+
++Inf in geo
++Inf is not rejected by the NaN, -Inf, or finite-negative checks. It is replaced with 0.0 before the Linear bias projection at attention.py:236-238, so it does not leak Inf into logits. That part is correct.
+
+Symmetry-on-finite entries
+The implementation is NaN-safe but semantically incomplete. It catches finite-vs-finite value disagreement, but misses finite-vs-+Inf reachability disagreement. For undirected geodesics, that should fail.
+
+Tolerance
+atol=1e-6 is reasonable for float32 binary adjacency and hop-count geodesics; it is not too tight. The implementation should set rtol=0 to make the stated absolute tolerance real. If weighted adjacency remains allowed and values can be large, consider either bounding adjacency weights or keeping strict absolute symmetry.
+
+Q2. Validation order monotonicity
+
+The general order is coherent:
+- x shape is checked before unpacking B,N.
+- B/N emptiness is checked before matching graph/mask shapes.
+- node_mask dtype is checked before boolean reductions.
+- adjacency finite precedes negative/symmetry/diagonal checks.
+- geodesic NaN and -Inf are separated because +Inf is allowed; the negative-finite check intentionally indexes finite entries only.
+- all-False mask is checked before softmax, so the removed attn.nan_to_num dead code is indeed unreachable for the original all-key-masked failure.
+
+No check is badly shadowed in the sense of being unreachable, but two checks are weaker than the intended contract:
+- adjacency symmetry passes some non-symmetric matrices because default rtol is active.
+- geodesic symmetry passes finite-vs-+Inf asymmetry because the finite mask is not itself checked for symmetry.
+
+One minor ordering note: if a sample is all-False but adjacency padded diagonal is nonzero, adjacency diagonal validation raises before the all-False mask guard. That is still fail-loud, not a silent hole.
+
+Q3. R3 surgical scope
+
+Code/test scope is acceptable. Tracked diff reports only src/models/graph_salad/__init__.py, which is within the graph_salad module and only exports GraphAttentionBlock. Untracked source/test files are src/models/graph_salad/attention.py and tests/test_graph_attention.py. There are prior untracked docs/codex_reviews files, plus the two files from this review. I saw no drive-by code edits outside src/models/graph_salad/ and tests/test_graph_attention.py.
+
+Q4. R2 simplicity / defense-in-depth
+
+The in-forward checks are justified, with the fixes above. GraphMotionBatch.from_collate_dict enforces raw-batch adjacency strongly at batch.py:426-473, but GraphAttentionBlock is public/exported from src/models/graph_salad/__init__.py and is plausible to call from probes, encoder-style code, pooled/coarse graph paths, and future pool_dynamic.py tests without going through GraphMotionBatch.
+
+Runtime cost is acceptable: the checks are O(B*N*N) tensor ops, while attention is already O(B*H*N*N*d_head) plus bias projection. The LoC cost is real, but most of the 264 lines are docstrings/comments and fail-loud guardrails. This is a case where Karpathy R2 simplicity loses to R12 training-integrity concerns: a corrupt graph tensor can otherwise produce finite but meaningless training signals.
+
+Concrete decision: keep in-block adjacency/geodesic validation. Do not remove it and blindly trust GraphMotionBatch. Tighten it and make the binary-vs-weighted adjacency contract explicit.
+
+Q5. Ckpt-key isomorphism
+
+Pass. Side-by-side read and mechanical state_dict comparison agree. The new module keeps the same parameter names and shapes as src/models/encoder.py::GraphAttentionBlock for matching constructor args:
+
+- q_proj.weight, q_proj.bias
+- k_proj.weight, k_proj.bias
+- v_proj.weight, v_proj.bias
+- o_proj.weight, o_proj.bias
+- geodesic_bias.weight with shape [n_heads, 1], bias=False
+- adjacency_bias.weight with shape [n_heads, 1], bias=False
+- norm1.weight, norm1.bias
+- norm2.weight, norm2.bias
+- ff.0.weight, ff.0.bias
+- ff.3.weight, ff.3.bias
+
+No buffers or orphan parameters are added. LayerNorm placement and FFN order match encoder.py: norm1 -> QKV attention -> residual -> norm2 -> Linear/GELU/Dropout/Linear/Dropout -> residual.
+
+Q6. 9th R12 category lurking
+
+Concrete existing-contract failure traces
+
+1. Geodesic reachability asymmetry passes.
+
+Input:
+    block = GraphAttentionBlock(d_model=8, n_heads=2, d_ff=16, dropout=0.0).eval()
+    B, N = 1, 3
+    x = torch.randn(B, N, 8)
+    adj = torch.zeros(B, N, N)
+    geo = torch.zeros(B, N, N)
+    geo[0, 0, 1] = float("inf")
+    geo[0, 1, 0] = 1.0
+    mask = torch.ones(B, N, dtype=torch.bool)
+    y = block(x, adj, geo, mask)
+
+Expected: ValueError, because an undirected geodesic matrix cannot say 0 cannot reach 1 while 1 reaches 0 in one hop.
+Actual: NO_RAISE; output shape (1,3,8), all finite.
+
+2. Adjacency large absolute asymmetry passes because rtol is active.
+
+Input:
+    adj[0, 0, 1] = 1_000_000.0
+    adj[0, 1, 0] = 1_000_001.0
+
+Expected: ValueError, because absolute asymmetry is 1.0 > 1e-6.
+Actual: NO_RAISE; torch.allclose(adj, adj.T, atol=1e-6) returns True.
+
+Separate 9th R12 candidate: impossible finite geodesic magnitudes
+
+Input:
+    block = GraphAttentionBlock(d_model=8, n_heads=2, d_ff=16, dropout=0.0).eval()
+    B, N = 1, 4
+    x = torch.randn(B, N, 8)
+    adj = torch.zeros(B, N, N)
+    geo = torch.zeros(B, N, N)
+    geo[0, 0, 1] = 1e20
+    geo[0, 1, 0] = 1e20
+    mask = torch.ones(B, N, dtype=torch.bool)
+    y = block(x, adj, geo, mask)
+
+Expected if geodesic_dist is Floyd hop-count distance: ValueError, because finite valid-valid distance must be <= valid_node_count - 1.
+Actual: NO_RAISE; output is finite. In float32 softmax is stable here, but the topology bias is now dominated by corrupted distance magnitude.
+
+Recommendation for Q6:
+- MUST-FIX-NOW: finite/+Inf reachability symmetry.
+- MUST-FIX-NOW: use rtol=0 for adjacency/geodesic symmetry tests.
+- MUST-FIX-NOW: add regression tests for those two traces.
+- DEFERRED or MUST depending on contract choice: enforce finite valid-valid geodesic upper bound if geodesic_dist is strictly Floyd hop-count. I lean MUST-FIX-NOW because the forward docstring says hop-count distances, but it is separable from the existing R7/R8 leaks.
+
+Q7. pool_dynamic.py unblock GO/NO-GO
+
+NO-GO for using this as a stable dependency today. The core implementation and checkpoint surface are stable, but the validation contract is not sealed. Fix the two symmetry issues and align the adjacency/geo comments/contracts first. After those are patched and covered by tests, I would switch this to GO; the remaining finite-geo upper-bound question can be handled either as a small immediate guard or a documented deferred hardening item.
+
+Fix list
+
+MUST-FIX-NOW
+1. Replace adjacency symmetry check with strict absolute comparison:
+       torch.allclose(adjacency, adjacency.transpose(-2, -1), atol=1e-6, rtol=0.0)
+   Add a test where values differ by 1.0 at magnitude 1e6 and verify it raises.
+
+2. Replace geodesic symmetry check with one that rejects finite/+Inf pattern asymmetry and uses rtol=0 for finite values. Two acceptable patterns:
+       gt = geodesic_dist.transpose(-2, -1)
+       if not torch.equal(torch.isfinite(geodesic_dist), torch.isfinite(gt)): raise
+       finite = torch.isfinite(geodesic_dist)
+       if not torch.allclose(geodesic_dist[finite], gt[finite], atol=1e-6, rtol=0.0): raise
+   or, after NaN/-Inf rejection:
+       if not torch.allclose(geodesic_dist, gt, atol=1e-6, rtol=0.0): raise
+   PyTorch treats +Inf == +Inf, so the simpler full allclose is enough.
+
+3. Add regression tests for geodesic finite-vs-+Inf asymmetry and large finite asymmetry.
+
+4. Resolve adjacency doc/code inconsistency: either change the forward arg comment from binary {0,1} to "non-negative weighted, symmetric" or enforce binary in the block. Given pooled adjacency is plausible, update the comment rather than enforce binary globally.
+
+DEFERRED / contract decision
+5. Decide whether geodesic_dist finite values are strictly Floyd hop counts. If yes, enforce valid-valid finite distances <= valid_node_count - 1 (mask-aware) and add the 1e20 regression. If future weighted/metric distances are intended, document that explicitly and consider clamping/normalizing before the bias projection.
+
+Bottom line
+The module is architecturally and checkpoint-wise ready, but not validation-wise converged. Current Round 4 should be marked NEEDS-FIX, not PASS.
