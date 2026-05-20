@@ -57,8 +57,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.unified_dataset import UnifiedMotionDataset, collate_fn  # noqa: E402
 from src.models.noKslot_model import NoKslotModel  # noqa: E402
-from src.models.treeik_decoder import (TopoFKTreeIKDecoder,  # noqa: E402
-                                       rot6d_to_matrix)
+from src.models.treeik_decoder import TopoFKTreeIKDecoder  # noqa: E402
 from src.utils import fps_of, to_dev  # noqa: E402
 from scripts.train import encode_decode_nok  # noqa: E402
 
@@ -150,6 +149,7 @@ def reach_metrics(pp, gp, pv, gv, parents, tgt_names, src_names):
     amp_ratio = pr_amp / np.maximum(gt_amp, 1e-6)
     vel_ratio = pr_vrms / np.maximum(gt_vrms, 1e-6)
 
+    # non-adjacent collapse: codex C5 verbatim; count bad / tested pairs
     n_bad = n_tested = 0
     J = gp.shape[1]
     for a in range(J):
@@ -183,6 +183,8 @@ def reach_metrics(pp, gp, pv, gv, parents, tgt_names, src_names):
     n_eval = int(eval_j.sum())
     n_frozen = int(np.sum(amp_ratio[eval_j] < 0.10))
     ratios = vel_ratio[eval_j].astype(np.float64).tolist()
+    # raw moments for species-POOLED corr (concat all clips, center once ==
+    # closed-form Pearson from n,Σa,Σb,Σa²,Σb²,Σab). float64 accumulation.
     A = pv[:, eval_j, :].reshape(-1).astype(np.float64)
     B = gv[:, eval_j, :].reshape(-1).astype(np.float64)
     vc = {'n': int(A.size), 'sa': float(A.sum()), 'sb': float(B.sum()),
@@ -192,10 +194,11 @@ def reach_metrics(pp, gp, pv, gv, parents, tgt_names, src_names):
         'distal_n': n_eval,
         'n_frozen': n_frozen,
         'n_eval': n_eval,
-        'vel_ratios': ratios,
-        'vc': vc,
+        'vel_ratios': ratios,                 # all per-distal-joint ratios
+        'vc': vc,                             # pooled-corr accumulators
         'n_bad_pairs': n_bad,
         'n_tested_pairs': n_tested,
+        # per-clip scalars: DIAGNOSTIC ONLY (reach_detail.json), NOT the gate
         'frozen_rate_clip': n_frozen / n_eval,
         'collapse_rate_clip': (n_bad / n_tested if n_tested else 0.0),
         'distal_vel_ratio_median_clip': float(np.median(vel_ratio[eval_j])),
@@ -215,8 +218,8 @@ def reach_aggregate(clips):
       collapse_rate = total bad non-adj pairs / total tested non-adj pairs
       distal_vel_ratio_median = median over ALL evaluated distal ratios
       distal_vel_corr = ONE corr over all clips' distal (pv,gv) concatenated,
-                        centered once (closed-form Pearson from pooled
-                        moments == concatenate + center once + one corr)."""
+                        centered once (closed-form Pearson from pooled moments
+                        == concatenate + center once + one corr)."""
     if not clips:
         return None
     n_frozen = sum(c['n_frozen'] for c in clips)
@@ -286,9 +289,9 @@ def _san(o):
 
 def _rot_angle_deg(pr6, ir6):
     """codex ROUTING ④: per-element geodesic-SO(3) angle in DEGREES between
-    predicted and IK 6D rotations (same SO(3) metric as the training loss).
-    pr6/ir6 [...,6]. (Source imported rot6d_to_matrix from
-    scripts.topofk_decoder; here it comes from src.models.treeik_decoder.)"""
+    predicted and IK 6D rotations (same SO(3) metric as the training loss;
+    head-to-head vs MoCapAnything V2 unseen 6.54deg). pr6/ir6 [...,6]."""
+    from src.models.treeik_decoder import rot6d_to_matrix
     Rp = rot6d_to_matrix(pr6)
     Rt = rot6d_to_matrix(ir6)
     rel = Rp.transpose(-1, -2) @ Rt
