@@ -1,0 +1,61 @@
+Step 4 codex review — noKslot_model.py + utils.py + train.py training pipeline (batched 4a+4b)
+=============================================================================================
+threadId: 019e427e-d0f1-7002-9169-eece1d83700b (continued)
+model: gpt-5.5  effort: xhigh  sandbox: none
+date: 2026-05-19 UTC ~23:55
+reviewer entrypoint: mcp__codex__codex-reply (2 rounds: initial review + NEEDS-FIX correction)
+target commits: b92c481 (Step 4a) + d6379f5 (Step 4b) + 0b7bb23 (Step 4 NEEDS-FIX correction)
+
+Round 1 verdict: NEEDS-FIX
+  Only criterion B (utils.py verbatim ports) failed; 4 cosmetic drifts:
+    - _ddp_abort_if_any_rank_failed: docstring "wrap rank0-only" vs source "wrap the rank0-only" + line wrap
+    - assert_no_crop_for_ik: docstring line wrap drift
+    - _sha256: hoisted import hashlib to module scope (source has it inside function body)
+    - assert_name_policy: removed unused `import numpy as _np`; changed lab from 'val/held-out' to 'val'
+      and shortened error strings (removed "held-out missing the anchor" + Gate-3 v2 §4 mentions)
+  All other criteria (A/C/D/E/F/G/H/I) PASS in round 1:
+    A NoKslotModel constructor kwargs match SlotAE (modulo n_slots) — L6 strict=False load
+      produces missing=[] and unexpected = 6 slot_assignment.* keys only
+    C write_preflight_manifest_nokslot simplification sound (3 K-slot-only assertions correctly removed)
+    D encode_decode_nok body matches source 208-231
+    E train loop has only noKslot-appropriate losses (recon + vel-consistency + IK-rot geodesic + acc),
+      correctly excludes all K-slot stuff (anchor / ortho/usage/entropy / c2 / c4 / w_rev / w_bone /
+      cross-species memory / assert_zero_init_step0_equivalence)
+    F ckpt schema OK; advisory: eval/animate loaders must tolerate both new ckpts (no fk_state_dict)
+      and source-produced baseline ckpts (fk_state_dict: None)
+    G raw rotation AST guard correctly repointed at scripts/train.py; 0 hits
+    H py_compile + imports resolve
+    I Step 7 forward-ref (from scripts.self_test import run_self_test) documented; no other blockers
+
+  Round 1 advisory: L6_anchor init ckpt missing from noKslot_clean/runs/; required for the
+  default --init_ckpt path to work.
+
+Round 2 (commit 0b7bb23): NEEDS-FIX correction applied
+  All 4 verbatim drifts restored:
+    - _ddp_abort_if_any_rank_failed docstring restored verbatim
+    - assert_no_crop_for_ik docstring line wrapping restored verbatim
+    - _sha256 import hashlib moved back inside function body (verbatim)
+    - assert_name_policy:
+        * restored `import numpy as _np` (unused but verbatim)
+        * restored lab='val/held-out' tuple value
+        * restored verbatim error strings ('train AND held-out' + 'held-out missing the anchor ... Gate-3 v2 §4')
+        * restored print 'BOTH train and held-out' wording
+        * added a 'Verbatim port note' terminal paragraph to docstring documenting the
+          noKslot baseline semantic offset (val = same-species clip-level holdout, not
+          'held-out species') — additive, explicit disclosure
+  Plus L6_anchor init ckpt copied: noKslot_clean/runs/L6_anchor_h100_seed42/best_model.pt
+    md5 24afec714cfac0795d3c1224a2fe560d, 40,077,449 bytes (not in git per .gitignore runs/)
+
+Round 2 verdict: PASS
+  B (utils.py verbatim restored): YES
+  L6 ckpt at new path loads strict=False clean: YES (missing=[], 6 slot_assignment.* unexpected)
+  py_compile passes for src/utils.py, scripts/train.py, src/models/noKslot_model.py
+
+Next step:
+  Step 4 fully done. Step 5/6/7 need to deliver:
+    - eval.py (Step 5): load baseline ckpt + tolerate both schemas (with/without fk_state_dict),
+      compute GATE / REACH metrics + chain into animate.py
+    - animate.py (Step 6): GT-vs-pred multi-frame gif + dual-view contact sheet rendering,
+      single-path no_k_slot (no ckpt_args.no_k_slot backward-compat)
+    - self_test.py (Step 7): extract _nokslot_self_test from source train_paired_gate.py:243-422,
+      independent CPU entry point (forward-ref from scripts/train.py --self_test)
