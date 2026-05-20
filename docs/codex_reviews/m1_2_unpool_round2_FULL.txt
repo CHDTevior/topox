@@ -1,0 +1,168 @@
+M1.2 Step 4 DynamicGraphUnpool Round-2 Review
+================================================
+
+Review intent
+-------------
+Fresh-thread round-2 code review of:
+
+- /scratch/ts1v23/workspace/noKslot_clean/src/models/graph_salad/unpool.py
+- /scratch/ts1v23/workspace/noKslot_clean/tests/test_unpool.py
+
+Scope requested:
+
+1. Verify whether the three round-1 R12 fail-loud blockers are actually sealed.
+2. Check for new R12 / fail-loud violations introduced by the fixes.
+3. Decide whether M1.2 step 5 (losses.py) is unblocked.
+
+Evidence inspected
+------------------
+Files read directly with line numbers:
+
+- src/models/graph_salad/unpool.py lines 1-199
+- tests/test_unpool.py lines 1-192
+
+Adjacent contract checked for temporal stride parity:
+
+- src/models/graph_salad/pool_dynamic.py lines 267-302 and 648-654
+- src/models/graph_salad/pool_deterministic.py lines 195-211 and 384-385
+
+Commands run:
+
+- python -m pytest tests/test_unpool.py -v
+  - Result: could not run in this environment because /scratch/ts1v23/.conda/bin/python has no pytest module.
+- python tests/test_unpool.py -v
+  - Result: 13 tests ran, 13 OK, 0.057s in one run.
+- python -O tests/test_unpool.py -v
+  - Result: 13 tests ran, 13 OK, 0.029s in one run.
+- rg for assert/interpolate/repeat_interleave/check sites in unpool.py and test_unpool.py.
+  - Result: unpool.py uses no bare assert; the temporal path uses repeat_interleave and no F.interpolate call remains in executable code.
+
+Repository-state caveat:
+
+- git status reports src/models/graph_salad/unpool.py and tests/test_unpool.py as untracked in the current working tree. This review evaluates the working-tree files requested by the user directly, not an indexed commit.
+
+Verdict
+-------
+GO for M1.2 step 5 (losses.py).
+
+All three claimed round-1 R12 blockers are sealed in the current working-tree code. I found no new blocking R12 / fail-loud regression from the fixes. The only issues observed are non-blocking cleanup/documentation items.
+
+Round-1 blocker verification
+----------------------------
+
+1. Assignment non-negativity check: SEALED.
+
+Evidence:
+
+- src/models/graph_salad/unpool.py:132 checks if (assignment < -1e-6).any().
+- src/models/graph_salad/unpool.py:133-136 raises ValueError with an explicit DynamicGraphUnpool message.
+- tests/test_unpool.py:130-139 constructs row [1.5, -0.5], which sums to 1 but contains a negative entry, and expects ValueError matching "negative entries".
+
+Assessment:
+
+- The tolerance is sensible for float32 assignment probabilities. It rejects real negative extrapolation while allowing sub-micro numerical noise.
+- This is a proper fail-loud path, not a bare assert.
+- This test is not tautological: the old row-sum-only contract would accept [1.5, -0.5] because the row sum is exactly 1.0. The new test would catch that old failure mode.
+
+2. Assignment must be zero on padded coarse columns: SEALED.
+
+Evidence:
+
+- src/models/graph_salad/unpool.py:139 builds padded_col = ~coarse_mask with shape [B, C].
+- src/models/graph_salad/unpool.py:142 computes padded_col_assign = assignment * padded_col.unsqueeze(1).to(assignment.dtype), broadcasting [B, 1, C] over [B, J, C].
+- src/models/graph_salad/unpool.py:143-148 raises ValueError if the absolute max in padded coarse columns exceeds 1e-6.
+- tests/test_unpool.py:141-151 uses coarse_mask = [[True, False]] and assignment row [0, 1] for a valid joint, then expects ValueError matching "coarse_mask=False columns".
+
+Assessment:
+
+- The semantics match the claim: the mask selects coarse columns where coarse_mask is False for each batch element, across all fine joints.
+- The check is batch-aware because coarse_mask keeps its B dimension before unsqueeze.
+- The test is not tautological: without the padded-column check, the test assignment has valid row sums and would not be rejected by the row-sum contract alone.
+
+3. Mask-vs-features temporal kernel consistency: SEALED.
+
+Evidence:
+
+- src/models/graph_salad/unpool.py:182-191 sets s = self.temporal_stride and, for s > 1, applies repeat_interleave(s, dim=1) to fine_features and repeat_interleave(s, dim=-1) to frame_mask_down.
+- src/models/graph_salad/unpool.py:193-194 then zeros invalid upsampled frames with the same repeated frame_mask_up.
+- There is no executable F.interpolate call in src/models/graph_salad/unpool.py.
+- tests/test_unpool.py:153-177 checks that down-frame 0 repeats into up-frames 0 and 1, while down-frame 1's invalid repeated frames are masked to zero and frame_mask_up is [[True, True, False, False]].
+
+Assessment:
+
+- Features and masks now use the same nearest-neighbour replication kernel: t_up maps to t_down = t_up // stride.
+- Batch-size handling is shape-generic. repeat_interleave acts along the temporal dimension and preserves B/J/D dimensions.
+- The path cannot silently truncate or wrap by itself; output length is exactly T_lat * stride.
+- The odd/even original-length issue is handled upstream, not inside unpool: DynamicGraphPool raises if T % temporal_stride != 0 at pool_dynamic.py:650-654, and DeterministicGraphPool has the same divisibility guard at pool_deterministic.py:384-385. Since unpool has no target fine T argument, its explicit contract is [B, T_lat * stride, J, D].
+- The test is meaningful for the old linear-interpolation bug: it requires up-frame 1 to equal the exact repeated value 5.0, not an interpolated blend with the invalid neighbor.
+
+Additional edge-case verification
+---------------------------------
+
+Empty-valid-joint edge case:
+
+- src/models/graph_salad/unpool.py:151 gates the valid row-sum allclose under if joint_mask.any().
+- This avoids min/max/allclose operations over an empty valid set.
+- Padded rows are still checked independently at lines 160-166.
+
+Assertion vs raise:
+
+- unpool.py contains no bare assert.
+- All reviewed fail-loud paths use ValueError or TypeError with informative messages.
+- python -O tests/test_unpool.py -v still passes 13/13, confirming the current tests are not relying on Python assert statements in this module.
+
+Determinism:
+
+- No random operations were introduced in unpool.py.
+- Tests use torch.randn in setup, but the tested invariants are shape/zeroing/raises and do not depend on exact random values.
+
+Tolerances:
+
+- 1e-6 for negative entries and padded coarse columns is appropriate for float32 assignment noise.
+- 1e-5 row-sum tolerance is consistent with float32 soft assignment contracts.
+- I do not see these tolerances hiding the original failure modes: the regression tests use large violations (-0.5 and 1.0 into a padded column).
+
+New R12 / fail-loud findings
+----------------------------
+No new blocking R12 / fail-loud findings.
+
+Non-blocking observations:
+
+1. Stale top-level docstring:
+   - src/models/graph_salad/unpool.py:11 still says temporal upsample is "via linear interpolation".
+   - The executable code correctly uses repeat_interleave. This is documentation drift, not a behavioral blocker, but it should be cleaned before final polish to avoid future confusion.
+
+2. Unused imports:
+   - src/models/graph_salad/unpool.py imports math and torch.nn.functional as F, but the current implementation no longer uses them.
+   - This is lint cleanup only; it does not affect runtime behavior.
+
+3. pytest availability:
+   - The requested pytest command cannot be reproduced in the current shell because pytest is not installed for /scratch/ts1v23/.conda/bin/python.
+   - The same 13 tests do pass through the file's unittest entry point, including under python -O.
+
+R9 test-quality assessment
+--------------------------
+The three new tests are capable of catching the reported failure modes:
+
+- test_assignment_negative_raises uses a row that passes row-sum validation but violates convex non-negativity.
+- test_assignment_to_padded_coarse_raises uses a row that passes row-sum validation but reads a coarse_mask=False column.
+- test_temporal_mask_consistent_with_features checks exact nearest replication on a valid boundary frame and mask-zeroing on invalid repeated frames.
+
+They are not merely checking implementation internals and are not tautological. They validate externally visible behavior.
+
+M1.2 step 5 decision
+--------------------
+GO.
+
+Rationale:
+
+- The three round-1 blockers are directly fixed in code and covered by targeted tests.
+- The temporal upsample path is now kernel-consistent between features and masks.
+- The all-pad valid-joint edge case is handled without relying on stripped asserts.
+- No remaining critical unpool issue blocks moving to losses.py.
+
+Blind spots
+-----------
+- I did not run the full project test suite.
+- I did not execute GPU device-mismatch cases because the requested scope was the unpool file and its unit tests; static reading found no silent fallback in the reviewed fixes.
+- I did not read prior round-1 review documents, by design, to keep this review independent of prior context.

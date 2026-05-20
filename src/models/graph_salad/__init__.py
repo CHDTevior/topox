@@ -12,6 +12,7 @@ from .batch import GraphMotionBatch
 from .denoiser_stub import GraphSaladDenoiserStub
 from .pool_deterministic import DeterministicGraphPool
 from .pool_dynamic import DynamicGraphPool
+from .unpool import DynamicGraphUnpool
 from .graph_utils import (
     floyd_shortest_path,
     build_coarse_adjacency_from_hard_assign,
@@ -26,6 +27,7 @@ __all__ = [
     "GraphAttentionBlock",
     "DynamicGraphPool",
     "DeterministicGraphPool",
+    "DynamicGraphUnpool",
     # M1.1 scaffolding
     "GraphMotionBatch",
     "GraphSaladDenoiserStub",

@@ -1,0 +1,433 @@
+M1.2 Step 4 DynamicGraphUnpool Review - Round 1
+================================================
+
+Scope
+-----
+Reviewed:
+- src/models/graph_salad/unpool.py
+- tests/test_unpool.py
+
+Briefly checked only the pool P-orientation contract in:
+- src/models/graph_salad/pool_dynamic.py
+- src/models/graph_salad/pool_deterministic.py
+- src/models/graph_salad/attention.py for d_model / layout parity only
+
+Verification:
+- `python tests/test_unpool.py` passes 10/10 tests.
+- `pytest -q tests/test_unpool.py` was not runnable in this environment because `pytest` is not installed.
+
+Verdict
+-------
+NEEDS-FIX before M1.2 step 5.
+
+The core skeletal unpool math is correct for a valid pool-produced assignment P:
+`torch.einsum("bjc,btcd->btjd", assignment, coarse_features)` at unpool.py:147
+implements `h_fine[b,t,j,d] = sum_c P[b,j,c] * h_coarse[b,t,c,d]`.
+
+However, the R12 input surface is not sealed. Three inputs can pass silently and
+produce wrong or insufficiently validated output:
+1. Valid joints can assign mass to `coarse_mask=False` columns because
+   `coarse_mask` is only shape/dtype-checked at unpool.py:97-101 and is never
+   used in validation or math.
+2. Negative assignment entries can pass if each valid row still sums to 1
+   because unpool.py:128-135 checks only row sums, not non-negativity.
+3. With linear temporal interpolation at unpool.py:160-162, the repeated
+   nearest-neighbor mask at unpool.py:166 can mark an upsampled frame valid even
+   when that frame linearly blended from an invalid neighboring down frame.
+
+A. Math Correctness - h_fine = P dot h_coarse
+------------------------------------------------
+
+Finding A1 - The einsum orientation is correct for valid P. PASS.
+
+unpool.py:145-147 says the operation is:
+`P [B,J,C] @ h_coarse [B,T,C,D] -> h_fine [B,T,J,D]`, implemented as
+`torch.einsum("bjc,btcd->btjd", assignment, coarse_features)` at unpool.py:147.
+That is exactly the requested same-orientation unpool, not `P.transpose`.
+
+For one-hot P, each fine joint selects exactly one coarse feature. For soft,
+row-stochastic and non-negative P, each fine joint receives a convex combination
+of coarse cluster features.
+
+Finding A2 - The one-hot distribution test verifies the main orientation but is
+not exhaustive. PARTIAL PASS.
+
+test_unpool.py:46-66 constructs C=3 coarse slots with constant values 1, 2, 3,
+uses one-hot P `[0,0,1,1,2,2]`, and checks that joints 0/1 receive c0, joint 2
+receives c1, and joint 5 receives c2. This catches the main P-vs-P^T mistake.
+It does not check every joint (j3 and j4 are omitted), batched data, or soft P.
+
+Recommended additional test:
+- `test_unpool_soft_assignment_convex_combination`: e.g. coarse values 10 and
+  30, assignment row `[0.25, 0.75]`, expected output 25.
+
+Finding A3 - Padded coarse columns can leak into valid joints. NEEDS-FIX.
+
+`coarse_mask` is accepted and validated for shape/dtype at unpool.py:97-101, but
+it is never used afterward. Current validation permits:
+
+```
+coarse_features = [[[[10.0], [20.0]]]]  # [B=1,T=1,C=2,D=1]
+assignment = [[[0.0, 1.0]]]             # valid joint points to c1
+joint_mask = [[True]]
+coarse_mask = [[True, False]]
+frame_mask_down = [[True]]
+```
+
+This passes the row-sum check at unpool.py:128-135 and outputs 20.0 from the
+padded coarse column. Pool-produced P should not do this: dynamic pool masks
+padded anchor columns at pool_dynamic.py:258-262, and deterministic pool does
+the same at pool_deterministic.py:187-190. But unpool's input surface should
+fail loud if the contract is violated.
+
+Recommended fix:
+- Add a validation check before unpool.py:147:
+  `invalid_col_mass = assignment.masked_select(~coarse_mask[:, None, :]).abs()`
+  and raise if max > 1e-5.
+- Optionally also mask `coarse_features` by `coarse_mask[:, None, :, None]` as
+  defense in depth. The validation is the important R12 piece.
+
+Finding A4 - No missing 1/cluster_size factor on unpool. PASS, with round-trip
+clarification.
+
+Dynamic pool computes `h_pool = einsum("bjc,btjd->btcd", P, joint_features)` at
+pool_dynamic.py:280-281 and then divides by `mass = P.sum(dim=1)` at
+pool_dynamic.py:282-283. Deterministic pool uses the same mean-pool formula at
+pool_deterministic.py:201-203. Therefore the coarse feature is already a
+cluster mean / soft mass-normalized average.
+
+Unpool should distribute that coarse mean back to each joint with P. Adding
+`1/|cluster|` on the unpool side would incorrectly scale the mean down again.
+
+Important: deterministic pool->unpool with stride=1 is not an exact inverse for
+arbitrary x. It reconstructs each joint as its cluster mean. It exactly recovers
+x only when every joint in each cluster already has identical features. A useful
+round-trip test should assert either:
+- cluster-constant input is recovered exactly, or
+- arbitrary input recovers the per-cluster mean, not original per-joint values.
+
+B. Temporal Upsample Correctness
+--------------------------------
+
+Finding B1 - Linear interpolation matches the stated plan, but it is not a true
+inverse of AvgPool1d. ACCEPTABLE BY DESIGN.
+
+unpool.py:11 and unpool.py:151-162 specify linear temporal upsample. Pool uses
+AvgPool1d over time at pool_dynamic.py:294-297 and
+pool_deterministic.py:207-209. Linear interpolation is a reasonable decoder-side
+smooth upsample choice; nearest would be blocky, and cubic can overshoot. This
+is not mathematically inverse to AvgPool1d, so tests should not expect exact
+temporal round-trip except for stride=1 or constant/linear special cases.
+
+I found no live M1.3 VAE decoder callsite in current `src/` beyond the unpool
+docstring stating this module is for the M1.3 decoder at unpool.py:3-4 and
+mask propagation at unpool.py:21-22. So this review can confirm plan
+consistency, not an existing decoder integration contract.
+
+Finding B2 - The permute/reshape for temporal interpolation preserves joint and
+feature axes. PASS.
+
+unpool.py:160 converts `[B,T_lat,J,D]` to `[B,J,D,T_lat]` and flattens
+`B*J*D` independent 1D signals. unpool.py:162 reshapes back to
+`[B,J,D,T_up]` and permutes to `[B,T_up,J,D]`. This is the same axis pattern as
+the pool downsample reshape in pool_dynamic.py:294-297 and
+pool_deterministic.py:207-209, with J replacing C. The joint and feature axes
+are preserved.
+
+Recommended test:
+- `test_temporal_linear_preserves_joint_feature_axes`: give each (j,d) a
+  distinct time series and assert interpolation does not mix joint/feature axes.
+
+Finding B3 - `frame_mask_up = repeat_interleave` is not kernel-aware for linear
+interpolation. NEEDS-FIX or explicit documented assumption.
+
+unpool.py:166 repeats each down mask value s times and unpool.py:169 zeros
+frames whose repeated mask is False. That matches a nearest-neighbor validity
+model. But unpool.py:161 uses linear interpolation, where each output frame near
+a boundary can blend two neighboring down frames.
+
+Concrete stride=2 example:
+- down features `[10, 20]`
+- `F.interpolate(..., mode="linear", align_corners=False)` produces
+  `[10.0, 12.5, 17.5, 20.0]`
+- down mask `[True, False]` repeats to `[True, True, False, False]`
+
+The second output frame is marked valid by repeat_interleave but already
+contains 25 percent contribution from the invalid down frame. If padded frames
+are prefix/suffix only, this still affects the last valid reconstructed frame
+before padding. If `coarse_features` for invalid down frames are not guaranteed
+zero before interpolation, this is a real leakage path.
+
+Recommended choices, pick one:
+1. Keep linear interpolation, but compute frame validity from the interpolation
+   support: an up frame is valid only if every down frame that contributes to it
+   is valid.
+2. Keep repeat_interleave as the mask contract, but use nearest-neighbor feature
+   upsample instead of linear.
+3. Guarantee and test that invalid coarse frames are zero before interpolation,
+   then accept boundary damping and document it. This still does not make the
+   repeated mask semantically exact.
+
+C. Validation Contract - R12 Fail-Loud
+--------------------------------------
+
+What is already good:
+- `coarse_features` rank and D are checked at unpool.py:77-81.
+- B/T_lat/C non-empty are checked at unpool.py:82-84.
+- `assignment` rank and B/C parity are checked at unpool.py:85-90.
+- `joint_mask`, `coarse_mask`, and `frame_mask_down` shape/dtype are checked at
+  unpool.py:92-106.
+- `assignment` device and dtype are checked at unpool.py:108-116.
+- `coarse_features` dtype is checked at unpool.py:117-118.
+- finite checks are present at unpool.py:120-124.
+- valid joint row sums near 1 and padded joint row sums near 0 are checked at
+  unpool.py:126-143.
+- constructor strict-int checks reject bool/float at unpool.py:51-58.
+
+R12 gaps:
+
+Gap C1 - Negative assignment entries pass. NEEDS-FIX.
+
+Example that passes current validation:
+
+```
+coarse_features = [[[[10.0], [20.0]]]]
+assignment = [[[1.5, -0.5]]]
+joint_mask = [[True]]
+coarse_mask = [[True, True]]
+frame_mask_down = [[True]]
+```
+
+The row sum is 1, so unpool.py:128-135 accepts it. Output is 5.0, which is not
+a convex combination and violates the soft-P design. Add `assignment >= -tol`
+for all entries, or at least for valid-joint/valid-coarse entries. Row sums plus
+non-negativity imply entries are <= 1 up to tolerance.
+
+Gap C2 - Padded coarse columns pass and can leak. NEEDS-FIX.
+
+Covered in A3. `coarse_mask` is currently dead after unpool.py:97-101.
+
+Gap C3 - Padded joint rows can contain canceling non-zero entries. NEEDS-FIX.
+
+unpool.py:137-143 checks only the absolute value of the row sum for padded
+joints. A padded row `[1.0, -1.0]` has row sum 0 and passes. unpool.py:149 then
+zeros the final padded joint output, so it does not leak numerically, but the
+invalid assignment is accepted silently. The padded-row check should inspect
+absolute mass, not just the sum:
+`assignment[~joint_mask].abs().max() <= tol`.
+
+Gap C4 - All-false `joint_mask` passes. SHOULD-FIX or document.
+
+If a batch element has no valid joints and `assignment` rows are all zero, then
+`valid_row_sums = row_sums[joint_mask]` at unpool.py:129 is empty and
+`torch.allclose` at unpool.py:130 returns True. The output is all zeros after
+unpool.py:149. This is mathematically harmless but inconsistent with pool
+validation: dynamic pool rejects all-False joint masks at pool_dynamic.py:595-604.
+For symmetry and fail-loud behavior, reject per-sample all-False joint masks.
+
+Gap C5 - J=0 passes. SHOULD-FIX.
+
+unpool.py:82-84 rejects empty B/T_lat/C, but J is not checked after
+`J = assignment.shape[1]` at unpool.py:91. Inputs with `assignment.shape ==
+[B,0,C]` and `joint_mask.shape == [B,0]` proceed to an empty output. Empty
+skeletons should raise.
+
+Gap C6 - Mask device consistency is not checked. SHOULD-FIX.
+
+unpool.py:108-116 checks only `assignment.device` against `coarse_features`.
+It does not check `joint_mask.device`, `coarse_mask.device`, or
+`frame_mask_down.device`. CUDA/CPU mismatches will fail later with generic
+PyTorch indexing/broadcast errors rather than actionable R12 messages.
+
+Gap C7 - Temporal stride mismatch cannot be detected inside unpool. OK,
+caller-owned.
+
+unpool.py:40-41 documents that `temporal_stride` must equal the pool stride.
+Given only `[B,T_lat,C,D]`, unpool cannot infer the original T. This is a caller
+responsibility and should be asserted by the step-5/decoder integration if the
+original fine-frame mask or target length is available.
+
+Error-message quality:
+- Existing shape/dtype messages are generally actionable and include actual vs
+  expected values: unpool.py:77-106 and unpool.py:115-118.
+- Row-sum error at unpool.py:131-135 reports min/max, which is useful when
+  there is at least one valid joint.
+- Padded row error at unpool.py:140-143 reports max row-sum magnitude, but this
+  should become max absolute entry/mass after fixing C3.
+
+D. Test Coverage
+----------------
+
+Current tests:
+- No learnable params: test_unpool.py:28-31
+- Forward shape: test_unpool.py:33-44
+- One-hot distribution: test_unpool.py:46-66
+- Padded joint zero output: test_unpool.py:68-78
+- Invalid valid-row sum raises: test_unpool.py:80-90
+- Padded row non-zero row sum raises: test_unpool.py:92-101
+- Wrong dtype raises: test_unpool.py:103-111
+- Strict-int constructor: test_unpool.py:113-117
+- Stride=1 shape identity: test_unpool.py:119-128
+- Finite check: test_unpool.py:130-139
+
+Missing tests that should block PASS:
+
+1. `test_unpool_soft_assignment_convex_combination`
+   - Proves non-one-hot P produces the expected weighted sum.
+
+2. `test_negative_assignment_raises`
+   - Current code accepts assignment row `[1.5, -0.5]` for a valid joint.
+
+3. `test_assignment_mass_in_padded_coarse_column_raises`
+   - Current code accepts `coarse_mask=[True, False]` and P row `[0, 1]`.
+
+4. `test_padded_row_abs_mass_raises`
+   - Current code accepts padded row `[1, -1]` because the row sum is zero.
+
+5. `test_unpool_batched_heterogeneous_padding`
+   - All current tests use B=1. Add B=2 with different joint/coarse/frame masks
+     per sample.
+
+6. `test_deterministic_pool_unpool_stride1_cluster_mean_round_trip`
+   - For arbitrary input, assert pool->unpool returns per-cluster means.
+   - For cluster-constant input, assert exact recovery.
+
+7. `test_temporal_frame_mask_boundary_with_invalid_down_frame`
+   - Catches the linear interpolation / repeat mask boundary issue in B3.
+
+8. `test_temporal_linear_preserves_joint_feature_axes`
+   - Ensures the permute/reshape does not mix J and D.
+
+9. `test_cuda_device_if_available`
+   - Should cover all tensors on CUDA, plus a negative test for mask/device
+     mismatch producing a clean ValueError after C6 is fixed.
+
+10. `test_frame_mask_down_padded_frames_zero_output`
+    - Ensures invalid up frames are zero and frame_mask_up matches intended
+      semantics for padded frames.
+
+These gaps are not acceptable for round-1 PASS because at least two missing
+tests expose real silent failures in current code.
+
+E. Surgical Changes / R3
+------------------------
+
+Finding E1 - `coarse_mask` should stay in the signature, but it must be used.
+NEEDS-FIX.
+
+`coarse_mask` is not extra from the plan: the pool modules return `pooled_mask`
+at pool_dynamic.py:869 and pool_deterministic.py:509, and unpool needs to know
+which coarse columns are valid. But in current unpool.py it is only checked for
+shape/dtype at unpool.py:97-101. Under R3, leaving it unused is dead API weight.
+Use it to validate zero assignment mass in padded columns and optionally mask
+coarse features.
+
+Finding E2 - Zeroing padded joints at unpool.py:149 is redundant for valid pool
+outputs but worth keeping. PASS.
+
+If assignment rows for padded joints are truly all zero, unpool.py:149 is
+redundant. It is still useful defense in depth, especially because current
+validation checks only padded row sums and could miss canceling values. After
+fixing C1/C3, keep line 149 as cheap output sanitization.
+
+Finding E3 - Zeroing invalid frames at unpool.py:169 is needed, but not
+sufficient for linear interpolation boundaries. NEEDS-FIX as in B3.
+
+The final mask multiplication prevents invalid repeated frames from reaching the
+loss. It does not prevent valid repeated frames from blending invalid down-frame
+features under linear interpolation. Keep line 169, but fix/document the
+boundary semantics.
+
+Finding E4 - Minor cleanup: unused import. OPTIONAL.
+
+`math` is imported at unpool.py:27 and not used. Drop it in the patch.
+
+F. Read-Before-Write / R8
+-------------------------
+
+P-orientation confirmation:
+- Dynamic pool declares P as `[B,J,C_max]` at pool_dynamic.py:199-200.
+- Dynamic pool softmaxes over C at pool_dynamic.py:255-257, then zeros padded
+  joint rows and padded coarse columns at pool_dynamic.py:258-262.
+- Dynamic pool feature pooling uses `torch.einsum("bjc,btjd->btcd", P, joint_features)`
+  at pool_dynamic.py:280-281 and returns `"assignment": P` at
+  pool_dynamic.py:863-866.
+- Deterministic pool creates one-hot P with shape `[B,J,C]` at
+  pool_deterministic.py:184-186, zeros padded rows/columns at
+  pool_deterministic.py:187-190, pools with `einsum("bjc,btjd->btcd", ...)` at
+  pool_deterministic.py:201-203, and returns `"assignment": P` at
+  pool_deterministic.py:503-506.
+
+Therefore unpool.py:147 is using the same P orientation as the pool outputs:
+pool is `P^T dot h_fine` into C, unpool is `P dot h_coarse` back into J.
+
+d_model / layout / dtype parity:
+- Attention uses `[B,N,d_model]` node features at attention.py:51 and validates
+  last dim against `self.d_model` at attention.py:140-142.
+- Dynamic pool accepts `[B,T,J,D]` at pool_dynamic.py:417 and validates last dim
+  at pool_dynamic.py:437-442. It requires float32 module/tensors at
+  pool_dynamic.py:488-506.
+- Deterministic pool validates `[B,T,J,D]` and D at
+  pool_deterministic.py:290-294 and float32 tensors at
+  pool_deterministic.py:320-328.
+- Unpool accepts `[B,T_lat,C,D]` and validates D at unpool.py:77-82; it returns
+  `[B,T_lat*stride,J,D]` at unpool.py:171-174 and requires float32 at
+  unpool.py:115-118.
+
+The layout and dtype conventions match.
+
+G. R12 Input-Surface Table
+--------------------------
+
+| Corner input | Current behavior | Raise or silent? | Recommendation |
+| --- | --- | --- | --- |
+| `d_model=16.0` or `temporal_stride=True` | Constructor rejects at unpool.py:51-54 | Raises | OK |
+| `d_model<=0` or `temporal_stride<1` | Constructor rejects at unpool.py:55-58 | Raises | OK |
+| `coarse_features` not rank 4 or D mismatch | unpool.py:77-81 rejects | Raises | OK |
+| `B=0`, `T_lat=0`, or `C=0` | unpool.py:82-84 rejects | Raises | OK |
+| `J=0` via `assignment.shape=[B,0,C]` | No explicit check after unpool.py:91 | Silent empty output | Add `J > 0` check |
+| `assignment` not rank 3 or B/C mismatch | unpool.py:85-90 rejects | Raises | OK |
+| `joint_mask` wrong shape/dtype | unpool.py:92-96 rejects | Raises | OK |
+| `coarse_mask` wrong shape/dtype | unpool.py:97-101 rejects | Raises | OK |
+| `frame_mask_down` wrong shape/dtype | unpool.py:102-106 rejects | Raises | OK |
+| `assignment.device != coarse_features.device` | unpool.py:108-114 rejects | Raises | OK |
+| mask tensors on wrong device | No early check; later PyTorch op may fail | Not silent, but poor error | Add device checks for all masks |
+| `coarse_features.dtype != float32` | unpool.py:117-118 rejects | Raises | OK |
+| `assignment.dtype != float32` | unpool.py:115-116 rejects | Raises | OK |
+| NaN/Inf in `coarse_features` or `assignment` | unpool.py:120-124 rejects | Raises | OK |
+| valid assignment row sum != 1 | unpool.py:128-135 rejects | Raises | OK |
+| valid assignment row `[1.5,-0.5]` | row sum is 1, output extrapolates | Silent wrong math | Add non-negativity check |
+| padded joint row sum non-zero | unpool.py:137-143 rejects | Raises | OK |
+| padded joint row `[1,-1]` | row sum is 0, line 149 zeros output | Silent invalid P | Check absolute entries in padded rows |
+| valid joint assigns to `coarse_mask=False` column | row sum is 1, line 147 uses padded column | Silent leak | Check zero mass in invalid columns |
+| all-False `joint_mask` with zero P | empty valid rows pass, output zeros | Silent all-padded sample | Reject per sample or document |
+| all-False `coarse_mask` with P mass in invalid columns | can pass via row sums and leak | Silent leak | Invalid-column check plus non-empty coarse check |
+| `temporal_stride` does not match the pool stride | output has wrong T but no way to infer | Silent caller bug | Caller/decoder must assert target length |
+| `frame_mask_down=False` but coarse features non-zero | invalid repeated frames zeroed at line 169, but adjacent valid linear frames may blend invalid values | Silent boundary contamination | Make mask kernel-aware, use nearest, or pre-zero/document |
+| CUDA available but only some tensors on CUDA | assignment is checked; masks are not | Later generic runtime error | Add explicit device checks and CUDA test |
+
+H. GO / NO-GO for M1.2 Step 5 losses.py
+----------------------------------------
+
+NO-GO until the R12 fixes above land and tests cover them.
+
+The interface shape is sufficient and stable for losses.py:
+- Inputs needed by reconstruction loss are present:
+  `coarse_features`, `assignment`, `joint_mask`, `coarse_mask`,
+  `frame_mask_down`.
+- Outputs are exactly what losses.py will need:
+  `fine_features` and `frame_mask_up` at unpool.py:171-174.
+- No learnable parameters are introduced, as tested at test_unpool.py:28-31.
+
+I do not recommend a breaking signature change. I recommend surgical validation
+and mask-semantics fixes before step 5 starts:
+1. Validate assignment non-negativity.
+2. Validate zero assignment mass in `coarse_mask=False` columns.
+3. Validate padded joint rows by absolute mass, not just row sum.
+4. Reject empty J and probably per-sample all-False `joint_mask`.
+5. Add mask device checks.
+6. Resolve/document linear-interpolation frame-mask boundary behavior.
+7. Add the missing tests listed in section D.
+
+After those are fixed, step 5 can safely depend on this unpool interface without
+changing the losses.py API design.
