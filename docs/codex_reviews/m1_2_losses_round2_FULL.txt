@@ -1,0 +1,165 @@
+M1.2 losses.py review, round 2
+
+Scope:
+- src/models/graph_salad/losses.py
+- tests/test_losses.py
+- M1.3 wiring context from GraphMotionBatch, pool_dynamic/pool_deterministic aux schemas, PLAN_GAP_REPORT, and graph_salad_implementation_plan.
+
+Commands run:
+- python -m pytest -q tests/test_losses.py
+  Result: not runnable in this shell because pytest is not installed: "No module named pytest".
+- python tests/test_losses.py -v
+  Result: 17 tests passed in 0.045s.
+- Direct probes for the four claimed round-1 fixes:
+  KL masked huge logvar -> 0.0; active huge logvar finite -> True.
+  Bone padded child listed -> padded child skipped; padded parent -> skipped.
+  Vel NaN / bad joint_mask dtype -> ValueError.
+  compute_total_loss pool_aux_weights passthrough -> pool_aux=3.0, total=3.0 for weighted synthetic aux dict.
+
+Executive verdict:
+PASS for the round-1 implementation fixes. M1.3 GraphMotionVAE wiring is GO, with explicit adapter requirements listed below.
+
+Important nuance:
+The code fixes are present and behave correctly under direct inspection/probing, but the tests do not fully seal all four regressions. The current suite is enough to catch the KL active-overflow case and broad happy paths, but it does not lock the padded bone parent/child paths, velocity validation paths, or compute_total_loss pool_aux_weights passthrough. Treat those as non-blocking test debt for M1.3, not code blockers.
+
+1. masked_kl_gaussian
+
+Implementation verification:
+- losses.py lines 162-166 build the valid latent mask and zero out mu/logvar before arithmetic.
+- losses.py line 168 clamps logvar to logvar_clamp before exp.
+- losses.py lines 170-172 compute KL and re-mask after the formula, so the "+1" constant cannot leak into padded positions.
+- This seals the round-1 overflow/padded-poison issue for finite upstream values. A masked finite logvar=100 no longer produces inf*0 -> nan; direct probe returned 0.0 for the padded huge-logvar node.
+
+Residual behavior:
+- losses.py lines 154-155 still reject NaN/Inf anywhere in mu/logvar before masking. That is fail-loud, not "ignore padded garbage". It is acceptable for M1.3 if upstream padded tensors are expected to be finite zeros, but the doc comment should not imply NaN/Inf padded garbage is tolerated.
+- No validation that logvar_clamp is an ordered pair; minor.
+
+Test mapping:
+- tests/test_losses.py lines 69-77 exercise active logvar=100 and confirm finite KL. This directly covers clamp-before-exp for active nodes.
+- tests/test_losses.py lines 82-98 cover KL zero and positive formula cases.
+- Missing tests: masked-out huge logvar, all-False masks, wrong coarse/frame mask dtype/shape, and padded NaN/Inf policy.
+
+Status:
+Code sealed. Tests partially sealed.
+
+2. masked_bone_length
+
+Implementation verification:
+- losses.py lines 207-219 compute j_valid_count from joint_mask, skip roots, skip child/parent indices outside the valid prefix, and explicitly skip if either child or parent has joint_mask=False.
+- losses.py lines 225-228 apply frame_mask to each edge/frame term and count only valid frames per contributing edge.
+- This seals the round-1 padded child/parent contribution issue. Direct probe with parent_indices=[[-1,0,1]] and joint 2 padded returned the same 1.0 loss as the valid edge only; the large padded joint coordinate was ignored. Direct probe with a padded parent returned 0.0 because the only non-root edge was skipped.
+
+Residual behavior:
+- joint_mask and frame_mask shape/dtype are not validated here; wrong masks may fail with PyTorch errors or odd truth-value behavior rather than a clear ValueError.
+- rest_bone_lengths is not checked finite; NaN in a valid rest length can return NaN.
+- parent_indices is not required to match joint_mask.sum(), nor validated as a tree here. GraphMotionBatch enforces those contracts, but this function alone is permissive.
+- adjacency remains an unused parameter. That is acceptable if parent_indices is the source of truth, but M1.3 should not expect adjacency cross-checking inside this loss.
+
+Test mapping:
+- tests/test_losses.py lines 121-138 are named "padded_child_skipped", but parent_indices is [[-1,0]], so the padded child j=2 is not actually listed. This tests compact parent-list tolerance, not the child/padded-parent skip branch.
+- tests/test_losses.py lines 143-167 cover zero and known valid-edge error.
+- Missing tests: padded child listed, padded parent listed, j >= j_valid_count with parent list length J_max, frame_mask exclusion, invalid rest_bone_lengths, and mask dtype/shape errors.
+
+Status:
+Code sealed. Tests do not actually seal the claimed padded-child/parent regression.
+
+3. masked_vel_consistency
+
+Implementation verification:
+- losses.py lines 100-105 validate pred_pos/pred_vel shape.
+- losses.py lines 106-107 now check pred_pos/pred_vel finite before the T<2 early return.
+- losses.py lines 108-115 validate fps shape/positivity/finiteness and joint_mask/frame_mask shape+bool dtype.
+- losses.py lines 121-129 compute numerical velocity, align pred_vel[:, :-1], and mask only transitions where both frame t and frame t+1 are valid and the joint is valid.
+- Direct probe confirmed NaN at T=1 now raises ValueError instead of returning 0.0; bad joint_mask dtype raises ValueError.
+
+Residual behavior:
+- Device consistency is not explicitly checked, but mismatches will fail loudly in PyTorch.
+- There is no dedicated test for frame-pair masking, so a future regression from pair mask to single-frame mask would not be caught.
+
+Test mapping:
+- tests/test_losses.py lines 101-118 only cover the happy path where positions and velocities are exactly consistent.
+- Missing tests: NaN/Inf raise, T<2 finite validation, wrong joint_mask/frame_mask shape or dtype, fps <= 0, padded joint ignored, and frame t/t+1 pair masking.
+
+Status:
+Code sealed. Tests do not seal the new finite/mask-validation behavior.
+
+4. compute_total_loss pool_aux_weights passthrough
+
+Implementation verification:
+- losses.py line 294 adds pool_aux_weights.
+- losses.py lines 339-345 pass pool_aux_weights into aggregate_pool_aux for each pool level.
+- This seals the round-1 M1.3 wiring concern that per-key aux weights could not be routed from Hydra-style config.
+- Direct probe with pool_aux_outputs=[{mincut=2, locality=4, entropy=8}], pool_aux_weights={0.5,0.25,0.125}, and total pool_aux weight=1.0 returned pool_aux=3.0 and total=3.0.
+
+Residual behavior:
+- compute_total_loss always computes pos, vel, vel_consistency, kl, bone, and pool_aux before applying zero weights. Therefore "optional" bone/vel regularization is optional by weight, not optional by missing inputs or skipped computation.
+- pool_aux_outputs=[] or None returns zero. A list containing an empty dict would still hit aggregate_pool_aux({}) and raise StopIteration because aggregate_pool_aux uses next(iter(pool_aux.values())) in the all-skipped branch.
+- weights and pool_aux_weights are not validated as finite scalars.
+
+Test mapping:
+- tests/test_losses.py lines 182-185 cover custom weights only at the aggregate_pool_aux level.
+- tests/test_losses.py lines 193-253 cover compute_total_loss with pool_aux_outputs=None and total weighting by pos only.
+- Missing tests: compute_total_loss passes pool_aux_weights through, multiple pool levels sum correctly, pool_aux total weight applies after per-key aggregation, and pool_aux_outputs=[{}] policy.
+
+Status:
+Code sealed. Tests do not seal the passthrough path.
+
+M1.3 GraphMotionVAE wiring readiness
+
+Surface required by plan:
+- Plan §13.1 requires L_pos, L_vel, L_vel_consistency, and L_kl.
+- Plan §13.2 requires bone/FK morphology consistency.
+- Plan §13.3 requires pool locality/entropy/mass/connectivity/graph-preserve style aux regularization.
+- PLAN_GAP_REPORT locks M1 GraphMotionVAE to rot -> hard FK -> joint_positions and requires masked L1 pos/vel, KL, bone/FK, and pool aux.
+
+What compute_total_loss now provides:
+- Reconstruction:
+  - pred_pos/gt_pos through masked_l1_pos.
+  - pred_vel/gt_vel through masked_l1_vel.
+  - velocity consistency through masked_vel_consistency.
+- KL:
+  - mu/logvar with coarse_mask and frame_mask_lat, masked and numerically clamped.
+- Bone:
+  - pred_pos + rest_bone_lengths + parent_indices, masked by joint_mask/frame_mask.
+- Pool aux:
+  - pool_aux_outputs: list[dict[str, Tensor]] with aggregate_pool_aux across levels.
+  - pool_aux_weights now routes per-key Hydra-style config into the aggregation.
+- Total weighting:
+  - weights dict supports Hydra-style component coefficients and KL warmup from the training loop.
+
+Compatibility with surrounding modules:
+- GraphMotionBatch exposes motion_features [B,T,J,6] where unified_dataset stores local_pos(3)+velocity(3). M1.3 can split gt_pos=motion_features[..., :3] and gt_vel=motion_features[..., 3:6].
+- GraphMotionBatch exposes joint_mask, frame_mask, fps, parent_indices, and bone_lengths_rest. The M1.3 adapter must pad bone_lengths_rest into [B,J] before calling compute_total_loss.
+- DynamicGraphPool returns aux_losses keys mincut_cut, mincut_ortho, mincut, locality, entropy. DeterministicGraphPool returns the same schema with zero MinCut/entropy constants. aggregate_pool_aux accepts that schema.
+- For dynamic/deterministic pool, M1.3 should pass the final latent-level pooled_mask as coarse_mask and final frame_mask_down as frame_mask_lat for KL.
+- For no-pool, M1.3 should either pass pool_aux_outputs=None and set coarse_mask/frame_mask_lat to the latent topology/time masks, or define a no-pool latent mask explicitly.
+
+Mask/padding safety:
+- Under GraphMotionBatch-valid bool prefix masks and finite padded tensors, the losses are safe for multi-topology batches: padded joints/frames/coarse nodes are excluded from mean denominators and numerator terms.
+- KL is now robust to finite huge values in masked latent slots because mask+clamp occurs before exp and KL is re-masked.
+- Bone is now robust to compact parent lists and listed padded child/parent indices because it skips invalid child/parent nodes.
+- Velocity consistency now validates finite tensors and mask dtype/shape before use and masks only valid frame pairs.
+
+M1.3 adapter requirements:
+1. Produce pred_pos via TopoFKDecoder from local_rotations_6d before calling the loss.
+2. Provide pred_vel. If GraphMotionVAE has no velocity head, derive pred_vel from pred_pos/fps in the adapter and set the velocity-head loss weight accordingly.
+3. Split gt_pos and gt_vel from batch.motion_features[..., :3] and [..., 3:6], or document any normalized-space convention before training.
+4. Convert batch.bone_lengths_rest list[list[float]] to a padded [B,J] tensor on the same device/dtype as pred_pos.
+5. Pass final-level KL masks and pool_aux_outputs consistently for dynamic, deterministic, and no-pool variants.
+6. Treat zero weights as "regularizer disabled"; do not omit required tensors unless compute_total_loss is later refactored to lazily skip zero-weight components.
+
+Residual nits / follow-up tests:
+1. Add tests that actually exercise the round-2 failure modes:
+   - masked_kl_gaussian masked-out huge logvar.
+   - masked_bone_length padded child listed and padded parent listed.
+   - masked_vel_consistency NaN at T=1, bad masks, fps<=0, and frame-pair masking.
+   - compute_total_loss pool_aux_weights passthrough and multi-level aux sum.
+2. Decide/document aggregate_pool_aux({}) policy. Current compute_total_loss handles None/empty list, but not a list containing an empty dict.
+3. Optional hardening: shared mask/device/dtype validators for pos/vel/bone/KL and finite rest_bone_lengths.
+4. Optional doc cleanup: KL comment says padded garbage is safe, but NaN/Inf padded entries still raise before masking.
+
+Final decision:
+PASS for round-1 issue closure at the implementation level.
+
+M1.3 GraphMotionVAE wiring:
+GO. The loss surface is no longer blocked. Wire M1.3 with the adapter requirements above, and add the missing regression tests as follow-up rather than stopping M1.3.

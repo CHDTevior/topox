@@ -1,0 +1,243 @@
+M1.2 step 5 losses.py review, round 1
+Fresh-thread review: local inspection plus independent `codex exec --model gpt-5.5 --config model_reasoning_effort=xhigh`.
+
+Files read in requested order:
+- src/models/graph_salad/losses.py
+- tests/test_losses.py
+- outside_docs/graph_salad_implementation_plan.md §13
+- docs/PLAN_GAP_REPORT.md §1.2 and §5
+
+M1.3 wiring files inspected as needed:
+- src/models/graph_salad/batch.py
+- src/models/graph_salad/denoiser_stub.py
+- src/models/graph_salad/pool_dynamic.py
+- src/models/graph_salad/pool_deterministic.py
+- src/models/graph_salad/unpool.py
+- src/models/graph_salad/attention.py
+- src/models/graph_salad/vae.py does not exist yet.
+
+Test command:
+`conda activate graph_salad && python -m pytest tests/test_losses.py -v` first failed in this non-interactive shell with `CondaError: Run 'conda init' before 'conda activate'`.
+
+Equivalent graph_salad env command used for the real test:
+`source /scratch/ts1v23/.conda/etc/profile.d/conda.sh && conda activate graph_salad && python -m pytest tests/test_losses.py -v`
+
+Test result:
+15 passed in graph_salad env. My local run reported 15 passed in 6.33s on the first hooked run and 5.17s in the independent gpt-5.5 xhigh run, so the "0.02s" claim was not reproduced here.
+
+Plan anchors:
+- implementation_plan §13.1 lines 801-809 requires masked L1 pos, masked L1 vel, velocity consistency, masked KL.
+- implementation_plan §13.2 lines 812-827 requires bone loss over edges, and FK global-position loss if output is local rotation.
+- implementation_plan §13.3 lines 829-850 requires pool locality, entropy, mass/connectivity/graph-preserve style regularization and forbids fixed slot usage KL.
+- PLAN_GAP_REPORT §1.2 lines 33-43 locks rot -> hard FK -> positions and MinCut `lambda_mincut=0.5` fixed/no warmup.
+- PLAN_GAP_REPORT §5 lines 159-166 expects GraphMotionVAE plus losses.py with masked L1/KL/bone/FK/pool aux, including MinCut, locality, entropy.
+
+Executive summary:
+The core math formulas are mostly correct, and the current unit tests pass. However, the module is not R12-hard enough for M1.3 training-loop wiring. The highest-risk issues are: KL overflow after the finite-input guard; `masked_bone_length` trusting `parent_indices` and ignoring `joint_mask`; `masked_vel_consistency` missing finite checks and returning zero on T<2 before validating tensors; missing mask shape/dtype/device contracts; and pool-aux defaults/overrides not matching the locked MinCut/locality/entropy plan cleanly. Verdict is NEEDS-FIX, M1.3 NO-GO until the contracts are tightened.
+
+## Function review: _broadcast_pos_vel_mask
+
+Math verification:
+This helper should construct a `[B,T,J]` validity mask from `[B,J]` joint validity and `[B,T]` frame validity. That is the right mask for position/velocity losses whose atomic averaging unit is a valid joint/frame pair.
+
+Code-vs-math correspondence:
+- losses.py line 40 declares `_broadcast_pos_vel_mask(joint_mask, frame_mask)`.
+- losses.py line 42 returns `joint_mask.unsqueeze(1) & frame_mask.unsqueeze(-1)`, which gives `[B,1,J] & [B,T,1] -> [B,T,J]` when both inputs are correctly shaped bool tensors.
+
+R12 fail-loud assessment:
+This helper has no shape, dtype, or device checks. If masks are wrong-rank, wrong dtype, or on a different device, the caller receives either an opaque PyTorch error or potentially unintended broadcasting when dimensions happen to align. Since every recon helper depends on this mask, this should become the shared validation point: assert `joint_mask.shape == (B,J)`, `frame_mask.shape == (B,T)`, dtype bool, device consistent with tensors.
+
+Test coverage:
+Covered only indirectly by happy-path position/velocity tests using correct bool masks. No tests cover wrong mask rank, dtype, device mismatch, all-False masks, or prefix-contiguity.
+
+Bugs/nits:
+This is a central silent contract. It should either accept expected `(B,T,J)` dimensions as arguments or be folded into a validation helper that receives the source tensor shape.
+
+## Function review: masked_l1_pos
+
+Math verification:
+Correct for the requested divisor. The loss computes per-joint/frame L1 by summing xyz absolute error, then divides by the count of valid joint/frame pairs, not by `3 * valid_count`. This matches the review focus.
+
+Code-vs-math correspondence:
+- losses.py lines 52-57 check pred/gt shape equality and `[B,T,J,3]`.
+- losses.py line 60 builds `[B,T,J]` mask.
+- losses.py line 61 computes `(pred_pos - gt_pos).abs().sum(dim=-1)`, the per-pair xyz L1.
+- losses.py lines 62-64 mask, count valid pairs, and return `diff.sum() / valid_count`.
+
+R12 fail-loud assessment:
+NaN/Inf guard exists at lines 58-59. Empty masks safe-divide to zero via line 63 because `mask.sum().clamp(min=1e-8)` becomes float. Padded finite entries contribute zero after line 62. Missing: joint/frame mask shape, dtype, and device validation; fp32-only contract from the module docstring line 20 is not enforced. It also checks finite values before masking, so NaN in padded pred/gt fails loud rather than being ignored; that is defensible for R12, but should be documented consistently.
+
+Test coverage:
+tests/test_losses.py covers equal tensors, known difference, padded joints ignored, wrong last dimension, and NaN raises (lines 24-64). It does not cover all-False frame/joint masks, wrong mask shape/dtype, GPU/device mismatch, or padded NaN policy.
+
+Bugs/nits:
+No math bug. Needs mask/dtype/device validation before M1.3.
+
+## Function review: masked_l1_vel
+
+Math verification:
+Same structure as position L1, correct if `pred_vel` and `gt_vel` are true velocity tensors in `[B,T,J,3]`. It sums xyz error per valid joint/frame pair and divides by valid pair count.
+
+Code-vs-math correspondence:
+- losses.py lines 74-79 validate pred/gt shape equality and `[B,T,J,3]`.
+- losses.py line 82 builds `[B,T,J]` mask.
+- losses.py line 83 computes per-pair xyz L1.
+- losses.py lines 84-86 mask and divide by valid joint/frame pair count.
+
+R12 fail-loud assessment:
+NaN/Inf guard exists at lines 80-81. Empty masks safe-divide to zero. Padded finite entries contribute zero. Missing the same mask shape/dtype/device validation and fp32 enforcement as `masked_l1_pos`.
+
+Test coverage:
+No dedicated class covers `masked_l1_vel` directly. It is only exercised through `compute_total_loss` zero/easy cases at tests/test_losses.py lines 160-220. Missing known-difference, padded mask, NaN, shape, and empty-mask tests for velocity.
+
+Bugs/nits:
+No math bug. Coverage is thinner than position L1.
+
+## Function review: masked_vel_consistency
+
+Math verification:
+The intended formula is correct: numerical velocity at t is `(pred_pos[t+1] - pred_pos[t]) * fps`, compared to `pred_vel[t]`, valid only when both source frames are valid. This matches the review focus.
+
+Code-vs-math correspondence:
+- losses.py lines 100-105 validate pred_pos/pred_vel shape equality and `[B,T,J,3]`.
+- losses.py lines 106-109 validate `fps.shape == [B]` and positive finite fps.
+- losses.py line 115 computes `(pred_pos[:,1:] - pred_pos[:,:-1]) * fps.view(B,1,1,1)`.
+- losses.py line 116 aligns `pred_vel[:, :-1]`.
+- losses.py lines 119-120 form `frame_mask[:, :-1] & frame_mask[:, 1:]` and combine with `joint_mask`.
+- losses.py lines 121-123 mask and divide by valid transition/joint count.
+
+R12 fail-loud assessment:
+This is not R12-ready. It does not check `pred_pos` or `pred_vel` for NaN/Inf before use. With `T < 2`, line 114 returns zero before validating tensor finiteness; independent gpt-5.5 probing showed `pred_pos` containing NaN with T=1 returns `0.0`. For T>=2, nonfinite values produce NaN output rather than ValueError. It also lacks `joint_mask`/`frame_mask` shape/dtype/device checks and fp32 enforcement.
+
+Test coverage:
+Only one happy-path consistency test exists at tests/test_losses.py lines 88-105. Missing: NaN/Inf raise, T<2 with bad tensors, both-frame masking, padded joints, empty valid transition mask, fps wrong dtype/device, fps <=0, wrong mask shape/dtype.
+
+Bugs/nits:
+High-priority R12 fix. Validate finite pred_pos/pred_vel before the T<2 early return, validate masks, and add a test where frame t or t+1 is invalid to confirm the pair mask.
+
+## Function review: masked_kl_gaussian
+
+Math verification:
+The Gaussian KL formula and reduction order are correct: `-0.5 * sum_d(1 + logvar - mu^2 - exp(logvar))`, then mean over valid latent frame/coarse node pairs. Sign is correct and D is summed before masked-node mean.
+
+Code-vs-math correspondence:
+- losses.py lines 137-140 validate `mu.shape == logvar.shape` and rank 4.
+- losses.py lines 141-142 check input tensors are finite.
+- losses.py line 145 computes the standard per-node KL and sums over D.
+- losses.py line 146 builds `[B,T_lat,C]` mask from `frame_mask_lat` and `coarse_mask`.
+- losses.py lines 147-149 mask and divide by valid latent node count.
+
+R12 fail-loud assessment:
+This is the most important numerical issue. The finite-input guard at lines 141-142 does not prevent `logvar.exp()` overflow at line 145. `logvar=1000` produces `inf`, not a fail-loud ValueError. Worse, because KL is computed before masking, a finite but huge `logvar` in a masked-out padded node can produce `inf`, and `inf * 0` becomes `nan`, violating padded-zero contribution. My local probe with masked-out `logvar=1000` returned `tensor(nan)`. There are also no shape/dtype/device assertions for `coarse_mask` and `frame_mask_lat`.
+
+Test coverage:
+tests/test_losses.py lines 67-85 cover KL zero at N(0,1) and a positive `mu=1, logvar=0` case. Missing: logvar overflow, masked-out large logvar, all-False masks, wrong mask shape/dtype, nonfinite post-KL guard, and large-but-finite numerics near the fp32 exp threshold.
+
+Bugs/nits:
+High-priority R12 fix. Clamp or fail-loud on `logvar` above a safe threshold before exp, and apply the valid mask before expensive/overflow-prone operations or index only valid entries. Add a post-computation `torch.isfinite(kl_per_node[mask]).all()` guard.
+
+## Function review: masked_bone_length
+
+Math verification:
+The child-parent edge formula is correct when `parent_indices` is a validated unpadded parent list: for each non-root child `j`, compute `||pred_pos[j] - pred_pos[parent[j]]||`, compare to `rest_bone_lengths[j]`, and average over edge/frame pairs. Root is excluded by `if p < 0: continue`.
+
+Code-vs-math correspondence:
+- losses.py lines 167-170 validate pred_pos rank and finite pred_pos.
+- losses.py lines 172-175 validate `rest_bone_lengths.shape == [B,J]`.
+- losses.py lines 176-177 validate `parent_indices` is a list of length B.
+- losses.py lines 181-187 iterate per-sample parent lists and skip `p < 0`.
+- losses.py lines 189-192 compute child-parent length error.
+- losses.py lines 194-199 mask by frames, count edge/frame terms, and average.
+
+R12 fail-loud assessment:
+Not R12-ready. The function accepts `joint_mask` but never uses it. It trusts `parent_indices` without checking `len(parent_indices[b]) == joint_mask[b].sum()`, child/parent range, root count, parent ordering, or child/parent validity against `joint_mask`. Independent gpt-5.5 probing showed a child with `joint_mask=False` still contributes loss `1.0` if it appears in `parent_indices`. `rest_bone_lengths` is not checked finite. `frame_mask` shape/dtype/device is not validated. The `adjacency` argument is unused; this is okay if the contract is "edges come from parent_indices", but the unused parameter should be removed or cross-checked.
+
+Test coverage:
+tests/test_losses.py lines 108-134 cover matching rest lengths and a known one-edge error. Missing: padded child ignored or raises, parent_indices length mismatch, parent out of range, root-only/no-edge case, frame mask exclusion, rest_bone_lengths NaN/Inf, wrong frame_mask dtype/shape, and adjacency/parent mismatch policy.
+
+Bugs/nits:
+High priority. Either enforce that `parent_indices` is exactly the compact valid tree and raise if inconsistent with `joint_mask`, or derive valid edges from `joint_mask` and skip invalid child/parent entries. Given GraphMotionBatch already validates parent trees and prefix masks, losses.py should still assert the contract at the boundary.
+
+## Function review: aggregate_pool_aux
+
+Math verification:
+For scalar aux dicts emitted by current pools, it correctly sums keys with weights. DynamicGraphPool returns `mincut`, `locality`, `entropy`, plus detached diagnostics `mincut_cut`/`mincut_ortho` at pool_dynamic.py lines 404-410. DeterministicGraphPool emits the same schema with zero MinCut and entropy at pool_deterministic.py lines 264-272.
+
+Code-vs-math correspondence:
+- losses.py lines 218-219 define default aux weights: mincut 1, locality 1, entropy 0, diagnostics 0.
+- losses.py lines 220-225 merge caller weights with defaults.
+- losses.py lines 227-237 sum finite present keys with nonzero weights.
+- losses.py lines 238-241 attempt a zero fallback when nothing contributes.
+
+R12 fail-loud assessment:
+NaN/Inf guard exists for contributing aux tensors at lines 233-235. Missing: type checks for dict values, scalar shape checks, dtype/device consistency, and empty-dict handling. `aggregate_pool_aux({})` raises `StopIteration` at line 240 instead of returning a zero on a caller-provided device or raising a clear ValueError.
+
+Weight/default assessment:
+The local default treats entropy as metric-only (`0.0`), but plan §13.3 says entropy should control assignment sharpness and PLAN_GAP_REPORT §5 says L_pool_entropy is retained. That may be a deliberate metric-only default, but it is not clearly aligned with the plan. Also, DynamicGraphPool already applies `mincut_lambda=0.5` at pool_dynamic.py line 381 after default `mincut_lambda=0.5` in its constructor (line 94), while `compute_total_loss` later applies `pool_aux=0.5`; effective default MinCut contribution becomes 0.25 times cut+ortho, not the locked 0.5.
+
+Test coverage:
+tests/test_losses.py lines 137-157 cover default sum, custom weights, and NaN in a contributing key. Missing: empty dict, all weights zero, unknown keys only, non-scalar aux tensor, device/dtype mismatch, and compute_total_loss propagation over multiple pool levels.
+
+Bugs/nits:
+Expose pool-aux weights through `compute_total_loss` or document that pool modules pre-scale everything and total `pool_aux` should default to 1.0 if `lambda_mincut=0.5` is intended to be the effective default.
+
+## Function review: compute_total_loss
+
+Math verification:
+The aggregation is structurally reasonable: compute pos, vel, velocity consistency, KL, bone, pool aux, then weighted total. For current unit-test tensors this is correct. It assumes the caller supplies `pred_vel`/`gt_vel`, final-level KL masks, `[B,J]` rest bone lengths, and a list of pool aux dicts.
+
+Code-vs-math correspondence:
+- losses.py lines 277-284 define default total weights: pos 1, vel 1, vel_consistency 0.5, kl 1e-3, bone 1, pool_aux 0.5.
+- losses.py lines 285-290 merge caller overrides.
+- losses.py lines 292-301 compute all named component losses.
+- losses.py lines 304-310 aggregate pool aux over levels.
+- losses.py lines 313-318 weighted-sum total and return the loss dict.
+
+R12 fail-loud assessment:
+It inherits the component issues above and adds no top-level schema validation. It does not validate weights are finite scalars, `pool_aux_outputs` is a list of dicts, every named loss is scalar finite, or devices/dtypes match. If `aggregate_pool_aux` returns a vector, `total` can become vector by broadcasting. It passes `adjacency=None` to `masked_bone_length` at line 300, which is harmless only because adjacency is unused.
+
+Weight/default assessment:
+KL default `1e-3` matches the requested conservative small KL start. The "warmup hook" is only an implicit caller override through `weights`; there is no explicit schedule helper, but that is acceptable if M1.3 training loop owns scheduling. Recon defaults are plausible starting points. Pool defaults are the mismatch risk: `pool_aux=0.5` plus pool-internal `mincut_lambda=0.5` changes effective locked MinCut scale; entropy is off by default and cannot be enabled through `compute_total_loss` because the function does not expose `aggregate_pool_aux(..., weights=...)`.
+
+Test coverage:
+tests/test_losses.py lines 160-220 cover a zero-everything case and weighted total using only pos. Missing: nonzero all components, pool_aux_outputs with real pool dicts, multiple pool levels, KL/bone/vel consistency in total, finite-total guard, empty pool aux dict, and GraphMotionBatch-shaped inputs.
+
+Bugs/nits:
+M1.3 will need explicit adapter code. `compute_total_loss` is not a drop-in call against current GraphMotionBatch plus future VAE output unless the VAE/training loop commits to exact output names and shapes.
+
+## M1.3 wiring decision
+
+`vae.py` does not exist yet, so there is no actual GraphMotionVAE.forward contract to verify.
+
+Current surrounding modules imply these contracts:
+- `GraphMotionBatch` exposes `motion_features [B,T,J,6]`, `joint_mask`, `frame_mask`, `fps`, `parent_indices`, `bone_lengths [B,T,J]`, and `bone_lengths_rest` as per-sample lists (batch.py lines 33-67 and dataclass fields around lines 92-117).
+- `compute_total_loss` instead requires `gt_pos [B,T,J,3]`, `gt_vel [B,T,J,3]`, `rest_bone_lengths [B,J]`, final `coarse_mask [B,C]`, final `frame_mask_lat [B,T_lat]`, `mu/logvar [B,T_lat,C,D]`, and `pool_aux_outputs: list[dict[str, Tensor]]`.
+- PLAN_GAP_REPORT §1.2 line 34 locks VAE output as `local_rotations_6d -> TopoFKDecoder -> joint_positions`; this naturally gives positions, but not necessarily a velocity head. `compute_total_loss` currently requires `pred_vel`.
+- Pool modules return aux schemas compatible with `aggregate_pool_aux`, but `compute_total_loss` does not allow per-aux-key weights.
+- Denoiser stub signature is locked at denoiser_stub.py lines 65-75 and is not called by M1 reconstruction.
+
+Silent contracts to make explicit before M1.3:
+1. Whether GraphMotionVAE.forward returns `pred_vel`, or training loop derives both `pred_vel` and `gt_vel` from positions/fps.
+2. How `gt_pos` and `gt_vel` are extracted from `motion_features [B,T,J,6]`.
+3. How `bone_lengths_rest` list or `rest_offsets` becomes the required padded `[B,J] rest_bone_lengths`.
+4. Which pool level's `coarse_mask`/`frame_mask_down` is used for KL after Poolx2, and how no-pool mode sets them.
+5. Whether `pool_aux_outputs` contains only dynamic/deterministic aux dicts or may include `{}` for no-pool.
+6. Whether KL warmup and pool aux key weights live in training loop or in `compute_total_loss`.
+
+M1.3 unblock:
+NO-GO as a drop-in loss aggregator. The math foundation is usable, but R12 boundary fixes and explicit adapter contracts are needed first.
+
+## Recommended fixes before round 2
+
+1. Add shared validation helpers for `[B,T,J,3]` tensors, `[B,J]` masks, `[B,T]` masks, `[B,C]` coarse masks, `[B,T_lat]` latent frame masks, dtype, device, finite tensors, and scalar weights.
+2. Fix KL overflow: clamp/fail-loud on unsafe logvar, compute only valid KL entries or mask before exp, and post-check finite valid KL.
+3. Fix velocity consistency finite checks before T<2 early return; add pair-mask tests for frame t/t+1.
+4. Fix bone loss: enforce `parent_indices[b]` length equals valid joint count, validate parent range/order, use `joint_mask`, check `rest_bone_lengths` finite, and define adjacency policy.
+5. Clarify pool-aux default scaling: likely make `compute_total_loss` default `pool_aux=1.0` if pool-internal `mincut_lambda=0.5` is the locked effective scale, and expose per-key aux weights or intentionally document metric-only entropy.
+6. Expand tests for R12 edge cases and a small integration case using pool aux outputs shaped like DynamicGraphPool/DeterministicGraphPool.
+
+## VERDICT
+
+NEEDS-FIX
+
+M1.3 unblock decision: NO-GO for drop-in training-loop use. Do not wire `compute_total_loss` into GraphMotionVAE training until the R12 fixes above and the silent M1.3 contracts are made explicit.
