@@ -232,13 +232,16 @@ def main() -> int:
     if len(ds_val) == 0:
         raise RuntimeError("[DATA FAIL] val split is empty.")
 
+    # DataLoader tuning: workers=8 + pin_memory + persistent (codex-side-tuning for util>80%)
     dl_train = DataLoader(
         ds_train, batch_size=args.batch_size, shuffle=True,
-        collate_fn=collate_fn, num_workers=2, drop_last=True,
+        collate_fn=collate_fn, num_workers=8, drop_last=True,
+        pin_memory=True, persistent_workers=True, prefetch_factor=4,
     )
     dl_val = DataLoader(
         ds_val, batch_size=args.batch_size, shuffle=False,
-        collate_fn=collate_fn, num_workers=2, drop_last=False,
+        collate_fn=collate_fn, num_workers=4, drop_last=False,
+        pin_memory=True, persistent_workers=True, prefetch_factor=4,
     )
 
     # Model
