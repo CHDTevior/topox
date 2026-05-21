@@ -132,10 +132,20 @@ echo "[deploy_graph] EPOCHS=$EPOCHS LR=$LR BATCH=$BATCH_SIZE D_MODEL=$D_MODEL N_
 echo "[deploy_graph] MAX_COARSE=$MAX_COARSE LOCAL_RADIUS=$LOCAL_RADIUS STRIDE=$TEMPORAL_STRIDE"
 
 # ---- training: ONE srun task, --gres=gpu:N, --no-kill ----------------------
+CUDA_PIN=""
+GRES_ARG="--gres=gpu:$GPUS_PER_TASK"
+if [ -n "${CUDA_VISIBLE_DEVICES_OVERRIDE:-}" ]; then
+    # When manually pinning GPU, DROP --gres (root cause finding: srun --gres
+    # forces mask = {0} for the first injected task, so CUDA_VISIBLE_DEVICES=1
+    # override becomes empty inside srun. Without --gres, slurm doesn't override
+    # our CUDA_VISIBLE_DEVICES env, so we can pin to any physical GPU index).
+    CUDA_PIN="export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES_OVERRIDE} && "
+    GRES_ARG=""
+fi
 setsid nohup srun --jobid="$JOBID" -w "$NODE" --overlap --ntasks=1 \
-    --gres="gpu:$GPUS_PER_TASK" --no-kill \
+    $GRES_ARG --no-kill \
     bash -lc \
-    "$ACTIVATE && cd $P && PYTHONUNBUFFERED=1 python -u scripts/train_graph_vae.py \
+    "$ACTIVATE && cd $P && ${CUDA_PIN}PYTHONUNBUFFERED=1 python -u scripts/train_graph_vae.py \
      --pool_type $POOL_TYPE \
      --data_dir data/cs_sparse2full_tgt \
      --epochs $EPOCHS --save_every $SAVE_EVERY --lr $LR --batch_size $BATCH_SIZE \
