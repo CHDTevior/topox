@@ -69,6 +69,13 @@ def main() -> int:
     p.add_argument("--max_clips", type=int, default=1,
                    help="0=all clips of species, N=first N clips. >1 means batched training")
     p.add_argument("--batch_size", type=int, default=1)
+    p.add_argument("--latent_train", default="sample",
+                   choices=("sample", "mean"),
+                   help="Codex M1.5 J prong: sample=stochastic z=mu+eps*std (default VAE), "
+                        "mean=deterministic z=mu (force AE behavior, expected to fix mean-pose collapse)")
+    p.add_argument("--w_speed_mag", type=float, default=0.0,
+                   help="Codex M1.5 B prong: anti-frozen speed-magnitude loss. "
+                        "0=off; 10=strong. Penalizes when pred has less motion energy than gt.")
     p.add_argument("--out", required=True)
     args = p.parse_args()
 
@@ -182,12 +189,15 @@ def main() -> int:
             pos_l1 = ((pos_diff * pos_mask.to(pos_diff.dtype)).sum() / pos_mask.sum().clamp(min=1.0)).item()
         return ratio, pred_speed, gt_speed, pos_l1
 
+    # Codex M1.5 J prong: deterministic AE train (z=mu, no eps)
+    train_sample = (args.latent_train == "sample")  # True → stochastic; False → deterministic
+
     for epoch in range(args.epochs):
         vae.train()
         ep_losses = []
         for raw in dl:
             batch = make_batch(raw)
-            out = vae(batch)
+            out = vae(batch, sample=train_sample)
             gt_pos = batch.motion_features[..., :3]
             gt_vel = batch.motion_features[..., 3:6]
             rest_bones = torch.zeros(batch.batch_size, batch.max_joints, device=dev)
@@ -209,8 +219,24 @@ def main() -> int:
                 fps=batch.fps,
                 weights=loss_weights,
             )
+            # Codex M1.5 B prong: speed-magnitude anti-frozen penalty
+            # `||(pred_pos diff)|| - ||(gt_pos diff)||` per (j,t) penalizes missing motion energy.
+            # When pred is frozen → ||pred_diff||=0 but ||gt_diff||>0 → finite penalty.
+            extra_loss = 0.0
+            if args.w_speed_mag > 0:
+                pp = out["pred_pos"]  # [B,T,J,3]
+                gp = gt_pos
+                if pp.shape[1] > 1:
+                    pp_d = (pp[:, 1:] - pp[:, :-1]).norm(dim=-1)  # [B,T-1,J]
+                    gp_d = (gp[:, 1:] - gp[:, :-1]).norm(dim=-1)
+                    mask = batch.joint_mask.unsqueeze(1) & eff_fm[:, 1:].unsqueeze(-1)
+                    mf = mask.to(pp.dtype)
+                    speed_mag_loss = ((pp_d - gp_d).abs() * mf).sum() / mf.sum().clamp(min=1.0)
+                    extra_loss = extra_loss + args.w_speed_mag * speed_mag_loss
+                    losses["speed_mag"] = speed_mag_loss
+
             opt.zero_grad()
-            losses["total"].backward()
+            (losses["total"] + extra_loss).backward()
             torch.nn.utils.clip_grad_norm_(vae.parameters(), max_norm=10.0)
             opt.step()
             ep_losses.append({k: v.item() for k, v in losses.items()})
