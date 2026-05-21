@@ -455,6 +455,10 @@ def main() -> int:
             val_losses = defaultdict(list)
             # Per-species per-sample list (codex M1.5 Medium: no batch-mean double-averaging)
             per_species_pos = defaultdict(list)
+            # Frozen-pred audit metrics (codex 2026-05-21 root cause finding)
+            speed_ratios = []
+            pred_speeds = []
+            gt_speeds = []
             with torch.no_grad():
                 for raw in dl_val:
                     batch = GraphMotionBatch.from_collate_dict({
@@ -492,6 +496,23 @@ def main() -> int:
                     )
                     for i, sid in enumerate(batch.skeleton_id):
                         per_species_pos[sid].append(psl[i].item())
+                    # Codex M1.5 frozen-pred audit (2026-05-21): speed-ratio metric
+                    # to expose static-pose shortcut early. Per-frame mean displacement
+                    # ratio (pred/gt). Frozen if ratio < 0.1.
+                    pp = out["pred_pos"]  # [B, T, J, 3]
+                    gp = gt_pos
+                    if pp.shape[1] > 1:
+                        pp_d = (pp[:, 1:] - pp[:, :-1]).norm(dim=-1)  # [B,T-1,J]
+                        gp_d = (gp[:, 1:] - gp[:, :-1]).norm(dim=-1)
+                        mask = batch.joint_mask.unsqueeze(1) & effective_frame_mask_val[:, 1:].unsqueeze(-1)
+                        mask_f = mask.to(pp.dtype)
+                        denom = mask_f.sum().clamp(min=1.0)
+                        pred_meanspeed = (pp_d * mask_f).sum() / denom
+                        gt_meanspeed = (gp_d * mask_f).sum() / denom
+                        ratio = (pred_meanspeed / gt_meanspeed.clamp(min=1e-8)).item()
+                        speed_ratios.append(ratio)
+                        pred_speeds.append(pred_meanspeed.item())
+                        gt_speeds.append(gt_meanspeed.item())
 
             val_loss_mean = float(np.mean(val_losses["total"]))
             # Recon-only val (3-way pool-fair ablation metric — codex M1.5 R2 Medium)
@@ -507,9 +528,16 @@ def main() -> int:
                 k: {"raw": v, "weighted": loss_weights[k] * v}
                 for k, v in val_recon_components_raw.items()
             }
+            # Frozen-pred audit (codex 2026-05-21): expose static-shortcut early
+            mean_speed_ratio = float(np.mean(speed_ratios)) if speed_ratios else float("nan")
+            mean_pred_speed = float(np.mean(pred_speeds)) if pred_speeds else float("nan")
+            mean_gt_speed = float(np.mean(gt_speeds)) if gt_speeds else float("nan")
+            frozen_flag = "🥶FROZEN" if mean_speed_ratio < 0.1 else ("⚠LOW" if mean_speed_ratio < 0.5 else "✓OK")
             val_dt = time.time() - t_v
             log(f"[val ep{epoch}] dt={val_dt:.1f}s total={val_loss_mean:.4f} "
-                f"recon_only={val_recon:.4f}")
+                f"recon_only={val_recon:.4f} "
+                f"speed_ratio={mean_speed_ratio:.4f} {frozen_flag} "
+                f"(pred={mean_pred_speed:.4f} gt={mean_gt_speed:.4f})")
             for sid, vals in sorted(per_species_pos.items()):
                 log(f"  per-species pos: {sid} n={len(vals)} "
                     f"mean={float(np.mean(vals)):.4f} std={float(np.std(vals)):.4f}")
@@ -562,6 +590,11 @@ def main() -> int:
                     "val_recon": val_recon,
                     "val_recon_components": val_recon_components,
                     "macro_per_species_pos": macro_pos,
+                    # Frozen-pred audit (codex 2026-05-21):
+                    "speed_ratio_mean": mean_speed_ratio,
+                    "pred_speed_mean": mean_pred_speed,
+                    "gt_speed_mean": mean_gt_speed,
+                    "frozen_flag": frozen_flag,
                     "per_species_pos": {
                         sid: {
                             "n": len(vals),
