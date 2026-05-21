@@ -79,6 +79,19 @@ MAX_FRAMES="${MAX_FRAMES:-64}"
 MAX_JOINTS="${MAX_JOINTS:-160}"
 SEED="${SEED:-42}"
 INIT_CKPT="${INIT_CKPT:-}"
+# M1.5R: P3 path loss weights (default still backward-compat 1.0/1.0/0.0/0.0)
+W_POS="${W_POS:-1.0}"
+W_VEL="${W_VEL:-1.0}"
+W_VEL_NORMALIZED="${W_VEL_NORMALIZED:-0.0}"  # M1.5R #5: per-species norm
+W_SPEED_MAG="${W_SPEED_MAG:-0.0}"            # M1.5R B prong: anti-frozen
+W_KL="${W_KL:-1e-3}"
+USE_NAME_EMBED="${USE_NAME_EMBED-0}"         # M1.5R #4: enable encoder name embed; 0 or 1 (codex R2 fix: no colon → only unset gets default, empty fails validation below)
+# P3 codex review fix #2: validate USE_NAME_EMBED — otherwise typos like 'true' silently treated as off
+case "$USE_NAME_EMBED" in
+    0|1) : ;;
+    *) echo "[deploy_graph] FATAL: USE_NAME_EMBED='$USE_NAME_EMBED' must be 0 or 1" >&2 ; exit 2 ;;
+esac
+DATA_DIR="${DATA_DIR:-data/cs_sparse2full_tgt}"
 OUT="${OUT:-runs/m1_5_graph_vae_${POOL_TYPE}_seed${SEED}}"
 
 LOG="$P/logs/deploy_graph_${POOL_TYPE}.log"
@@ -147,13 +160,16 @@ setsid nohup srun --jobid="$JOBID" -w "$NODE" --overlap --ntasks=1 \
     bash -lc \
     "$ACTIVATE && cd $P && ${CUDA_PIN}PYTHONUNBUFFERED=1 python -u scripts/train_graph_vae.py \
      --pool_type $POOL_TYPE \
-     --data_dir data/cs_sparse2full_tgt \
+     --data_dir $DATA_DIR \
      --epochs $EPOCHS --save_every $SAVE_EVERY --lr $LR --batch_size $BATCH_SIZE \
      --seed $SEED --device cuda \
      --d_model $D_MODEL --n_heads $N_HEADS --d_ff $D_FF \
      --max_coarse $MAX_COARSE --local_radius $LOCAL_RADIUS \
      --temporal_stride $TEMPORAL_STRIDE \
      --max_frames $MAX_FRAMES --max_joints $MAX_JOINTS \
+     --w_pos $W_POS --w_vel $W_VEL --w_vel_normalized $W_VEL_NORMALIZED \
+     --w_speed_mag $W_SPEED_MAG --w_kl $W_KL \
+     $([ \"$USE_NAME_EMBED\" = \"1\" ] && echo \"--use_name_embed\") \
      $INIT_CKPT_ARG $POOL_TAU_ARG \
      --out $OUT --overwrite" \
     > "$LOG" 2>&1 < /dev/null &

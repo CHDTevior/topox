@@ -86,6 +86,81 @@ def masked_l1_vel(
     return diff.sum() / valid_count
 
 
+def masked_l1_vel_normalized(
+    pred_vel: torch.Tensor,
+    gt_vel: torch.Tensor,
+    joint_mask: torch.Tensor,
+    frame_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Per-sample vel L1 normalized by GT vel scale (decision #5, M1.5R).
+
+    Each sample's vel error is divided by that sample's mean GT vel magnitude
+    (sum-of-xyz), so static species (Tukan 0.07 m/s) and active species
+    (Dragon 6.6 m/s) contribute equally to the loss gradient.
+
+    Range: ≈0 (perfect) → ≈1 (predict-zero baseline). Bounded, interpretable.
+
+    Falls back to non-normalized for samples where GT vel scale < eps (e.g.,
+    Tukan rest pose ~0.07 m/s — still divided but with floor eps to avoid div0).
+    """
+    if pred_vel.shape != gt_vel.shape:
+        raise ValueError(f"pred_vel {tuple(pred_vel.shape)} != gt_vel {tuple(gt_vel.shape)}")
+    if pred_vel.dim() != 4 or pred_vel.shape[-1] != 3:
+        raise ValueError(f"pred_vel must be [B, T, J, 3], got {tuple(pred_vel.shape)}")
+    if not torch.isfinite(pred_vel).all() or not torch.isfinite(gt_vel).all():
+        raise ValueError("pred_vel / gt_vel contains NaN or Inf")
+    mask = _broadcast_pos_vel_mask(joint_mask, frame_mask)  # [B, T, J]
+    mf = mask.to(pred_vel.dtype)
+    # Per-sample diff sum-of-xyz over (j,t), masked
+    diff = (pred_vel - gt_vel).abs().sum(dim=-1)  # [B, T, J]
+    diff_m = diff * mf
+    # Per-sample valid count (avoid div0)
+    per_sample_count = mf.sum(dim=(1, 2)).clamp(min=_EPS)  # [B]
+    per_sample_diff = diff_m.sum(dim=(1, 2)) / per_sample_count  # [B]
+    # Per-sample GT vel scale (mean ||gt_vel|| sum-of-xyz over j,t)
+    gt_mag = gt_vel.abs().sum(dim=-1)  # [B, T, J]
+    gt_mag_m = gt_mag * mf
+    per_sample_scale = gt_mag_m.sum(dim=(1, 2)) / per_sample_count  # [B]
+    # Normalize per-sample (eps floor for static species)
+    normalized = per_sample_diff / per_sample_scale.clamp(min=0.05)
+    return normalized.mean()
+
+
+def masked_speed_mag(
+    pred_pos: torch.Tensor,
+    gt_pos: torch.Tensor,
+    joint_mask: torch.Tensor,
+    frame_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Anti-frozen speed-magnitude penalty (B prong, codex M1.5 frozen-pred fix).
+
+    Penalizes |||pred_pos[t+1] - pred_pos[t]|| - ||gt_pos[t+1] - gt_pos[t]||| per (j, t).
+    Forces motion energy regardless of direction:
+    - frozen pred (||pred_diff||=0) vs gt motion (||gt_diff||>0) → loss = ||gt_diff||
+    - random-direction motion matching gt magnitude → loss ≈ 0 (B doesn't fight direction)
+
+    Combined with masked_l1_vel which fights direction, B forces pred to MOVE.
+    """
+    if pred_pos.shape != gt_pos.shape:
+        raise ValueError(f"pred_pos {tuple(pred_pos.shape)} != gt_pos {tuple(gt_pos.shape)}")
+    if pred_pos.dim() != 4 or pred_pos.shape[-1] != 3:
+        raise ValueError(f"pred_pos must be [B, T, J, 3], got {tuple(pred_pos.shape)}")
+    if not torch.isfinite(pred_pos).all() or not torch.isfinite(gt_pos).all():
+        raise ValueError("pred_pos / gt_pos contains NaN or Inf")
+    B, T, J, _ = pred_pos.shape
+    if T < 2:
+        return torch.zeros((), device=pred_pos.device, dtype=pred_pos.dtype)
+    pp_d = (pred_pos[:, 1:] - pred_pos[:, :-1]).norm(dim=-1)  # [B, T-1, J]
+    gp_d = (gt_pos[:, 1:] - gt_pos[:, :-1]).norm(dim=-1)
+    # Mask requires both t and t+1 valid frames + joint valid
+    frame_mask_pair = frame_mask[:, :-1] & frame_mask[:, 1:]  # [B, T-1]
+    mask = joint_mask.unsqueeze(1) & frame_mask_pair.unsqueeze(-1)  # [B, T-1, J]
+    mf = mask.to(pp_d.dtype)
+    diff = (pp_d - gp_d).abs() * mf
+    valid_count = mf.sum().clamp(min=_EPS)
+    return diff.sum() / valid_count
+
+
 def masked_vel_consistency(
     pred_pos: torch.Tensor,    # [B, T, J, 3]
     pred_vel: torch.Tensor,    # [B, T, J, 3]
@@ -313,7 +388,9 @@ def compute_total_loss(
     default_weights = {
         "pos": 1.0,
         "vel": 1.0,
+        "vel_normalized": 0.0,  # M1.5R decision #5: per-species vel norm (default OFF for backward compat)
         "vel_consistency": 0.5,
+        "speed_mag": 0.0,       # M1.5R B prong: anti-frozen (default OFF for backward compat)
         "kl": 1e-3,
         "bone": 1.0,
         "pool_aux": 0.5,
@@ -328,6 +405,22 @@ def compute_total_loss(
     losses: dict[str, torch.Tensor] = {}
     losses["pos"] = masked_l1_pos(pred_pos, gt_pos, joint_mask, frame_mask)
     losses["vel"] = masked_l1_vel(pred_vel, gt_vel, joint_mask, frame_mask)
+    # M1.5R decision #5 — per-species vel normalization (compute only if weight > 0 to save FLOPs)
+    if weights.get("vel_normalized", 0.0) > 0.0:
+        losses["vel_normalized"] = masked_l1_vel_normalized(
+            pred_vel, gt_vel, joint_mask, frame_mask
+        )
+    else:
+        losses["vel_normalized"] = torch.zeros(
+            (), device=pred_pos.device, dtype=pred_pos.dtype
+        )
+    # M1.5R B prong — speed_mag anti-frozen (compute only if weight > 0)
+    if weights.get("speed_mag", 0.0) > 0.0:
+        losses["speed_mag"] = masked_speed_mag(pred_pos, gt_pos, joint_mask, frame_mask)
+    else:
+        losses["speed_mag"] = torch.zeros(
+            (), device=pred_pos.device, dtype=pred_pos.dtype
+        )
     losses["vel_consistency"] = masked_vel_consistency(
         pred_pos, pred_vel, fps, joint_mask, frame_mask
     )

@@ -158,10 +158,17 @@ def main() -> int:
     # Loss weights
     p.add_argument("--w_pos", type=float, default=1.0)
     p.add_argument("--w_vel", type=float, default=1.0)
+    p.add_argument("--w_vel_normalized", type=float, default=0.0,
+                   help="M1.5R decision #5: per-species vel norm weight (default 0=off for backward compat)")
     p.add_argument("--w_vel_consistency", type=float, default=0.5)
+    p.add_argument("--w_speed_mag", type=float, default=0.0,
+                   help="M1.5R B prong: anti-frozen speed magnitude weight (default 0=off)")
     p.add_argument("--w_kl", type=float, default=1e-3)
     p.add_argument("--w_bone", type=float, default=1.0)
     p.add_argument("--w_pool_aux", type=float, default=0.5)
+    # M1.5R decision #4: enable name embedding (cross-species shared semantics)
+    p.add_argument("--use_name_embed", action="store_true",
+                   help="M1.5R decision #4: encoder.use_name_embed=True for cross-species transfer")
     # I/O
     p.add_argument("--out", required=True, help="Output dir for ckpts + logs")
     p.add_argument("--device", default="cuda")
@@ -262,6 +269,10 @@ def main() -> int:
         dropout=args.dropout,
         pool_tau=args.pool_tau,
     ).to(dev)
+    # M1.5R decision #4: enable name embedding in encoder
+    if args.use_name_embed:
+        vae.encoder.use_name_embed = True
+        log(f"  [M1.5R #4] use_name_embed=True (cross-species shared semantics)")
     n_params = sum(p.numel() for p in vae.parameters())
     log(f"VAE params: {n_params:,}")
 
@@ -292,7 +303,9 @@ def main() -> int:
     # Pre-build loss weights (codex M1.5 High: use same in train and val)
     loss_weights = {
         "pos": args.w_pos, "vel": args.w_vel,
+        "vel_normalized": args.w_vel_normalized,  # M1.5R #5
         "vel_consistency": args.w_vel_consistency,
+        "speed_mag": args.w_speed_mag,            # M1.5R B
         "kl": args.w_kl, "bone": args.w_bone,
         "pool_aux": args.w_pool_aux,
     }
@@ -518,9 +531,14 @@ def main() -> int:
             # Recon-only val (3-way pool-fair ablation metric — codex M1.5 R2 Medium)
             # = w_pos*pos + w_vel*vel + w_vel_consistency*vel_consistency + w_bone*bone
             # Excludes pool_aux + KL (codex M1.5 R3 P1: weight components like train)
-            recon_keys = ("pos", "vel", "vel_consistency", "bone")
+            # P3 codex review fix #1: include vel_normalized + speed_mag in val_recon
+            # selection metric (otherwise best_recon_model.pt would prefer old-objective frozen
+            # ckpts even when training optimizes the new terms).
+            recon_keys = ("pos", "vel", "vel_normalized", "vel_consistency",
+                          "speed_mag", "bone")
             val_recon_components_raw = {k: float(np.mean(val_losses[k]))
-                                       for k in recon_keys if k in val_losses}
+                                       for k in recon_keys
+                                       if k in val_losses and loss_weights.get(k, 0.0) > 0.0}
             val_recon = sum(
                 loss_weights[k] * v for k, v in val_recon_components_raw.items()
             )

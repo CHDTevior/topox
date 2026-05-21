@@ -72,6 +72,8 @@ def load_graph_vae(ckpt_path: str, dev: torch.device):
         dropout=ta['dropout'],
     ).to(dev)
     vae.load_state_dict(ck['model_state_dict'], strict=True)
+    # P3 codex review fix #3: respect use_name_embed from train args (legacy=False)
+    vae.encoder.use_name_embed = bool(ta.get("use_name_embed", False))
     vae.eval()
     return vae, ta
 

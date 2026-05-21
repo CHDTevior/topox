@@ -144,6 +144,8 @@ def main() -> int:
         dropout=train_args["dropout"],
     ).to(dev)
     vae.load_state_dict(ckpt["model_state_dict"], strict=True)
+    # P3 codex review fix #3: respect use_name_embed from training (default False for legacy ckpts)
+    vae.encoder.use_name_embed = bool(train_args.get("use_name_embed", False))
     vae.eval()
 
     # Empty/missing split guard (codex M1.5 R2 High)
