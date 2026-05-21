@@ -85,7 +85,13 @@ while true; do
     NONE_ALIVE=$(check_alive 925436 swarma1004 runs/m1_5_graph_vae_none_seed42)
     NONE_FAIL=$(check_failure "$P/runs/m1_5_graph_vae_none_seed42/train.log")
 
-    LINE="$TS | dyn:[$DYN_EP loss=$DYN_LOSS recon=$DYN_RECON $DYN_ALIVE $DYN_FAIL] | det:[$DET_EP loss=$DET_LOSS recon=$DET_RECON $DET_ALIVE $DET_FAIL] | none:[$NONE_EP loss=$NONE_LOSS recon=$NONE_RECON $NONE_ALIVE $NONE_FAIL]"
+    SOFT_EP=$(extract_latest_epoch "$P/runs/m1_5_graph_vae_soft_deterministic_seed42/train.log")
+    SOFT_LOSS=$(extract_latest_loss "$P/runs/m1_5_graph_vae_soft_deterministic_seed42/train.log")
+    SOFT_RECON=$(extract_latest_val_recon "$P/runs/m1_5_graph_vae_soft_deterministic_seed42/train.log")
+    SOFT_ALIVE=$(check_alive 925437 swarma1003 runs/m1_5_graph_vae_soft_deterministic_seed42)
+    SOFT_FAIL=$(check_failure "$P/runs/m1_5_graph_vae_soft_deterministic_seed42/train.log")
+
+    LINE="$TS | dyn:[$DYN_EP loss=$DYN_LOSS recon=$DYN_RECON $DYN_ALIVE $DYN_FAIL] | det:[$DET_EP loss=$DET_LOSS recon=$DET_RECON $DET_ALIVE $DET_FAIL] | none:[$NONE_EP loss=$NONE_LOSS recon=$NONE_RECON $NONE_ALIVE $NONE_FAIL] | soft:[$SOFT_EP loss=$SOFT_LOSS recon=$SOFT_RECON $SOFT_ALIVE $SOFT_FAIL]"
 
     # Atomic write to status file (avoid torn reads)
     tmp="$STATUS_FILE.tmp.$$"
@@ -95,21 +101,23 @@ while true; do
     echo "$LINE" >> "$HEARTBEAT"
 
     # Stop condition: all 3 reached 500 epochs OR all dead
-    DYN_DONE=0; DET_DONE=0; NONE_DONE=0
-    [ "$DYN_EP" = "ep499" ] && DYN_DONE=1
-    [ "$DET_EP" = "ep499" ] && DET_DONE=1
-    [ "$NONE_EP" = "ep499" ] && NONE_DONE=1
-    DYN_DEAD=0; DET_DEAD=0; NONE_DEAD=0
+    DYN_DONE=0; DET_DONE=0; NONE_DONE=0; SOFT_DONE=0
+    [ "$DYN_EP" = "ep999" ] && DYN_DONE=1
+    [ "$DET_EP" = "ep999" ] && DET_DONE=1
+    [ "$NONE_EP" = "ep999" ] && NONE_DONE=1
+    [ "$SOFT_EP" = "ep999" ] && SOFT_DONE=1
+    DYN_DEAD=0; DET_DEAD=0; NONE_DEAD=0; SOFT_DEAD=0
     [ "$DYN_ALIVE" = "ALLOC_DEAD" ] || [ "$DYN_ALIVE" = "PROC_GONE" ] && DYN_DEAD=1
     [ "$DET_ALIVE" = "ALLOC_DEAD" ] || [ "$DET_ALIVE" = "PROC_GONE" ] && DET_DEAD=1
     [ "$NONE_ALIVE" = "ALLOC_DEAD" ] || [ "$NONE_ALIVE" = "PROC_GONE" ] && NONE_DEAD=1
+    [ "$SOFT_ALIVE" = "ALLOC_DEAD" ] || [ "$SOFT_ALIVE" = "PROC_GONE" ] && SOFT_DEAD=1
 
-    if [ $DYN_DONE = 1 ] && [ $DET_DONE = 1 ] && [ $NONE_DONE = 1 ]; then
-        echo "$TS | ALL_3_REACHED_EP499 — stopping monitor" >> "$HEARTBEAT"
+    if [ $DYN_DONE = 1 ] && [ $DET_DONE = 1 ] && [ $NONE_DONE = 1 ] && [ $SOFT_DONE = 1 ]; then
+        echo "$TS | ALL_4_REACHED_EP999 — stopping monitor" >> "$HEARTBEAT"
         break
     fi
-    if [ $DYN_DEAD = 1 ] && [ $DET_DEAD = 1 ] && [ $NONE_DEAD = 1 ] && [ $DYN_DONE = 0 ] && [ $DET_DONE = 0 ] && [ $NONE_DONE = 0 ]; then
-        echo "$TS | ALL_3_DEAD_NONE_REACHED_EP499 — stopping monitor" >> "$HEARTBEAT"
+    if [ $DYN_DEAD = 1 ] && [ $DET_DEAD = 1 ] && [ $NONE_DEAD = 1 ] && [ $SOFT_DEAD = 1 ] && [ $DYN_DONE = 0 ] && [ $DET_DONE = 0 ] && [ $NONE_DONE = 0 ] && [ $SOFT_DONE = 0 ]; then
+        echo "$TS | ALL_4_DEAD_NONE_REACHED_EP999 — stopping monitor" >> "$HEARTBEAT"
         break
     fi
 
