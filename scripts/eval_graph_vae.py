@@ -127,8 +127,10 @@ def main() -> int:
     print(f"device: {dev}")
 
     # Reconstruct VAE with ckpt's training hyperparams
+    # Codex M1.5 soft-det R1 P1.2 fix: pass pool_tau for soft_deterministic ckpts
     vae = GraphMotionVAE(
         pool_type=train_args["pool_type"],
+        pool_tau=train_args.get("pool_tau"),  # None for non-soft variants
         d_model=train_args["d_model"], n_heads=train_args["n_heads"],
         d_ff=train_args["d_ff"], n_graph_layers=train_args["n_graph_layers"],
         n_enc_temporal_layers=train_args["n_enc_temporal_layers"],

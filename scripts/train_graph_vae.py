@@ -124,8 +124,11 @@ def _per_sample_pos_loss(pred_pos: torch.Tensor, gt_pos: torch.Tensor,
 def main() -> int:
     p = argparse.ArgumentParser()
     # Pool ablation choice
-    p.add_argument("--pool_type", choices=("dynamic", "deterministic", "none"),
+    p.add_argument("--pool_type",
+                   choices=("dynamic", "deterministic", "soft_deterministic", "none"),
                    required=True)
+    p.add_argument("--pool_tau", type=float, default=None,
+                   help="Required when --pool_type soft_deterministic (e.g., 0.5)")
     # Data
     p.add_argument("--data_dir", default="data/cs_sparse2full_tgt")
     p.add_argument("--max_frames", type=int, default=64)
@@ -257,6 +260,7 @@ def main() -> int:
         temporal_stride=args.temporal_stride,
         temporal_kernel=args.temporal_kernel,
         dropout=args.dropout,
+        pool_tau=args.pool_tau,
     ).to(dev)
     n_params = sum(p.numel() for p in vae.parameters())
     log(f"VAE params: {n_params:,}")

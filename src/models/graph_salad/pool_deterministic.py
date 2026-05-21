@@ -72,7 +72,14 @@ class DeterministicGraphPool(nn.Module):
         local_radius: int = 3,
         max_chain_chunk_len: int = 5,
         temporal_stride: int = 2,
+        tau: float | None = None,
     ) -> None:
+        """tau: None (default) → hard argmin one-hot assignment.
+                > 0           → soft softmax(-geodesic/tau) over candidates
+                                ("soft deterministic" ablation per codex M1.5 finding
+                                 audit; isolates "hardness" vs "learnedness" as
+                                 differentiator).
+        """
         super().__init__()
         # Strict-int hparam checks (codex pool_dynamic R12 contract)
         for name, val in (
@@ -94,12 +101,20 @@ class DeterministicGraphPool(nn.Module):
             raise ValueError(f"max_chain_chunk_len must be ≥ 1, got {max_chain_chunk_len}")
         if temporal_stride < 1:
             raise ValueError(f"temporal_stride must be ≥ 1, got {temporal_stride}")
+        if tau is not None:
+            if not isinstance(tau, (int, float)) or isinstance(tau, bool):
+                raise TypeError(f"tau must be float or None, got {type(tau).__name__}")
+            if not (tau > 0):
+                raise ValueError(f"tau must be > 0 when set, got {tau}")
+            if not math.isfinite(tau):
+                raise ValueError(f"tau must be finite when set, got {tau}")
 
         self.d_model = d_model
         self.max_coarse = max_coarse
         self.local_radius = local_radius
         self.max_chain_chunk_len = max_chain_chunk_len
         self.temporal_stride = temporal_stride
+        self.tau = float(tau) if tau is not None else None
         # No nn.Parameters / submodules. state_dict() will be empty.
 
     # ------------------------------------------------------------------ #
@@ -172,18 +187,26 @@ class DeterministicGraphPool(nn.Module):
                 f"or revise anchors"
             )
 
-        # argmin over candidates: substitute non-candidate entries with large
-        # finite sentinel so argmin picks among real candidates.
+        # Score: substitute non-candidate entries with large finite sentinel
         score = geo_jc.clone()
         score[torch.isposinf(score)] = _LARGE_FINITE_GEO_SENTINEL
-        # +inf from sentinel was for +Inf in geo; here non-candidates get even larger:
         score = torch.where(candidate, score,
                             torch.full_like(score, _LARGE_FINITE_GEO_SENTINEL * 2))
-        argmin_c = score.argmin(dim=-1)  # [B, J] long
 
-        # One-hot encode
-        P = torch.zeros(B, J, C, device=device, dtype=torch.float32)
-        P.scatter_(2, argmin_c.unsqueeze(-1), 1.0)
+        if self.tau is None:
+            # Hard argmin one-hot (default)
+            argmin_c = score.argmin(dim=-1)  # [B, J] long
+            P = torch.zeros(B, J, C, device=device, dtype=torch.float32)
+            P.scatter_(2, argmin_c.unsqueeze(-1), 1.0)
+        else:
+            # Soft assignment: softmax(-score/tau) over candidates ONLY (codex M1.5 R1 P1.1 fix)
+            # Bug pre-fix: dividing sentinel by tau leaked probability to non-candidates
+            # at large tau (e.g., tau=1e6 → 0.119 mass on out-of-radius). Fix: mask
+            # non-candidate logits to -inf-equivalent AFTER tau scaling, matching
+            # DynamicGraphPool convention.
+            logits = -geo_jc / self.tau  # [B, J, C], use raw geo (not sentinel-substituted)
+            logits = logits.masked_fill(~candidate, -1.0e9)  # exclude non-candidates
+            P = F.softmax(logits, dim=-1)  # rows sum to 1 over candidates
         # Zero rows for padded joints; zero columns for padded anchors
         P = P * joint_mask.unsqueeze(-1).to(P.dtype)
         P = P * coarse_mask.unsqueeze(1).to(P.dtype)
@@ -256,9 +279,13 @@ class DeterministicGraphPool(nn.Module):
         ).sum(dim=(1, 2)) / joint_mask.float().sum(dim=1).clamp(min=eps)
         loss_locality = loss_locality.mean()
 
-        # Entropy of one-hot is exactly 0; report for parity with dynamic pool.
-        # Aux constants use P.dtype for schema parity (codex M1.2 pool_det R1 M1).
-        loss_entropy = torch.zeros((), device=device, dtype=P.dtype)
+        # Entropy — codex M1.5 soft-det R1 P2 fix: compute from P for all modes
+        # (hard one-hot → exactly 0; soft → positive). Was hard-coded 0 (misleading
+        # for soft path).
+        P_log = (P + eps).log()
+        entropy_per_row = -(P * P_log).sum(dim=-1)  # [B, J]
+        loss_entropy = (entropy_per_row * joint_mask.to(P.dtype)).sum() \
+            / joint_mask.float().sum().clamp(min=eps)
         zero_const = torch.zeros((), device=device, dtype=P.dtype)
 
         return {

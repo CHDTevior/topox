@@ -52,9 +52,16 @@ mkdir -p logs runs .aris/meta
 : "${POOL_TYPE:?ERROR: POOL_TYPE env var required (dynamic | deterministic | none)}"
 
 case "$POOL_TYPE" in
-    dynamic|deterministic|none) : ;;
-    *) echo "[deploy_graph] FATAL: POOL_TYPE='$POOL_TYPE' not in {dynamic,deterministic,none}" >&2 ; exit 2 ;;
+    dynamic|deterministic|soft_deterministic|none) : ;;
+    *) echo "[deploy_graph] FATAL: POOL_TYPE='$POOL_TYPE' not in {dynamic,deterministic,soft_deterministic,none}" >&2 ; exit 2 ;;
 esac
+
+# soft_deterministic requires POOL_TAU env (e.g., 0.5)
+POOL_TAU="${POOL_TAU:-}"
+if [ "$POOL_TYPE" = "soft_deterministic" ] && [ -z "$POOL_TAU" ]; then
+    echo "[deploy_graph] FATAL: POOL_TYPE=soft_deterministic requires POOL_TAU env (e.g., 0.5)" >&2
+    exit 2
+fi
 
 # ---- optional env vars (defaults) ------------------------------------------
 GPUS_PER_TASK="${GPUS_PER_TASK:-1}"
@@ -114,6 +121,10 @@ INIT_CKPT_ARG=""
 if [ -n "$INIT_CKPT" ]; then
     INIT_CKPT_ARG="--init_ckpt $INIT_CKPT"
 fi
+POOL_TAU_ARG=""
+if [ -n "$POOL_TAU" ]; then
+    POOL_TAU_ARG="--pool_tau $POOL_TAU"
+fi
 
 echo "[deploy_graph] starting clean PPID=1 setsid srun(1 task, --overlap) -> python (single GPU)"
 echo "[deploy_graph] alloc=$JOBID@$NODE POOL_TYPE=$POOL_TYPE OUT=$OUT"
@@ -133,7 +144,7 @@ setsid nohup srun --jobid="$JOBID" -w "$NODE" --overlap --ntasks=1 \
      --max_coarse $MAX_COARSE --local_radius $LOCAL_RADIUS \
      --temporal_stride $TEMPORAL_STRIDE \
      --max_frames $MAX_FRAMES --max_joints $MAX_JOINTS \
-     $INIT_CKPT_ARG \
+     $INIT_CKPT_ARG $POOL_TAU_ARG \
      --out $OUT --overwrite" \
     > "$LOG" 2>&1 < /dev/null &
 disown

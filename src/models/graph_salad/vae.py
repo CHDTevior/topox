@@ -87,11 +87,24 @@ class GraphMotionVAE(nn.Module):
         temporal_kernel: int = 9,
         temporal_stride: int = 4,
         dropout: float = 0.1,
+        pool_tau: float | None = None,
     ) -> None:
         super().__init__()
-        if pool_type not in ("dynamic", "deterministic", "none"):
+        if pool_type not in ("dynamic", "deterministic", "soft_deterministic", "none"):
             raise ValueError(
-                f"pool_type must be 'dynamic'/'deterministic'/'none', got {pool_type!r}"
+                f"pool_type must be 'dynamic'/'deterministic'/'soft_deterministic'/'none', "
+                f"got {pool_type!r}"
+            )
+        # pool_tau only meaningful for soft_deterministic; explicit cross-check
+        if pool_type == "soft_deterministic":
+            if pool_tau is None or not (pool_tau > 0):
+                raise ValueError(
+                    f"pool_type=soft_deterministic requires pool_tau > 0, got {pool_tau}"
+                )
+        elif pool_tau is not None:
+            raise ValueError(
+                f"pool_tau only valid with pool_type=soft_deterministic; "
+                f"got pool_type={pool_type!r}, pool_tau={pool_tau}"
             )
         if not isinstance(temporal_stride, int) or isinstance(temporal_stride, bool):
             raise TypeError("temporal_stride must be strict int")
@@ -160,6 +173,14 @@ class GraphMotionVAE(nn.Module):
                 d_model=d_model, max_coarse=max_coarse,
                 local_radius=local_radius,
                 temporal_stride=temporal_stride,
+                tau=None,  # hard argmin
+            )
+        elif pool_type == "soft_deterministic":
+            self.pool = DeterministicGraphPool(
+                d_model=d_model, max_coarse=max_coarse,
+                local_radius=local_radius,
+                temporal_stride=temporal_stride,
+                tau=pool_tau,
             )
         else:  # 'none'
             self.pool = None
