@@ -14,6 +14,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 
+from .encoder import AnyTopGraphAttentionBlock
+
 
 class SlotToJointCrossAttention(nn.Module):
     """Cross-attention: target joint queries attend to slot features."""
@@ -202,3 +204,101 @@ class MotionDecoder(nn.Module):
         output = output * frame_mask[:, :, None, None].float()
 
         return output
+
+
+class TemporalSelfAttention(nn.Module):
+    """Multi-head self-attention over the temporal axis (frames, per joint).
+
+    AnyTop's decoder coordinates a joint across the whole clip with full-sequence
+    temporal attention (not the conv used by TemporalRefineBlock). Pre-norm;
+    padded frames are key-masked. Used by GraphTemporalDecoderLayer.
+    """
+
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
+        super().__init__()
+        if d_model % n_heads != 0:
+            raise ValueError(
+                f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
+            )
+        self.n_heads = n_heads
+        self.d_head = d_model // n_heads
+
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.o_proj = nn.Linear(d_model, d_model)
+
+        self.norm = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, frame_mask: torch.Tensor) -> torch.Tensor:
+        """x: [N, T, D]  frame_mask: [N, T]  ->  [N, T, D]   (N = B*J)."""
+        N, T, D = x.shape
+        residual = x
+        x = self.norm(x)
+
+        q = self.q_proj(x).view(N, T, self.n_heads, self.d_head).permute(0, 2, 1, 3)
+        k = self.k_proj(x).view(N, T, self.n_heads, self.d_head).permute(0, 2, 1, 3)
+        v = self.v_proj(x).view(N, T, self.n_heads, self.d_head).permute(0, 2, 1, 3)
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_head)
+        # Key-mask padded frames (large finite negative — avoid all-(-inf) NaN).
+        mask = frame_mask.bool().unsqueeze(1).unsqueeze(2)   # [N, 1, 1, T]
+        scores = scores.masked_fill(~mask, -1e9)
+
+        attn = F.softmax(scores, dim=-1)
+        attn = attn.nan_to_num(0.0)
+        attn = self.dropout(attn)
+
+        out = torch.matmul(attn, v)                          # [N, H, T, d_head]
+        out = out.permute(0, 2, 1, 3).contiguous().view(N, T, D)
+        return residual + self.dropout(self.o_proj(out))
+
+
+class GraphTemporalDecoderLayer(nn.Module):
+    """One AnyTop-style decoder refine layer: spatial graph-attention over joints
+    (per frame) then temporal self-attention over frames (per joint).
+
+    Used only by GraphMotionVAE decoder_mode='graph_temporal' — runs on the fine
+    [B,T,J,D] features the coarse_xattn path produces, adding the joint↔joint +
+    long-range temporal coordination MotionDecoder lacks.
+
+    The reused AnyTopGraphAttentionBlock and TemporalSelfAttention only KEY-mask
+    (a padded joint/frame as a QUERY still attends valid tokens → non-zero, dirty
+    output). So this layer explicitly re-masks padded joints after the spatial
+    sub-block and padded joints+frames after the temporal sub-block — each
+    layer's output is then clean by construction and the next layer never
+    inherits dirt.
+    """
+
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1):
+        super().__init__()
+        self.spatial = AnyTopGraphAttentionBlock(d_model, n_heads, d_ff, dropout)
+        self.temporal = TemporalSelfAttention(d_model, n_heads, dropout)
+
+    def forward(
+        self,
+        x: torch.Tensor,                 # [B, T, J, D]
+        graph_dist: torch.Tensor,        # [B, J, J]
+        joint_relations: torch.Tensor,   # [B, J, J]
+        joint_mask: torch.Tensor,        # [B, J]
+        frame_mask: torch.Tensor,        # [B, T]
+    ) -> torch.Tensor:
+        B, T, J, D = x.shape
+        jm = joint_mask[:, None, :, None].to(x.dtype)   # [B, 1, J, 1]
+        fm = frame_mask[:, :, None, None].to(x.dtype)   # [B, T, 1, 1]
+
+        # --- spatial: graph attention over joints, per frame ([B*T, J, D]) ---
+        xs = x.reshape(B * T, J, D)
+        gd = graph_dist.unsqueeze(1).expand(B, T, J, J).reshape(B * T, J, J)
+        jr = joint_relations.unsqueeze(1).expand(B, T, J, J).reshape(B * T, J, J)
+        jm_e = joint_mask.unsqueeze(1).expand(B, T, J).reshape(B * T, J)
+        xs = self.spatial(xs, gd, jr, jm_e)
+        x = xs.reshape(B, T, J, D) * jm                 # re-mask padded joints
+
+        # --- temporal: self-attention over frames, per joint ([B*J, T, D]) ---
+        xt = x.permute(0, 2, 1, 3).reshape(B * J, T, D)
+        fm_e = frame_mask.unsqueeze(1).expand(B, J, T).reshape(B * J, T)
+        xt = self.temporal(xt, fm_e)
+        x = xt.reshape(B, J, T, D).permute(0, 2, 1, 3)
+        return x * jm * fm                              # re-mask padded joints + frames

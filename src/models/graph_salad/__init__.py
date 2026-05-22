@@ -16,7 +16,9 @@ from .unpool import DynamicGraphUnpool
 from .losses import (
     aggregate_pool_aux,
     compute_total_loss,
+    compute_total_loss_13ch,
     masked_bone_length,
+    masked_contact_bce,
     masked_kl_gaussian,
     masked_l1_pos,
     masked_l1_vel,
@@ -44,8 +46,10 @@ __all__ = [
     "masked_vel_consistency",
     "masked_kl_gaussian",
     "masked_bone_length",
+    "masked_contact_bce",
     "aggregate_pool_aux",
     "compute_total_loss",
+    "compute_total_loss_13ch",
     # M1.3 VAE wrapper
     "GraphMotionVAE",
     # M1.1 scaffolding

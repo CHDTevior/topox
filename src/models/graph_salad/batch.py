@@ -19,7 +19,7 @@ otherwise surface as opaque matmul errors deep in pool/VAE forward passes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 import torch
 
@@ -120,6 +120,17 @@ class GraphMotionBatch:
     text: list[str]
     skeleton_id: list[str]
     motion_id: list[str]
+
+    # --- Optional AnyTop-path fields (M1.7 iter-2) ---
+    # Present only for `--dataset anytop_truebones`; `None` for the unified path.
+    # Validated by from_collate_dict ONLY when the key is present in the collate
+    # dict, so the unified path constructs cleanly with these all `None`.
+    anytop_x: Optional[torch.Tensor] = None               # [B, J_max, 13, T_max] normalized 13ch
+    anytop_graph_dist: Optional[torch.Tensor] = None       # [B, J_max, J_max] AnyTop clamped (≤5)
+    anytop_joint_relations: Optional[torch.Tensor] = None  # [B, J_max, J_max] edge type 0..5
+    foot_contact_per_joint: Optional[torch.Tensor] = None  # [B, T_max, J_max] raw 0/1 per joint
+    caption_emb: Optional[torch.Tensor] = None             # [B, 768] T5 caption embedding
+    has_text: Optional[torch.Tensor] = None                # [B] bool — caption present
 
     @classmethod
     def from_collate_dict(cls, d: dict[str, Any]) -> "GraphMotionBatch":
@@ -488,6 +499,65 @@ class GraphMotionBatch:
                         f"got {type(s).__name__}"
                     )
 
+        # --- 6. Optional AnyTop-path tensors (M1.7 iter-2) ---
+        # Presence-gated: validate ONLY if the key is in the collate dict. The
+        # unified path never emits these, so this whole block is skipped there.
+        # Spec: (key, expected_rank, expected_full_shape_excluding_B).
+        _OPTIONAL_TENSOR_SPEC = (
+            ("anytop_x",               4, (J_max_val, 13, T_max_val)),
+            ("anytop_graph_dist",      3, (J_max_val, J_max_val)),
+            ("anytop_joint_relations", 3, (J_max_val, J_max_val)),
+            ("foot_contact_per_joint", 3, (T_max_val, J_max_val)),
+            ("caption_emb",            2, (768,)),
+        )
+        for key, expected_rank, tail_shape in _OPTIONAL_TENSOR_SPEC:
+            if key not in d:
+                continue
+            t = d[key]
+            if not isinstance(t, torch.Tensor):
+                raise ValueError(
+                    f"GraphMotionBatch: optional '{key}' must be torch.Tensor, "
+                    f"got {type(t).__name__}"
+                )
+            if t.dim() != expected_rank or tuple(t.shape) != (B, *tail_shape):
+                raise ValueError(
+                    f"GraphMotionBatch: optional '{key}' must have shape "
+                    f"{(B, *tail_shape)}, got {tuple(t.shape)}"
+                )
+            if t.dtype != torch.float32:
+                raise ValueError(
+                    f"GraphMotionBatch: optional '{key}' dtype must be float32, "
+                    f"got {t.dtype}"
+                )
+            if t.device != ref_device:
+                raise ValueError(
+                    f"GraphMotionBatch: optional '{key}' device {t.device} != "
+                    f"motion_features device {ref_device}"
+                )
+            if not torch.isfinite(t).all():
+                raise ValueError(
+                    f"GraphMotionBatch: optional '{key}' contains NaN or Inf"
+                )
+
+        # has_text is a [B] bool tensor (collate emits bool via its bool branch).
+        if "has_text" in d:
+            ht = d["has_text"]
+            if not isinstance(ht, torch.Tensor):
+                raise ValueError(
+                    f"GraphMotionBatch: optional 'has_text' must be torch.Tensor, "
+                    f"got {type(ht).__name__}"
+                )
+            if ht.shape != (B,) or ht.dtype != torch.bool:
+                raise ValueError(
+                    f"GraphMotionBatch: optional 'has_text' must be [{B}] bool, "
+                    f"got shape {tuple(ht.shape)} dtype {ht.dtype}"
+                )
+            if ht.device != ref_device:
+                raise ValueError(
+                    f"GraphMotionBatch: optional 'has_text' device {ht.device} "
+                    f"!= motion_features device {ref_device}"
+                )
+
         return cls(
             motion_features=d["motion_features"],
             skeleton_features=d["skeleton_features"],
@@ -513,6 +583,12 @@ class GraphMotionBatch:
             text=d["text"],
             skeleton_id=d["skeleton_id"],
             motion_id=d["motion_id"],
+            anytop_x=d.get("anytop_x"),
+            anytop_graph_dist=d.get("anytop_graph_dist"),
+            anytop_joint_relations=d.get("anytop_joint_relations"),
+            foot_contact_per_joint=d.get("foot_contact_per_joint"),
+            caption_emb=d.get("caption_emb"),
+            has_text=d.get("has_text"),
         )
 
     @property

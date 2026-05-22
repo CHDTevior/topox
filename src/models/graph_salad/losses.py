@@ -448,3 +448,131 @@ def compute_total_loss(
         total = total + losses[key] * w
     losses["total"] = total
     return losses
+
+
+# ============================================================================
+# M1.7 iter-2: 13-channel end-to-end loss (anytop13 feat_mode)
+# ============================================================================
+# AnyTop's native 13ch motion: 0:3 RIFKE/relative pos | 3:9 6D rotation
+# | 9:12 velocity | 12 foot contact. The anytop13 decoder regresses all 13
+# channels directly (no FK). Loss runs in NORMALIZED space (both pred and gt
+# carry AnyTop's mean/std normalization) — so the per-group magnitudes are
+# comparable. NOTE: 13ch `pos` loss is NOT comparable to fk6 `pos` loss
+# (different space) — do not cross-compare the two feat_modes' curves.
+
+
+def _masked_group_l1(
+    pred: torch.Tensor,        # [B, T, J, 13]
+    gt: torch.Tensor,          # [B, T, J, 13]
+    ch_slice: slice,
+    joint_mask: torch.Tensor,  # [B, J]
+    frame_mask: torch.Tensor,  # [B, T]
+) -> torch.Tensor:
+    """L1 on a channel sub-range, averaged over valid (joint, frame) pairs."""
+    p = pred[..., ch_slice]
+    g = gt[..., ch_slice]
+    if not torch.isfinite(p).all() or not torch.isfinite(g).all():
+        raise ValueError("compute_total_loss_13ch: pred/gt slice has NaN or Inf")
+    mask = _broadcast_pos_vel_mask(joint_mask, frame_mask)  # [B, T, J]
+    diff = (p - g).abs().sum(dim=-1) * mask.to(p.dtype)     # [B, T, J]
+    return diff.sum() / mask.sum().clamp(min=_EPS)
+
+
+def masked_contact_bce(
+    pred_logit: torch.Tensor,   # [B, T, J] raw decoder logit for channel 12
+    gt_contact: torch.Tensor,   # [B, T, J] raw 0/1 per-joint contact
+    joint_mask: torch.Tensor,   # [B, J]
+    frame_mask: torch.Tensor,   # [B, T]
+) -> torch.Tensor:
+    """BCE-with-logits on per-joint foot contact, averaged over valid pairs.
+
+    The target is the RAW 0/1 `foot_contact_per_joint` field — NOT the
+    normalized `anytop_x[...,12]` (which AnyTop's mean/std turned into a
+    non-binary value). `pred_logit` is the decoder's pre-sigmoid output.
+    """
+    if pred_logit.shape != gt_contact.shape:
+        raise ValueError(
+            f"masked_contact_bce: pred_logit {tuple(pred_logit.shape)} != "
+            f"gt_contact {tuple(gt_contact.shape)}"
+        )
+    if not torch.isfinite(pred_logit).all():
+        raise ValueError("masked_contact_bce: pred_logit contains NaN or Inf")
+    mask = _broadcast_pos_vel_mask(joint_mask, frame_mask)  # [B, T, J]
+    bce = torch.nn.functional.binary_cross_entropy_with_logits(
+        pred_logit, gt_contact.to(pred_logit.dtype), reduction="none"
+    )  # [B, T, J]
+    bce = bce * mask.to(bce.dtype)
+    return bce.sum() / mask.sum().clamp(min=_EPS)
+
+
+def compute_total_loss_13ch(
+    *,
+    pred_motion: torch.Tensor,          # [B, T, J, 13] decoder output (normalized)
+    gt_motion: torch.Tensor,            # [B, T, J, 13] anytop_x transposed (normalized)
+    foot_contact_per_joint: torch.Tensor,  # [B, T, J] raw 0/1 (BCE target)
+    mu: torch.Tensor,
+    logvar: torch.Tensor,
+    pool_aux_outputs: list[dict[str, torch.Tensor]] | None,
+    joint_mask: torch.Tensor,
+    frame_mask: torch.Tensor,
+    coarse_mask: torch.Tensor,
+    frame_mask_lat: torch.Tensor,
+    weights: dict[str, float] | None = None,
+    pool_aux_weights: dict[str, float] | None = None,
+) -> dict[str, torch.Tensor]:
+    """End-to-end 13ch VAE recon loss (anytop13 feat_mode).
+
+    Grouped masked-L1 on pos(0:3)/rot(3:9)/vel(9:12) + BCE on contact(12) +
+    VAE KL + pool aux. Returns a dict of named scalar losses plus `total`.
+
+    Default weights: pos 1.0, rot 1.0, vel 1.0, contact 0.1, kl 1e-3, pool_aux 0.5.
+    """
+    if pred_motion.shape != gt_motion.shape:
+        raise ValueError(
+            f"compute_total_loss_13ch: pred_motion {tuple(pred_motion.shape)} != "
+            f"gt_motion {tuple(gt_motion.shape)}"
+        )
+    if pred_motion.dim() != 4 or pred_motion.shape[-1] != 13:
+        raise ValueError(
+            f"compute_total_loss_13ch: pred_motion must be [B,T,J,13], "
+            f"got {tuple(pred_motion.shape)}"
+        )
+
+    default_weights = {
+        "pos": 1.0, "rot": 1.0, "vel": 1.0,
+        "contact": 0.1, "kl": 1e-3, "pool_aux": 0.5,
+    }
+    if weights is None:
+        weights = default_weights
+    else:
+        merged = dict(default_weights)
+        merged.update(weights)
+        weights = merged
+
+    losses: dict[str, torch.Tensor] = {}
+    losses["pos"] = _masked_group_l1(pred_motion, gt_motion, slice(0, 3),
+                                     joint_mask, frame_mask)
+    losses["rot"] = _masked_group_l1(pred_motion, gt_motion, slice(3, 9),
+                                     joint_mask, frame_mask)
+    losses["vel"] = _masked_group_l1(pred_motion, gt_motion, slice(9, 12),
+                                     joint_mask, frame_mask)
+    losses["contact"] = masked_contact_bce(
+        pred_motion[..., 12], foot_contact_per_joint, joint_mask, frame_mask
+    )
+    losses["kl"] = masked_kl_gaussian(mu, logvar, coarse_mask, frame_mask_lat)
+
+    if pool_aux_outputs is None or len(pool_aux_outputs) == 0:
+        losses["pool_aux"] = torch.zeros(
+            (), device=pred_motion.device, dtype=pred_motion.dtype
+        )
+    else:
+        per_level = [aggregate_pool_aux(aux, pool_aux_weights) for aux in pool_aux_outputs]
+        losses["pool_aux"] = sum(per_level)
+
+    total = torch.zeros((), device=pred_motion.device, dtype=pred_motion.dtype)
+    for key, w in weights.items():
+        if key not in losses or w == 0.0:
+            continue
+        total = total + losses[key] * w
+    losses["total"] = total
+    return losses

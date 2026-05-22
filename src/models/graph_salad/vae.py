@@ -38,7 +38,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..encoder import SkeletonEncoder
-from ..motion_decoder import MotionDecoder
+from ..motion_decoder import MotionDecoder, GraphTemporalDecoderLayer
 from ..slot_norm import SlotNorm
 from ..treeik_decoder import TreeIKBlock, fk_persample
 
@@ -88,6 +88,11 @@ class GraphMotionVAE(nn.Module):
         temporal_stride: int = 4,
         dropout: float = 0.1,
         pool_tau: float | None = None,
+        feat_mode: str = "fk6",
+        attn_mode: str = "scalar",
+        use_text: bool = False,
+        decoder_mode: str = "unpool_identity",
+        n_graph_temporal_layers: int = 4,
     ) -> None:
         super().__init__()
         if pool_type not in ("dynamic", "deterministic", "soft_deterministic", "none"):
@@ -95,6 +100,40 @@ class GraphMotionVAE(nn.Module):
                 f"pool_type must be 'dynamic'/'deterministic'/'soft_deterministic'/'none', "
                 f"got {pool_type!r}"
             )
+        # feat_mode selects the motion representation + decoder head:
+        #   "fk6"      — 6ch (local_pos+vel) input, FK decoder -> pred_pos/pred_vel
+        #   "anytop13" — AnyTop native 13ch input, direct 13ch decoder (no FK)
+        if feat_mode not in ("fk6", "anytop13"):
+            raise ValueError(f"feat_mode must be 'fk6' or 'anytop13', got {feat_mode!r}")
+        # decoder_mode selects how the latent reaches MotionDecoder:
+        #   "unpool_identity" — legacy: DynamicGraphUnpool to fine joints first,
+        #       then MotionDecoder with an IDENTITY assignment (cross-attention
+        #       degenerates — every joint attends only to itself).
+        #   "coarse_xattn"    — pass the coarse slots straight to MotionDecoder
+        #       with the REAL pool assignment P, so its cross-attention attends
+        #       each fine joint to its coarse anchors (bias = log P). Cross-joint
+        #       info then flows via shared coarse slots.
+        #   "graph_temporal" — coarse_xattn, then n_graph_temporal_layers extra
+        #       AnyTop-style spatial(graph)+temporal layers refine the fine
+        #       features (joint↔joint + long-range temporal coordination).
+        if decoder_mode not in ("unpool_identity", "coarse_xattn", "graph_temporal"):
+            raise ValueError(
+                f"decoder_mode must be 'unpool_identity'/'coarse_xattn'/"
+                f"'graph_temporal', got {decoder_mode!r}"
+            )
+        # graph_temporal needs the AnyTop graph tensors (graph_dist /
+        # joint_relations) + the 13ch head — i.e. the anytop13 path only.
+        if decoder_mode == "graph_temporal" and feat_mode != "anytop13":
+            raise ValueError(
+                f"decoder_mode='graph_temporal' requires feat_mode='anytop13', "
+                f"got feat_mode={feat_mode!r}"
+            )
+        # attn_mode selects the encoder graph-attention bias:
+        #   "scalar"     — GraphAttentionBlock (legacy scalar geo/adj bias)
+        #   "graphormer" — AnyTopGraphAttentionBlock (per-edge-type embedding
+        #                  bias; needs batch.anytop_graph_dist + joint_relations)
+        if attn_mode not in ("scalar", "graphormer"):
+            raise ValueError(f"attn_mode must be 'scalar' or 'graphormer', got {attn_mode!r}")
         # pool_tau only meaningful for soft_deterministic; explicit cross-check
         if pool_type == "soft_deterministic":
             if pool_tau is None or not (pool_tau > 0):
@@ -123,6 +162,7 @@ class GraphMotionVAE(nn.Module):
             ("motion_feat_dim", motion_feat_dim),
             ("joint_feat_dim", joint_feat_dim),
             ("temporal_kernel", temporal_kernel),
+            ("n_graph_temporal_layers", n_graph_temporal_layers),
         ):
             if not isinstance(val, int) or isinstance(val, bool):
                 raise TypeError(f"{name} must be strict int, got {type(val).__name__}")
@@ -147,7 +187,21 @@ class GraphMotionVAE(nn.Module):
         self.pool_type = pool_type
         self.d_model = d_model
         self.temporal_stride = temporal_stride
-        self.motion_feat_dim = motion_feat_dim
+        self.feat_mode = feat_mode
+        self.attn_mode = attn_mode
+        self.use_text = use_text
+        self.decoder_mode = decoder_mode
+        # Optional text condition: project a precomputed 768-d T5 caption
+        # embedding to d_model, injected post-unpool in decode().
+        if use_text:
+            self.text_proj = nn.Linear(768, d_model)
+        else:
+            self.text_proj = None
+        # anytop13 always uses AnyTop's native 13 channels; fk6 keeps the
+        # caller-supplied dim (6 = local_pos+vel). Derived so the caller cannot
+        # silently mis-size the encoder/decoder.
+        self.motion_feat_dim = 13 if feat_mode == "anytop13" else motion_feat_dim
+        _enc_motion_mode = "anytop13_split" if feat_mode == "anytop13" else "fk6_shared"
 
         # ---- Encoder (reuse baseline params; ckpt-compatible) ----
         self.encoder = SkeletonEncoder(
@@ -155,9 +209,11 @@ class GraphMotionVAE(nn.Module):
             n_graph_layers=n_graph_layers,
             n_temporal_layers=n_enc_temporal_layers,
             joint_feat_dim=joint_feat_dim,
-            motion_feat_dim=motion_feat_dim,
+            motion_feat_dim=self.motion_feat_dim,
             temporal_kernel=temporal_kernel,
             dropout=dropout,
+            motion_mode=_enc_motion_mode,
+            attn_mode=attn_mode,
         )
         self.slot_norm = SlotNorm(d_model)
 
@@ -207,40 +263,69 @@ class GraphMotionVAE(nn.Module):
         # `decoder.base.*` → ckpt key mismatch. Instead: keep `decoder` as the
         # raw MotionDecoder (ckpt-compat), and place TreeIK head modules under
         # `treeik_head.*` (fresh init; not in baseline ckpt, "missing" allowed).
+        # MotionDecoder is always called with return_features=True (both feat
+        # modes — the feat_mode-specific head does the real output), so its own
+        # `output_proj` is dead weight. It is kept ONLY for ckpt-key parity with
+        # the baseline `Model` (which carries `decoder.output_proj` at [6, D]).
+        # Build it at the fixed baseline dim 6 so warm-starting anytop13 from a
+        # 6ch/fk6 ckpt does not hit an output_proj shape mismatch (codex P1).
         self.decoder = MotionDecoder(
             d_model=d_model, n_heads=n_heads,
             n_cross_layers=n_cross_layers,
             n_temporal_layers=n_dec_temporal_layers,
-            motion_feat_dim=motion_feat_dim,
+            motion_feat_dim=6,
             temporal_kernel=temporal_kernel,
             dropout=dropout,
         )
-        # TreeIK head: rest_proj + blocks + rot_head + root (separately from
-        # decoder so ckpt-compat is clean). Initialization matches
-        # TopoFKTreeIKDecoder (identity-6D rot, zero root delta).
-        d_ff_treeik = 4 * d_model
-        max_hop_treeik = 16.0  # default from TopoFKTreeIKDecoder
-        self.treeik_head = nn.ModuleDict({
-            "rest_proj": nn.Linear(3, d_model),
-            "blocks": nn.ModuleList([
-                TreeIKBlock(d_model, n_heads, d_ff_treeik, dropout, max_hop_treeik)
-                for _ in range(n_treeik_layers)
-            ]),
-            "rot_head": nn.Sequential(
-                nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 6)
-            ),
-            "root": nn.Sequential(
-                nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 3)
-            ),
-        })
-        # Init: identity-6D rot at step 0, zero root delta (codex constraint)
-        nn.init.zeros_(self.treeik_head["rot_head"][-1].weight)
-        with torch.no_grad():
-            self.treeik_head["rot_head"][-1].bias[:] = torch.tensor(
-                [1, 0, 0, 0, 1, 0], dtype=torch.float32
-            )
-        nn.init.zeros_(self.treeik_head["root"][-1].weight)
-        nn.init.zeros_(self.treeik_head["root"][-1].bias)
+        if feat_mode == "fk6":
+            # TreeIK head: rest_proj + blocks + rot_head + root (separately from
+            # decoder so ckpt-compat is clean). Initialization matches
+            # TopoFKTreeIKDecoder (identity-6D rot, zero root delta).
+            d_ff_treeik = 4 * d_model
+            max_hop_treeik = 16.0  # default from TopoFKTreeIKDecoder
+            self.treeik_head = nn.ModuleDict({
+                "rest_proj": nn.Linear(3, d_model),
+                "blocks": nn.ModuleList([
+                    TreeIKBlock(d_model, n_heads, d_ff_treeik, dropout, max_hop_treeik)
+                    for _ in range(n_treeik_layers)
+                ]),
+                "rot_head": nn.Sequential(
+                    nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 6)
+                ),
+                "root": nn.Sequential(
+                    nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 3)
+                ),
+            })
+            # Init: identity-6D rot at step 0, zero root delta (codex constraint)
+            nn.init.zeros_(self.treeik_head["rot_head"][-1].weight)
+            with torch.no_grad():
+                self.treeik_head["rot_head"][-1].bias[:] = torch.tensor(
+                    [1, 0, 0, 0, 1, 0], dtype=torch.float32
+                )
+            nn.init.zeros_(self.treeik_head["root"][-1].weight)
+            nn.init.zeros_(self.treeik_head["root"][-1].bias)
+            self.anytop13_head = None
+        else:  # anytop13 — direct 13ch decoder head, AnyTop OutputProcess style
+            # decoder runs with return_features=True (output_proj unused, mirrors
+            # the fk6 pattern). Root/non-root get separate output Linears since
+            # their 13 channels carry different semantics.
+            self.treeik_head = None
+            self.anytop13_head = nn.ModuleDict({
+                "out_root": nn.Linear(d_model, 13),
+                "out_nonroot": nn.Linear(d_model, 13),
+            })
+
+        # ---- graph_temporal decoder refine layers ----
+        # Built ONLY for decoder_mode='graph_temporal' (None otherwise) so the
+        # two legacy modes carry zero extra state_dict keys. Placed last in
+        # __init__ so the legacy modes' parameter-init RNG sequence is unchanged.
+        if decoder_mode == "graph_temporal":
+            self.graph_temporal_layers = nn.ModuleList([
+                GraphTemporalDecoderLayer(d_model, n_heads, d_ff, dropout)
+                for _ in range(n_graph_temporal_layers)
+            ])
+        else:
+            self.graph_temporal_layers = None
 
     @staticmethod
     def reparametrize(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
@@ -261,15 +346,39 @@ class GraphMotionVAE(nn.Module):
         """
         if sample is None:
             sample = self.training
+        # Select the motion representation by feat_mode.
+        #   fk6      -> motion_features [B, T, J, 6] (local_pos+vel)
+        #   anytop13 -> anytop_x [B, J, 13, T] permuted to [B, T, J, 13]
+        if self.feat_mode == "anytop13":
+            if batch.anytop_x is None:
+                raise ValueError(
+                    "GraphMotionVAE(feat_mode=anytop13) requires batch.anytop_x; "
+                    "use --dataset anytop_truebones"
+                )
+            motion_in = batch.anytop_x.permute(0, 3, 1, 2).contiguous()  # [B,T,J,13]
+        else:
+            motion_in = batch.motion_features                            # [B,T,J,6]
+        # Graphormer-attn bias tensors (only when attn_mode=graphormer).
+        if self.attn_mode == "graphormer":
+            if batch.anytop_graph_dist is None or batch.anytop_joint_relations is None:
+                raise ValueError(
+                    "GraphMotionVAE(attn_mode=graphormer) requires "
+                    "batch.anytop_graph_dist + batch.anytop_joint_relations; "
+                    "use --dataset anytop_truebones"
+                )
+            _gd, _jr = batch.anytop_graph_dist, batch.anytop_joint_relations
+        else:
+            _gd, _jr = None, None
         # Encoder forward (reuse baseline)
         h0 = self.encoder(
-            batch.motion_features,        # [B, T, J, 6]
+            motion_in,                     # [B, T, J, motion_feat_dim]
             batch.skeleton_features,       # [B, J, 9]
             batch.adjacency,
             batch.geodesic_dist,
             batch.joint_mask,
             batch.frame_mask,
             name_hashes=batch.name_hashes,
+            graph_dist=_gd, joint_relations=_jr,
         )  # [B, T, J, D]
         s_j = self.encoder.encode_skeleton(
             batch.skeleton_features,
@@ -277,6 +386,7 @@ class GraphMotionVAE(nn.Module):
             batch.geodesic_dist,
             batch.joint_mask,
             name_hashes=batch.name_hashes,
+            graph_dist=_gd, joint_relations=_jr,
         )  # [B, J, D]
         h0 = self.slot_norm(h0)
 
@@ -350,9 +460,12 @@ class GraphMotionVAE(nn.Module):
         }
 
     def decode(self, encode_out: dict, batch: "GraphMotionBatch") -> dict:
-        """Unpool → TopoFKTreeIKDecoder → (pos, vel).
+        """Unpool → decoder head.
 
-        Returns dict with pred_pos [B, T, J, 3], pred_vel [B, T, J, 3].
+        fk6:      → TreeIK FK → pred_pos/pred_vel [B, T, J, 3].
+        anytop13: → direct 13ch regression → pred_motion [B, T, J, 13].
+        The return dict always carries pred_pos/pred_vel/pred_motion; the
+        keys not produced by the active feat_mode are None.
         """
         z = encode_out["z"]
         s_j = encode_out["s_j"]
@@ -360,45 +473,114 @@ class GraphMotionVAE(nn.Module):
         coarse_mask = encode_out["coarse_mask"]
         frame_mask_lat = encode_out["frame_mask_lat"]
 
-        if self.unpool is not None:
-            unpool_out = self.unpool(
-                coarse_features=z,
-                assignment=assignment,
-                joint_mask=batch.joint_mask,
-                coarse_mask=coarse_mask,
-                frame_mask_down=frame_mask_lat,
-            )
-            h_fine = unpool_out["fine_features"]   # [B, T, J, D]
-            frame_mask_recovered = unpool_out["frame_mask_up"]
-        else:
-            # No-pool: temporal upsample only
-            B, T_lat, J, D = z.shape
-            T_full = T_lat * self.temporal_stride
-            z_flat = z.permute(0, 2, 3, 1).reshape(B * J * D, 1, T_lat)
-            h_up = z_flat.repeat_interleave(self.temporal_stride, dim=-1)
-            h_fine = h_up.reshape(B, J, D, T_full).permute(0, 3, 1, 2).contiguous()
-            frame_mask_recovered = frame_mask_lat.repeat_interleave(self.temporal_stride, dim=-1)
+        # ---- Optional text conditioning ----
+        # Project the T5 caption embedding once; each decoder_mode branch
+        # broadcasts it into whichever tensor feeds the decoder. Gated by
+        # has_text so a missing-caption sample contributes nothing (a zero
+        # embedding still picks up text_proj's bias, hence the explicit gate).
+        text_vec = None
+        if self.use_text:
+            if batch.caption_emb is None or batch.has_text is None:
+                raise ValueError(
+                    "GraphMotionVAE(use_text=True) requires batch.caption_emb "
+                    "and batch.has_text"
+                )
+            text_vec = self.text_proj(batch.caption_emb)            # [B, D]
+            text_vec = text_vec * batch.has_text[:, None].to(text_vec.dtype)
 
-        # Decoder: TopoFKTreeIKDecoder expects (slot_features [B,T,K,D], s_j,
-        # asg [B,J,K], joint_mask, frame_mask, parents_list, rest_tensor, fps,
-        # adjacency, geodesic_dist). For our case, K == J_max because we've
-        # unpooled back; assignment is identity.
-        B, T, J, D = h_fine.shape
-        asg = _identity_assignment(batch.joint_mask)  # [B, J, J]
+        if self.decoder_mode in ("coarse_xattn", "graph_temporal"):
+            # Pass the coarse slots + the REAL pool assignment P straight to
+            # MotionDecoder. Its step-1 einsum does the P-weighted unpool, and
+            # — crucially — the cross-attention layers KEEP using P (bias =
+            # log P), so each fine joint attends to its coarse anchors instead
+            # of being locked to itself by an identity assignment.
+            # DynamicGraphUnpool is not used on this path.
+            # graph_temporal enters here too, then refines `feats` with the
+            # extra spatial+temporal layers (see the block after the if/else).
+            z_up = z.repeat_interleave(self.temporal_stride, dim=1)   # [B,T,C,D]
+            frame_mask_recovered = frame_mask_lat.repeat_interleave(
+                self.temporal_stride, dim=-1)
+            if text_vec is not None:
+                z_up = z_up + text_vec[:, None, None, :]              # broadcast (T,C)
+            feats = self.decoder(
+                z_up,                  # slot_features [B, T, C, D]
+                s_j,                   # skeleton embeddings [B, J, D]
+                assignment,            # REAL pool assignment P [B, J, C]
+                batch.joint_mask,
+                frame_mask_recovered,
+                return_features=True,
+            )  # [B, T, J, D]
+        else:  # "unpool_identity" — legacy: unpool to fine joints, identity decoder
+            if self.unpool is not None:
+                unpool_out = self.unpool(
+                    coarse_features=z,
+                    assignment=assignment,
+                    joint_mask=batch.joint_mask,
+                    coarse_mask=coarse_mask,
+                    frame_mask_down=frame_mask_lat,
+                )
+                h_fine = unpool_out["fine_features"]   # [B, T, J, D]
+                frame_mask_recovered = unpool_out["frame_mask_up"]
+            else:
+                # No-pool: temporal upsample only
+                B, T_lat, J, D = z.shape
+                T_full = T_lat * self.temporal_stride
+                z_flat = z.permute(0, 2, 3, 1).reshape(B * J * D, 1, T_lat)
+                h_up = z_flat.repeat_interleave(self.temporal_stride, dim=-1)
+                h_fine = h_up.reshape(B, J, D, T_full).permute(0, 3, 1, 2).contiguous()
+                frame_mask_recovered = frame_mask_lat.repeat_interleave(
+                    self.temporal_stride, dim=-1)
+            if text_vec is not None:
+                h_fine = h_fine + text_vec[:, None, None, :]          # broadcast (T,J)
+            # MotionDecoder with an IDENTITY assignment (K == J): the cross-
+            # attention degenerates to per-joint self-refinement.
+            asg = _identity_assignment(batch.joint_mask)  # [B, J, J]
+            feats = self.decoder(
+                h_fine,                # slot_features [B, T, K=J, D]
+                s_j,                   # skeleton embeddings [B, J, D]
+                asg,                   # identity assignment [B, J, K=J]
+                batch.joint_mask,
+                frame_mask_recovered,
+                return_features=True,
+            )  # [B, T, J, D]
 
-        # Inlined TreeIK forward (codex M1.3 R1 F1 fix — no TopoFKTreeIKDecoder
-        # wrapper; we call MotionDecoder + treeik_head sequentially so ckpt
-        # keys stay `decoder.*` 1:1 with baseline).
-        # 1. MotionDecoder return_features=True → per-joint features [B,T,J,D]
-        feats = self.decoder(
-            h_fine,                # slot_features [B, T, K=J, D]
-            s_j,                   # skeleton embeddings [B, J, D]
-            asg,                   # assignment [B, J, K=J]
-            batch.joint_mask,
-            frame_mask_recovered,
-            return_features=True,
-        )  # [B, T, J, D]
-        # 2. TreeIK head: rest_proj + blocks + rot_head + root + FK
+        if self.decoder_mode == "graph_temporal":
+            # Refine the fine features with AnyTop-style spatial(graph)+temporal
+            # layers — the joint↔joint + long-range temporal coordination
+            # MotionDecoder lacks. Each layer re-masks padded joints/frames so
+            # `feats` stays clean by construction.
+            if batch.anytop_graph_dist is None or batch.anytop_joint_relations is None:
+                raise ValueError(
+                    "decoder_mode='graph_temporal' requires batch.anytop_graph_dist "
+                    "and batch.anytop_joint_relations (use --dataset anytop_truebones)"
+                )
+            for layer in self.graph_temporal_layers:
+                feats = layer(
+                    feats,
+                    batch.anytop_graph_dist,
+                    batch.anytop_joint_relations,
+                    batch.joint_mask,
+                    frame_mask_recovered,
+                )
+
+        fm_b = frame_mask_recovered[:, :, None, None].to(feats.dtype)
+        jm_b = batch.joint_mask[:, None, :, None].to(feats.dtype)
+
+        if self.feat_mode == "anytop13":
+            # Direct 13ch regression, AnyTop OutputProcess style: root joint
+            # and non-root joints use separate output Linears.
+            out_root = self.anytop13_head["out_root"](feats[:, :, 0:1, :])     # [B,T,1,13]
+            out_nonroot = self.anytop13_head["out_nonroot"](feats[:, :, 1:, :])  # [B,T,J-1,13]
+            pred_motion = torch.cat([out_root, out_nonroot], dim=2)            # [B,T,J,13]
+            pred_motion = pred_motion * fm_b * jm_b
+            return {
+                "pred_motion": pred_motion,   # [B, T, J, 13]
+                "pred_pos": None,
+                "pred_vel": None,
+                "frame_mask_recovered": frame_mask_recovered,
+            }
+
+        # fk6: TreeIK head — rest_proj + blocks + rot_head + root + FK.
         rest_embed = self.treeik_head["rest_proj"](batch.rest_offsets)  # [B, J, D]
         x = feats
         for blk in self.treeik_head["blocks"]:
@@ -417,14 +599,13 @@ class GraphMotionVAE(nn.Module):
         # Codex M1.3 R6 fix: reapply frame_mask + joint_mask on pos/vel so
         # padded frames + joints output exactly zero (FK + numerical-diff
         # otherwise leaks non-zero values into padded regions).
-        fm_b = frame_mask_recovered[:, :, None, None].to(pos.dtype)
-        jm_b = batch.joint_mask[:, None, :, None].to(pos.dtype)
         pos = pos * fm_b * jm_b
         vel = vel * fm_b * jm_b
 
         return {
             "pred_pos": pos,        # [B, T, J, 3]
             "pred_vel": vel,        # [B, T, J, 3]
+            "pred_motion": None,
             "frame_mask_recovered": frame_mask_recovered,
         }
 

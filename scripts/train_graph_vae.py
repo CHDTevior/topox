@@ -40,11 +40,61 @@ from torch.utils.data import DataLoader
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.data.unified_dataset import UnifiedMotionDataset, collate_fn
+from src.data.anytop_dataset import AnyTopDataset, collate_fn as anytop_collate_fn
 from src.models.graph_salad import (
     GraphMotionBatch,
     GraphMotionVAE,
     compute_total_loss,
+    compute_total_loss_13ch,
 )
+
+
+def run_loss(out, batch, feat_mode, loss_weights, effective_frame_mask, dev):
+    """Dispatch to the feat_mode-appropriate loss function.
+
+    fk6      -> compute_total_loss (pred_pos/pred_vel vs motion_features).
+    anytop13 -> compute_total_loss_13ch (pred_motion vs anytop_x, + contact BCE).
+    """
+    if feat_mode == "anytop13":
+        if batch.anytop_x is None or batch.foot_contact_per_joint is None:
+            raise ValueError(
+                "run_loss(feat_mode=anytop13) requires batch.anytop_x and "
+                "batch.foot_contact_per_joint; use --dataset anytop_truebones"
+            )
+        gt_motion = batch.anytop_x.permute(0, 3, 1, 2).contiguous()  # [B,T,J,13]
+        return compute_total_loss_13ch(
+            pred_motion=out["pred_motion"],
+            gt_motion=gt_motion,
+            foot_contact_per_joint=batch.foot_contact_per_joint,
+            mu=out["mu"], logvar=out["logvar"],
+            pool_aux_outputs=out["pool_aux_outputs"],
+            joint_mask=batch.joint_mask,
+            frame_mask=effective_frame_mask,
+            coarse_mask=out["coarse_mask"],
+            frame_mask_lat=out["frame_mask_lat"],
+            weights=loss_weights,
+        )
+    # fk6
+    gt_pos = batch.motion_features[..., :3]
+    gt_vel = batch.motion_features[..., 3:6]
+    rest_bones = torch.zeros(batch.batch_size, batch.max_joints, device=dev)
+    for b in range(batch.batch_size):
+        bls = batch.bone_lengths_rest[b]
+        rest_bones[b, :len(bls)] = torch.tensor(bls, device=dev, dtype=torch.float32)
+    return compute_total_loss(
+        pred_pos=out["pred_pos"], gt_pos=gt_pos,
+        pred_vel=out["pred_vel"], gt_vel=gt_vel,
+        mu=out["mu"], logvar=out["logvar"],
+        pool_aux_outputs=out["pool_aux_outputs"],
+        joint_mask=batch.joint_mask,
+        frame_mask=effective_frame_mask,
+        coarse_mask=out["coarse_mask"],
+        frame_mask_lat=out["frame_mask_lat"],
+        rest_bone_lengths=rest_bones,
+        parent_indices=batch.parent_indices,
+        fps=batch.fps,
+        weights=loss_weights,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +180,36 @@ def main() -> int:
     p.add_argument("--pool_tau", type=float, default=None,
                    help="Required when --pool_type soft_deterministic (e.g., 0.5)")
     # Data
-    p.add_argument("--data_dir", default="data/cs_sparse2full_tgt")
+    p.add_argument("--dataset",
+                   choices=("unified", "anytop_truebones"),
+                   default="unified",
+                   help="Dataset source. 'unified' = UnifiedMotionDataset (default, "
+                        "M1.5/M1.5R 6ch path). 'anytop_truebones' = AnyTopDataset "
+                        "reading AnyTop's pre-processed truebones (M1.7).")
+    p.add_argument("--data_dir", default="data/cs_sparse2full_tgt",
+                   help="For --dataset unified: dataset root. For --dataset "
+                        "anytop_truebones: ignored (uses fixed AnyTop path) "
+                        "unless --anytop_root passed.")
+    p.add_argument("--anytop_root", type=str, default=None,
+                   help="Override AnyTop processed-data root (default: AnyTop's "
+                        ".../truebones/zoo/truebones_processed)")
+    # AnyTop remove-joints augmentation (train split only; --dataset anytop_truebones)
+    p.add_argument("--augment", action="store_true",
+                   help="Enable AnyTop remove-joints augmentation on the train "
+                        "split (drops non-foot end-effector joints)")
+    p.add_argument("--augment_prob", type=float, default=0.3,
+                   help="Per-sample probability of applying remove-joints aug")
+    p.add_argument("--removal_rate", type=float, default=0.5,
+                   help="Fraction of eligible end-effectors to drop per aug")
+    # Optional text conditioning (--dataset anytop_truebones)
+    p.add_argument("--use_text", action="store_true",
+                   help="Enable text conditioning: inject precomputed T5 caption "
+                        "embeddings into the decoder (optional — missing captions "
+                        "fall back to a zero, no-op embedding)")
+    p.add_argument("--caption_emb_cache", type=str, default=None,
+                   help="Path to the .npz caption-embedding cache produced by "
+                        "scripts/precompute_t5_captions.py (required for --use_text "
+                        "to actually condition; without it captions are all no-op)")
     p.add_argument("--max_frames", type=int, default=64)
     p.add_argument("--max_joints", type=int, default=160)
     # Model
@@ -155,9 +234,36 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--init_ckpt", type=str, default=None,
                    help="Optional baseline ckpt to warm-start encoder+slot_norm+decoder")
+    # feat_mode: fk6 (legacy 6ch+FK) vs anytop13 (AnyTop native 13ch end-to-end)
+    p.add_argument("--feat_mode", choices=("fk6", "anytop13"), default="fk6",
+                   help="fk6: 6ch local_pos+vel -> FK decoder. anytop13: AnyTop "
+                        "native 13ch end-to-end (requires --dataset anytop_truebones)")
+    # attn_mode: scalar (legacy) vs graphormer (AnyTop per-edge-type embedding bias)
+    p.add_argument("--attn_mode", choices=("scalar", "graphormer"), default="scalar",
+                   help="scalar: Linear(1,n_heads) geo/adj bias. graphormer: "
+                        "AnyTop edge-type embedding bias (requires "
+                        "--dataset anytop_truebones for graph_dist/joint_relations)")
+    p.add_argument("--decoder_mode",
+                   choices=("unpool_identity", "coarse_xattn", "graph_temporal"),
+                   default=None,
+                   help="Decoder structure (default if unset: anytop13 -> "
+                        "coarse_xattn, fk6 -> unpool_identity). "
+                        "unpool_identity: unpool to fine joints then decode with "
+                        "identity assignment (cross-attn degenerate). coarse_xattn: "
+                        "decode coarse slots directly with the real pool assignment "
+                        "P (each joint attends its coarse anchors). graph_temporal: "
+                        "coarse_xattn + AnyTop-style spatial+temporal refine layers "
+                        "(anytop13 only).")
+    p.add_argument("--n_graph_temporal_layers", type=int, default=4,
+                   help="decoder_mode=graph_temporal: number of spatial+temporal "
+                        "refine layers")
     # Loss weights
     p.add_argument("--w_pos", type=float, default=1.0)
     p.add_argument("--w_vel", type=float, default=1.0)
+    p.add_argument("--w_rot", type=float, default=1.0,
+                   help="anytop13: 6D-rotation channel (3:9) L1 weight")
+    p.add_argument("--w_contact", type=float, default=0.1,
+                   help="anytop13: foot-contact channel (12) BCE weight")
     p.add_argument("--w_vel_normalized", type=float, default=0.0,
                    help="M1.5R decision #5: per-species vel norm weight (default 0=off for backward compat)")
     p.add_argument("--w_vel_consistency", type=float, default=0.5)
@@ -177,6 +283,47 @@ def main() -> int:
     p.add_argument("--smoke", action="store_true",
                    help="Run 5 iters smoke test (verifies wiring)")
     args = p.parse_args()
+
+    # feat_mode <-> dataset cross-check: anytop13 needs the AnyTop dataset
+    # (only it emits anytop_x / foot_contact_per_joint).
+    if args.feat_mode == "anytop13" and args.dataset != "anytop_truebones":
+        raise RuntimeError(
+            "[ARGS FAIL] --feat_mode anytop13 requires --dataset anytop_truebones "
+            f"(got --dataset {args.dataset})")
+    # decoder_mode default resolution: an unset --decoder_mode resolves by
+    # feat_mode — anytop13 -> coarse_xattn (A/B-validated: coarse slots + real
+    # pool assignment P), fk6 -> unpool_identity (its historical M1.5R behavior,
+    # so fk6 stays reproducible). An explicit --decoder_mode always wins.
+    if args.decoder_mode is None:
+        args.decoder_mode = (
+            "coarse_xattn" if args.feat_mode == "anytop13" else "unpool_identity")
+        print(f"[ARGS] --decoder_mode unset -> resolved to {args.decoder_mode!r} "
+              f"(feat_mode={args.feat_mode})")
+    # graph_temporal needs the AnyTop graph tensors (graph_dist/joint_relations)
+    # + the 13ch head — anytop13 + the AnyTop dataset only.
+    if args.decoder_mode == "graph_temporal" and (
+            args.feat_mode != "anytop13" or args.dataset != "anytop_truebones"):
+        raise RuntimeError(
+            "[ARGS FAIL] --decoder_mode graph_temporal requires --feat_mode "
+            f"anytop13 and --dataset anytop_truebones (got --feat_mode "
+            f"{args.feat_mode} --dataset {args.dataset})")
+    # attn_mode <-> dataset cross-check: graphormer needs anytop_graph_dist +
+    # anytop_joint_relations, emitted only by the AnyTop dataset.
+    if args.attn_mode == "graphormer" and args.dataset != "anytop_truebones":
+        raise RuntimeError(
+            "[ARGS FAIL] --attn_mode graphormer requires --dataset anytop_truebones "
+            f"(got --dataset {args.dataset})")
+    # use_text needs caption_emb from the AnyTop dataset.
+    if args.use_text and args.dataset != "anytop_truebones":
+        raise RuntimeError(
+            "[ARGS FAIL] --use_text requires --dataset anytop_truebones "
+            f"(got --dataset {args.dataset})")
+    # --use_text without a caption cache trains a text_proj that every sample
+    # gates to zero (has_text=False) — text conditioning is then a silent no-op.
+    if args.use_text and args.caption_emb_cache is None:
+        print("[ARGS WARN] --use_text set but --caption_emb_cache is None: "
+              "every sample will have has_text=False, so text conditioning is a "
+              "NO-OP. Pass --caption_emb_cache <npz> (scripts/precompute_t5_captions.py).")
 
     # Seed (codex M1.5 Low: include CUDA seed for full determinism)
     torch.manual_seed(args.seed)
@@ -222,17 +369,35 @@ def main() -> int:
     log(f"args: {vars(args)}")
 
     # Data
-    log(f"Loading dataset from {args.data_dir} ...")
-    ds_train = UnifiedMotionDataset(
-        data_dirs=[args.data_dir], split="train",
-        max_joints=args.max_joints, max_frames=args.max_frames,
-        normalize=False,
-    )
-    ds_val = UnifiedMotionDataset(
-        data_dirs=[args.data_dir], split="val",
-        max_joints=args.max_joints, max_frames=args.max_frames,
-        normalize=False,
-    )
+    if args.dataset == "anytop_truebones":
+        log(f"Loading AnyTop truebones (root={args.anytop_root or 'default'}) ...")
+        atk = dict(num_frames=args.max_frames, max_joints=args.max_joints)
+        if args.anytop_root is not None:
+            atk["data_root"] = args.anytop_root
+        # Augmentation: train split only — ds_val never gets the aug args.
+        # caption_emb_cache goes to BOTH (text condition is eval-relevant too).
+        if args.caption_emb_cache is not None:
+            atk["caption_emb_cache"] = args.caption_emb_cache
+        ds_train = AnyTopDataset(
+            split="train", augment=args.augment,
+            augment_prob=args.augment_prob, removal_rate=args.removal_rate,
+            **atk,
+        )
+        ds_val = AnyTopDataset(split="val", **atk)
+        active_collate_fn = anytop_collate_fn
+    else:
+        log(f"Loading UnifiedMotionDataset from {args.data_dir} ...")
+        ds_train = UnifiedMotionDataset(
+            data_dirs=[args.data_dir], split="train",
+            max_joints=args.max_joints, max_frames=args.max_frames,
+            normalize=False,
+        )
+        ds_val = UnifiedMotionDataset(
+            data_dirs=[args.data_dir], split="val",
+            max_joints=args.max_joints, max_frames=args.max_frames,
+            normalize=False,
+        )
+        active_collate_fn = collate_fn
     log(f"train={len(ds_train)} val={len(ds_val)}")
     # Empty/too-small split guard (codex M1.5 Medium)
     if len(ds_train) < args.batch_size:
@@ -245,12 +410,12 @@ def main() -> int:
     # DataLoader tuning: workers=8 + pin_memory + persistent (codex-side-tuning for util>80%)
     dl_train = DataLoader(
         ds_train, batch_size=args.batch_size, shuffle=True,
-        collate_fn=collate_fn, num_workers=8, drop_last=True,
+        collate_fn=active_collate_fn, num_workers=8, drop_last=True,
         pin_memory=True, persistent_workers=True, prefetch_factor=4,
     )
     dl_val = DataLoader(
         ds_val, batch_size=args.batch_size, shuffle=False,
-        collate_fn=collate_fn, num_workers=4, drop_last=False,
+        collate_fn=active_collate_fn, num_workers=4, drop_last=False,
         pin_memory=True, persistent_workers=True, prefetch_factor=4,
     )
 
@@ -268,6 +433,11 @@ def main() -> int:
         temporal_kernel=args.temporal_kernel,
         dropout=args.dropout,
         pool_tau=args.pool_tau,
+        feat_mode=args.feat_mode,
+        attn_mode=args.attn_mode,
+        use_text=args.use_text,
+        decoder_mode=args.decoder_mode,
+        n_graph_temporal_layers=args.n_graph_temporal_layers,
     ).to(dev)
     # M1.5R decision #4: enable name embedding in encoder
     if args.use_name_embed:
@@ -284,31 +454,65 @@ def main() -> int:
         ckpt = torch.load(args.init_ckpt, map_location=dev, weights_only=True)
         sd = ckpt.get("model_state_dict", ckpt)
         sd_filtered = {k: v for k, v in sd.items() if not k.startswith("slot_assignment.")}
+        if args.feat_mode == "anytop13":
+            # A 6ch/fk6 baseline ckpt carries `encoder.motion_proj.*` (the shared
+            # motion MLP); anytop13 replaces it with `encoder.motion_proj_root.*`
+            # + `encoder.motion_proj_nonroot.*` (fresh-init, allow-listed in the
+            # missing-keys check below). Drop the obsolete keys so they are not
+            # treated as fatal-unexpected during warm-start (codex P1).
+            sd_filtered = {k: v for k, v in sd_filtered.items()
+                           if not k.startswith("encoder.motion_proj.")}
+        if args.attn_mode == "graphormer":
+            # A scalar-attn ckpt carries `.geodesic_bias.`/`.adjacency_bias.` in
+            # each graph layer; graphormer replaces them with topo/edge embeddings
+            # (fresh-init, allow-listed by substring below). q/k/v/o/norm/ff keys
+            # are structurally identical and DO transfer.
+            sd_filtered = {k: v for k, v in sd_filtered.items()
+                           if ".geodesic_bias." not in k
+                           and ".adjacency_bias." not in k}
         load_result = vae.load_state_dict(sd_filtered, strict=False)
         # Strict: no unexpected baseline keys allowed (after slot_assignment filter)
         if len(load_result.unexpected_keys) > 0:
             raise RuntimeError(
                 f"[INIT_CKPT FAIL] unexpected baseline keys: "
                 f"{load_result.unexpected_keys[:5]} (total {len(load_result.unexpected_keys)})")
-        # Strict: missing keys must be confined to new-module prefixes
-        allowed_missing_prefixes = ("pool.", "unpool.", "dist", "treeik_head.")
-        bad_missing = [k for k in load_result.missing_keys
-                       if not any(k.startswith(p) for p in allowed_missing_prefixes)]
+        # Strict: missing keys must be confined to new-module prefixes /
+        # fresh-init graphormer edge-embedding suffixes.
+        allowed_missing_prefixes = ("pool.", "unpool.", "dist", "treeik_head.",
+                                    "anytop13_head.", "encoder.motion_proj_root.",
+                                    "encoder.motion_proj_nonroot.", "text_proj.",
+                                    "graph_temporal_layers.")
+        allowed_missing_substrings = (".topo_q_emb.", ".topo_k_emb.",
+                                      ".edge_q_emb.", ".edge_k_emb.")
+        bad_missing = [
+            k for k in load_result.missing_keys
+            if not any(k.startswith(p) for p in allowed_missing_prefixes)
+            and not any(s in k for s in allowed_missing_substrings)
+        ]
         if bad_missing:
             raise RuntimeError(
                 f"[INIT_CKPT FAIL] {len(bad_missing)} baseline keys NOT loaded "
                 f"(not in allowed-missing prefixes): {bad_missing[:5]}")
         log(f"  loaded {len(sd_filtered)} keys; allowed-missing={len(load_result.missing_keys)} unexpected=0")
 
-    # Pre-build loss weights (codex M1.5 High: use same in train and val)
-    loss_weights = {
-        "pos": args.w_pos, "vel": args.w_vel,
-        "vel_normalized": args.w_vel_normalized,  # M1.5R #5
-        "vel_consistency": args.w_vel_consistency,
-        "speed_mag": args.w_speed_mag,            # M1.5R B
-        "kl": args.w_kl, "bone": args.w_bone,
-        "pool_aux": args.w_pool_aux,
-    }
+    # Pre-build loss weights (codex M1.5 High: use same in train and val).
+    # feat_mode picks the loss schema — anytop13 has pos/rot/vel/contact groups,
+    # fk6 has the legacy pos/vel/vel_consistency/bone terms.
+    if args.feat_mode == "anytop13":
+        loss_weights = {
+            "pos": args.w_pos, "rot": args.w_rot, "vel": args.w_vel,
+            "contact": args.w_contact, "kl": args.w_kl,
+            "pool_aux": args.w_pool_aux,
+        }
+    else:
+        loss_weights = {
+            "pos": args.w_pos, "vel": args.w_vel,
+            "vel_normalized": args.w_vel_normalized,  # M1.5R #5
+            "vel_consistency": args.w_vel_consistency,
+            "speed_mag": args.w_speed_mag,            # M1.5R B
+            "kl": args.w_kl, "bone": args.w_bone,
+            "pool_aux": args.w_pool_aux,
+        }
     # Gate #2 expected C dim depends on pool variant (codex M1.5 Critical)
     expected_C = args.max_joints if args.pool_type == "none" else args.max_coarse
     log(f"loss_weights: {loss_weights}")
@@ -349,39 +553,19 @@ def main() -> int:
                     f"[GATE2 FAIL] z D={D} != d_model={args.d_model}")
                 assert out["mu"].dtype == torch.float32, (
                     f"[DTYPE FAIL] mu={out['mu'].dtype} not fp32")
-                assert out["pred_pos"].dtype == torch.float32, (
-                    f"[DTYPE FAIL] pred_pos={out['pred_pos'].dtype} not fp32")
+                _pred_key = "pred_motion" if args.feat_mode == "anytop13" else "pred_pos"
+                assert out[_pred_key].dtype == torch.float32, (
+                    f"[DTYPE FAIL] {_pred_key}={out[_pred_key].dtype} not fp32")
                 log(f"  [gate2 ok] z=[{B},{T_lat},{C},{D}] dtype=fp32")
-            # Build gt
-            gt_pos = batch.motion_features[..., :3]
-            gt_vel = batch.motion_features[..., 3:6]
-            # Build rest_bone_lengths from per-sample list
-            rest_bones = torch.zeros(batch.batch_size, batch.max_joints, device=dev)
-            for b in range(batch.batch_size):
-                bls = batch.bone_lengths_rest[b]
-                rest_bones[b, :len(bls)] = torch.tensor(bls, device=dev, dtype=torch.float32)
             # Codex M1.5 R3 P0: use frame_mask_recovered (⊆ batch.frame_mask) as effective
-            # mask so stride-tail frames the decoder zeros are not penalized. Affects
-            # 231/598 train and 46/112 val clips with actual_frames % stride != 0.
+            # mask so stride-tail frames the decoder zeros are not penalized.
             effective_frame_mask = out["frame_mask_recovered"]
             if it == 0 and epoch == 0:
                 dropped = (batch.frame_mask & ~effective_frame_mask).sum().item()
                 log(f"  [stride-tail] frames dropped by stride={args.temporal_stride}: "
                     f"{dropped}/{batch.frame_mask.sum().item()}")
-            losses = compute_total_loss(
-                pred_pos=out["pred_pos"], gt_pos=gt_pos,
-                pred_vel=out["pred_vel"], gt_vel=gt_vel,
-                mu=out["mu"], logvar=out["logvar"],
-                pool_aux_outputs=out["pool_aux_outputs"],
-                joint_mask=batch.joint_mask,
-                frame_mask=effective_frame_mask,
-                coarse_mask=out["coarse_mask"],
-                frame_mask_lat=out["frame_mask_lat"],
-                rest_bone_lengths=rest_bones,
-                parent_indices=batch.parent_indices,
-                fps=batch.fps,
-                weights=loss_weights,
-            )
+            losses = run_loss(out, batch, args.feat_mode, loss_weights,
+                              effective_frame_mask, dev)
 
             # Gate #3: pre-backward loss finite check (codex M1.5 High)
             for k, v in losses.items():
@@ -479,41 +663,29 @@ def main() -> int:
                     })
                     # Deterministic eval: z = mu (codex M1.5 Critical)
                     out = vae(batch, sample=False)
-                    gt_pos = batch.motion_features[..., :3]
-                    gt_vel = batch.motion_features[..., 3:6]
-                    rest_bones = torch.zeros(batch.batch_size, batch.max_joints, device=dev)
-                    for b in range(batch.batch_size):
-                        bls = batch.bone_lengths_rest[b]
-                        rest_bones[b, :len(bls)] = torch.tensor(bls, device=dev, dtype=torch.float32)
                     # Codex M1.5 R3 P0: effective frame mask (stride-tail consistency)
                     effective_frame_mask_val = out["frame_mask_recovered"]
-                    losses = compute_total_loss(
-                        pred_pos=out["pred_pos"], gt_pos=gt_pos,
-                        pred_vel=out["pred_vel"], gt_vel=gt_vel,
-                        mu=out["mu"], logvar=out["logvar"],
-                        pool_aux_outputs=out["pool_aux_outputs"],
-                        joint_mask=batch.joint_mask,
-                        frame_mask=effective_frame_mask_val,
-                        coarse_mask=out["coarse_mask"],
-                        frame_mask_lat=out["frame_mask_lat"],
-                        rest_bone_lengths=rest_bones,
-                        parent_indices=batch.parent_indices,
-                        fps=batch.fps,
-                        weights=loss_weights,  # codex M1.5 High: same weights as train
-                    )
+                    losses = run_loss(out, batch, args.feat_mode, loss_weights,
+                                      effective_frame_mask_val, dev)
                     for k, v in losses.items():
                         val_losses[k].append(v.item())
+                    # Position prediction for diagnostics: fk6 -> pred_pos;
+                    # anytop13 -> pred_motion channels 0:3 vs anytop_x 0:3.
+                    if args.feat_mode == "anytop13":
+                        pp = out["pred_motion"][..., :3]
+                        gp = batch.anytop_x.permute(0, 3, 1, 2)[..., :3]
+                    else:
+                        pp = out["pred_pos"]  # [B, T, J, 3]
+                        gp = batch.motion_features[..., :3]
                     # Per-species per-sample pos loss (codex M1.5 Medium)
                     psl = _per_sample_pos_loss(
-                        out["pred_pos"], gt_pos, batch.joint_mask, effective_frame_mask_val
+                        pp, gp, batch.joint_mask, effective_frame_mask_val
                     )
                     for i, sid in enumerate(batch.skeleton_id):
                         per_species_pos[sid].append(psl[i].item())
                     # Codex M1.5 frozen-pred audit (2026-05-21): speed-ratio metric
                     # to expose static-pose shortcut early. Per-frame mean displacement
                     # ratio (pred/gt). Frozen if ratio < 0.1.
-                    pp = out["pred_pos"]  # [B, T, J, 3]
-                    gp = gt_pos
                     if pp.shape[1] > 1:
                         pp_d = (pp[:, 1:] - pp[:, :-1]).norm(dim=-1)  # [B,T-1,J]
                         gp_d = (gp[:, 1:] - gp[:, :-1]).norm(dim=-1)
@@ -534,8 +706,11 @@ def main() -> int:
             # P3 codex review fix #1: include vel_normalized + speed_mag in val_recon
             # selection metric (otherwise best_recon_model.pt would prefer old-objective frozen
             # ckpts even when training optimizes the new terms).
-            recon_keys = ("pos", "vel", "vel_normalized", "vel_consistency",
-                          "speed_mag", "bone")
+            if args.feat_mode == "anytop13":
+                recon_keys = ("pos", "rot", "vel", "contact")
+            else:
+                recon_keys = ("pos", "vel", "vel_normalized", "vel_consistency",
+                              "speed_mag", "bone")
             val_recon_components_raw = {k: float(np.mean(val_losses[k]))
                                        for k in recon_keys
                                        if k in val_losses and loss_weights.get(k, 0.0) > 0.0}

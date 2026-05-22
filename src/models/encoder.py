@@ -99,6 +99,124 @@ class GraphAttentionBlock(nn.Module):
         return x
 
 
+class AnyTopGraphAttentionBlock(nn.Module):
+    """Graph transformer block with AnyTop-style Graphormer edge biases.
+
+    Replaces GraphAttentionBlock's scalar `Linear(1, n_heads)` geodesic/adjacency
+    bias with AnyTop's richer embedding-gather bias (model/motion_transformer.py
+    GraphMultiHeadAttention): each hop-distance bucket and each edge-type has its
+    own learned d_model embedding, projected against the query AND key and added
+    to the attention score. Two relation tensors drive it:
+      - graph_dist      [B, J, J] integer hop distance, clamped to [0, 5]
+                        (6 buckets — AnyTop's max_path_len=5 convention)
+      - joint_relations [B, J, J] edge type in [0, 5]
+                        (0 self / 1 parent / 2 child / 3 sibling / 4 none / 5 EE)
+    Same outer structure (q/k/v/o proj, norms, FFN, residuals, masking) as
+    GraphAttentionBlock so it is a drop-in for the encoder's graph layers.
+    """
+
+    N_HOP_BUCKETS = 6   # AnyTop max_path_len(5) + 1
+    N_EDGE_TYPES = 6    # self/parent/child/sibling/no_relation/end_effector
+
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1):
+        super().__init__()
+        if d_model % n_heads != 0:
+            raise ValueError(
+                f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
+            )
+        self.n_heads = n_heads
+        self.d_head = d_model // n_heads
+
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.o_proj = nn.Linear(d_model, d_model)
+
+        # Graphormer-style relative embeddings (query + key side).
+        self.topo_q_emb = nn.Embedding(self.N_HOP_BUCKETS, d_model)
+        self.topo_k_emb = nn.Embedding(self.N_HOP_BUCKETS, d_model)
+        self.edge_q_emb = nn.Embedding(self.N_EDGE_TYPES, d_model)
+        self.edge_k_emb = nn.Embedding(self.N_EDGE_TYPES, d_model)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_ff, d_model),
+            nn.Dropout(dropout),
+        )
+        self.dropout = nn.Dropout(dropout)
+
+    def _rel_bias(self, q, k, emb_q, emb_k, rel_idx):
+        """Graphormer bias: gather per-(i,j) query+key bias for a relation.
+
+        Args:
+            q, k: [B, H, J, d_head]
+            emb_q, emb_k: nn.Embedding(n_types, d_model)
+            rel_idx: [B, J, J] long, values in [0, n_types)
+        Returns: [B, H, J, J] additive bias.
+        """
+        B, H, J, _ = q.shape
+        n_types = emb_q.num_embeddings
+        # emb.weight [n_types, d_model] -> [1, H, n_types, d_head]
+        wq = emb_q.weight.view(1, n_types, H, self.d_head).transpose(1, 2)
+        wk = emb_k.weight.view(1, n_types, H, self.d_head).transpose(1, 2)
+        # score against every relation type: [B, H, J, n_types]
+        q_rel = torch.matmul(q, wq.transpose(2, 3))
+        k_rel = torch.matmul(k, wk.transpose(2, 3))
+        # gather the bucket for each (i, j) pair: index [B, H, J, J]
+        idx = rel_idx.unsqueeze(1).expand(-1, H, -1, -1)
+        q_gathered = torch.gather(q_rel, 3, idx)   # [B, H, J, J]
+        k_gathered = torch.gather(k_rel, 3, idx)
+        return q_gathered + k_gathered
+
+    def forward(
+        self,
+        x: torch.Tensor,                 # [B, J, D]
+        graph_dist: torch.Tensor,        # [B, J, J] hop distance
+        joint_relations: torch.Tensor,   # [B, J, J] edge type
+        joint_mask: torch.Tensor,        # [B, J] bool
+    ) -> torch.Tensor:
+        B, J, D = x.shape
+        residual = x
+        x = self.norm1(x)
+
+        q = self.q_proj(x).view(B, J, self.n_heads, self.d_head).permute(0, 2, 1, 3)
+        k = self.k_proj(x).view(B, J, self.n_heads, self.d_head).permute(0, 2, 1, 3)
+        v = self.v_proj(x).view(B, J, self.n_heads, self.d_head).permute(0, 2, 1, 3)
+
+        # Defensive clamp: padded regions are 0 (valid index); AnyTop edge maps
+        # may carry a 7th 'ts_token' type (idx 6) absent from our data — clamp
+        # so a stray value never indexes past the embedding table.
+        gd = graph_dist.clamp(0, self.N_HOP_BUCKETS - 1).long()
+        jr = joint_relations.clamp(0, self.N_EDGE_TYPES - 1).long()
+        # AnyTop scales the SUMMED score (qk + topo_bias + edge_bias) by
+        # 1/sqrt(d_head) — motion_transformer.py:92-94 — so the bias terms are
+        # scaled too. Add raw, then scale once.
+        scores = torch.matmul(q, k.transpose(-2, -1))
+        scores = scores + self._rel_bias(q, k, self.topo_q_emb, self.topo_k_emb, gd)
+        scores = scores + self._rel_bias(q, k, self.edge_q_emb, self.edge_k_emb, jr)
+        scores = scores / math.sqrt(self.d_head)
+
+        # Mask invalid joints (large finite negative — avoid all-(-inf) NaN)
+        mask = joint_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, J]
+        scores = scores.masked_fill(~mask, -1e9)
+
+        attn = F.softmax(scores, dim=-1)
+        attn = attn.nan_to_num(0.0)
+        attn = self.dropout(attn)
+
+        out = torch.matmul(attn, v)  # [B, H, J, d_head]
+        out = out.permute(0, 2, 1, 3).contiguous().view(B, J, D)
+        out = self.o_proj(out)
+        x = residual + self.dropout(out)
+
+        x = x + self.ff(self.norm2(x))
+        return x
+
+
 class TemporalBlock(nn.Module):
     """Temporal convolution + attention for fusing motion dynamics."""
 
@@ -146,14 +264,36 @@ class SkeletonEncoder(nn.Module):
         n_graph_layers: int = 6,
         n_temporal_layers: int = 4,
         joint_feat_dim: int = 9,       # from SkeletonGraph.get_joint_features()
-        motion_feat_dim: int = 6,      # local_pos(3) + velocity(3)
+        motion_feat_dim: int = 6,      # fk6: local_pos(3)+vel(3); anytop13: 13ch
         clip_embed_dim: int = 768,     # CLIP text embedding dim
         clip_proj_dim: int = 128,      # projected CLIP dim
         temporal_kernel: int = 9,
         dropout: float = 0.1,
+        motion_mode: str = "fk6_shared",
+        attn_mode: str = "scalar",
     ):
         super().__init__()
         self.d_model = d_model
+        # motion_mode controls how per-frame motion features are projected:
+        #   "fk6_shared"     — one shared MLP for all joints (legacy 6ch path)
+        #   "anytop13_split" — separate Linears for root vs non-root joints
+        #     (AnyTop InputProcess: root channels 0:3 are RIFKE root-state,
+        #      non-root 0:3 are relative position — different semantics).
+        if motion_mode not in ("fk6_shared", "anytop13_split"):
+            raise ValueError(
+                f"motion_mode must be 'fk6_shared' or 'anytop13_split', "
+                f"got {motion_mode!r}"
+            )
+        self.motion_mode = motion_mode
+        # attn_mode controls the graph-layer attention bias:
+        #   "scalar"     — GraphAttentionBlock (Linear(1,n_heads) geo/adj bias)
+        #   "graphormer" — AnyTopGraphAttentionBlock (per-edge-type embedding
+        #                  bias, gathered by graph_dist + joint_relations)
+        if attn_mode not in ("scalar", "graphormer"):
+            raise ValueError(
+                f"attn_mode must be 'scalar' or 'graphormer', got {attn_mode!r}"
+            )
+        self.attn_mode = attn_mode
 
         # Static joint feature projection
         self.joint_feat_proj = nn.Sequential(
@@ -178,17 +318,27 @@ class SkeletonEncoder(nn.Module):
         self.use_name_embed = False  # Set True to enable
 
         # Graph transformer layers (operate on static skeleton)
-        self.graph_layers = nn.ModuleList([
-            GraphAttentionBlock(d_model, n_heads, d_ff, dropout)
-            for _ in range(n_graph_layers)
-        ])
+        if attn_mode == "graphormer":
+            self.graph_layers = nn.ModuleList([
+                AnyTopGraphAttentionBlock(d_model, n_heads, d_ff, dropout)
+                for _ in range(n_graph_layers)
+            ])
+        else:
+            self.graph_layers = nn.ModuleList([
+                GraphAttentionBlock(d_model, n_heads, d_ff, dropout)
+                for _ in range(n_graph_layers)
+            ])
 
         # Motion feature projection (dynamic per-frame features)
-        self.motion_proj = nn.Sequential(
-            nn.Linear(motion_feat_dim, d_model // 2),
-            nn.GELU(),
-            nn.Linear(d_model // 2, d_model),
-        )
+        if motion_mode == "fk6_shared":
+            self.motion_proj = nn.Sequential(
+                nn.Linear(motion_feat_dim, d_model // 2),
+                nn.GELU(),
+                nn.Linear(d_model // 2, d_model),
+            )
+        else:  # anytop13_split — AnyTop-style root/non-root separate Linears
+            self.motion_proj_root = nn.Linear(motion_feat_dim, d_model)
+            self.motion_proj_nonroot = nn.Linear(motion_feat_dim, d_model)
 
         # Fusion: combine static joint embedding + dynamic motion features
         self.fusion = nn.Sequential(
@@ -213,10 +363,16 @@ class SkeletonEncoder(nn.Module):
         joint_mask: torch.Tensor,          # [B, J]
         clip_embeddings: Optional[torch.Tensor] = None,  # [B, J, clip_dim]
         name_hashes: Optional[torch.Tensor] = None,      # [B, J] int64
+        graph_dist: Optional[torch.Tensor] = None,        # [B, J, J] (graphormer)
+        joint_relations: Optional[torch.Tensor] = None,   # [B, J, J] (graphormer)
     ) -> torch.Tensor:
         """
         Encode static skeleton graph into per-joint embeddings.
         This is computed ONCE per skeleton and reused across all frames.
+
+        In `attn_mode="graphormer"` the graph layers consume `graph_dist` +
+        `joint_relations` (AnyTop edge biases) instead of `adjacency` +
+        `geodesic_dist`; both must then be provided.
 
         Returns: s_j ∈ R^{d_model} for each joint j. Shape: [B, J, D]
         """
@@ -234,8 +390,17 @@ class SkeletonEncoder(nn.Module):
             s = s + name_feat
 
         # Graph transformer: topology-aware message passing
-        for layer in self.graph_layers:
-            s = layer(s, adjacency, geodesic_dist, joint_mask)
+        if self.attn_mode == "graphormer":
+            if graph_dist is None or joint_relations is None:
+                raise ValueError(
+                    "SkeletonEncoder(attn_mode=graphormer) requires graph_dist "
+                    "and joint_relations"
+                )
+            for layer in self.graph_layers:
+                s = layer(s, graph_dist, joint_relations, joint_mask)
+        else:
+            for layer in self.graph_layers:
+                s = layer(s, adjacency, geodesic_dist, joint_mask)
 
         # Zero out padded joints
         s = s * joint_mask.unsqueeze(-1).float()
@@ -252,6 +417,8 @@ class SkeletonEncoder(nn.Module):
         frame_mask: torch.Tensor,         # [B, T]
         clip_embeddings: Optional[torch.Tensor] = None,
         name_hashes: Optional[torch.Tensor] = None,
+        graph_dist: Optional[torch.Tensor] = None,        # [B, J, J] (graphormer)
+        joint_relations: Optional[torch.Tensor] = None,   # [B, J, J] (graphormer)
     ) -> torch.Tensor:
         """
         Full forward: static skeleton encoding + dynamic motion fusion + temporal processing.
@@ -264,10 +431,21 @@ class SkeletonEncoder(nn.Module):
         s_j = self.encode_skeleton(
             skeleton_features, adjacency, geodesic_dist, joint_mask,
             clip_embeddings, name_hashes,
+            graph_dist=graph_dist, joint_relations=joint_relations,
         )  # [B, J, D]
 
         # 2. Dynamic motion feature projection
-        m_tj = self.motion_proj(motion_features)  # [B, T, J, D]
+        if self.motion_mode == "anytop13_split":
+            # Root (joint 0) and non-root joints use separate Linears — their
+            # channels 0:3 carry different semantics (RIFKE root-state vs
+            # relative position). Joint 0 is guaranteed root by the dataset's
+            # FK re-ordering. J >= 9 for all AnyTop skeletons so the [1:] slice
+            # is always non-empty.
+            m_root = self.motion_proj_root(motion_features[:, :, 0:1, :])    # [B,T,1,D]
+            m_nonroot = self.motion_proj_nonroot(motion_features[:, :, 1:, :])  # [B,T,J-1,D]
+            m_tj = torch.cat([m_root, m_nonroot], dim=2)                     # [B,T,J,D]
+        else:
+            m_tj = self.motion_proj(motion_features)  # [B, T, J, D]
 
         # 3. Fuse static + dynamic
         s_j_expanded = s_j.unsqueeze(1).expand(-1, T, -1, -1)  # [B, T, J, D]
