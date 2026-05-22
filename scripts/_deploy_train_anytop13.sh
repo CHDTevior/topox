@@ -18,6 +18,9 @@
 # Optional env vars (defaults = M1.5R-proven config, AnyTop-native attn):
 #   POOL_TAU          required iff POOL_TYPE=soft_deterministic (e.g., 1.0)
 #   GPUS_PER_TASK     1
+#   NGPU              1  (>1 = DDP via torchrun over NGPU GPUs of the alloc; the
+#                     global batch becomes BATCH_SIZE×NGPU, so rescale LR by the
+#                     linear scaling rule — lr ∝ global batch — at launch time)
 #   EPOCHS            1000
 #   SAVE_EVERY        10
 #   LR                4e-4
@@ -76,6 +79,7 @@ fi
 
 # ---- optional env vars (defaults) ------------------------------------------
 GPUS_PER_TASK="${GPUS_PER_TASK:-1}"
+NGPU="${NGPU:-1}"
 EPOCHS="${EPOCHS:-1000}"
 SAVE_EVERY="${SAVE_EVERY:-10}"
 LR="${LR:-4e-4}"
@@ -120,6 +124,10 @@ esac
 case "$DECODER_MODE" in
     unpool_identity|coarse_xattn|graph_temporal) : ;;
     *) echo "[deploy_anytop13] FATAL: DECODER_MODE='$DECODER_MODE' must be unpool_identity|coarse_xattn|graph_temporal" >&2 ; exit 2 ;;
+esac
+case "$NGPU" in
+    1|2|3|4) : ;;
+    *) echo "[deploy_anytop13] FATAL: NGPU='$NGPU' must be 1-4 (GPUs per node)" >&2 ; exit 2 ;;
 esac
 if [ "$USE_TEXT" = "1" ] && [ -z "$CAPTION_EMB_CACHE" ]; then
     echo "[deploy_anytop13] WARN: USE_TEXT=1 but CAPTION_EMB_CACHE empty — text will be a no-op" >&2
@@ -176,24 +184,37 @@ POOL_TAU_ARG=""  ; [ -n "$POOL_TAU" ]  && POOL_TAU_ARG="--pool_tau $POOL_TAU"
 ANYTOP_ROOT_ARG="" ; [ -n "$ANYTOP_ROOT" ] && ANYTOP_ROOT_ARG="--anytop_root $ANYTOP_ROOT"
 CAPTION_ARG="" ; [ -n "$CAPTION_EMB_CACHE" ] && CAPTION_ARG="--caption_emb_cache $CAPTION_EMB_CACHE"
 
-echo "[deploy_anytop13] PPID=1 setsid srun(1 task, --overlap) -> python (single GPU)"
+echo "[deploy_anytop13] PPID=1 setsid srun(1 task, --overlap) -> train_graph_vae.py"
 echo "[deploy_anytop13] alloc=$JOBID@$NODE POOL_TYPE=$POOL_TYPE ATTN_MODE=$ATTN_MODE DECODER_MODE=$DECODER_MODE OUT=$OUT"
-echo "[deploy_anytop13] EPOCHS=$EPOCHS LR=$LR BATCH=$BATCH_SIZE USE_TEXT=$USE_TEXT AUGMENT=$AUGMENT"
+echo "[deploy_anytop13] EPOCHS=$EPOCHS LR=$LR BATCH=$BATCH_SIZE NGPU=$NGPU USE_TEXT=$USE_TEXT AUGMENT=$AUGMENT"
 
 # ---- training: ONE srun task, --overlap, --no-kill -------------------------
+# NGPU==1 -> plain `python -u` (single GPU, unchanged). NGPU>1 -> `torchrun`
+# spawns NGPU procs INSIDE the one srun task for DDP; the task gets NGPU GPUs.
 CUDA_PIN=""
-GRES_ARG="--gres=gpu:$GPUS_PER_TASK"
-if [ -n "${CUDA_VISIBLE_DEVICES_OVERRIDE:-}" ]; then
-    # Manual GPU pin: DROP --gres (srun --gres forces mask {0} for the first
-    # injected task, blanking a CUDA_VISIBLE_DEVICES=1 override). Root-cause
-    # fix verified in M1.5R.
-    CUDA_PIN="export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES_OVERRIDE} && "
-    GRES_ARG=""
+DDP_ENV=""
+if [ "$NGPU" -gt 1 ]; then
+    LAUNCHER="torchrun --standalone --nnodes=1 --nproc_per_node=$NGPU"
+    GRES_ARG="--gres=gpu:$NGPU"
+    DDP_ENV="TORCH_NCCL_ASYNC_ERROR_HANDLING=1 "
+    if [ -n "${CUDA_VISIBLE_DEVICES_OVERRIDE:-}" ]; then
+        echo "[deploy_anytop13] WARN: CUDA_VISIBLE_DEVICES_OVERRIDE ignored for NGPU>1 (DDP)" >&2
+    fi
+else
+    LAUNCHER="python -u"
+    GRES_ARG="--gres=gpu:$GPUS_PER_TASK"
+    if [ -n "${CUDA_VISIBLE_DEVICES_OVERRIDE:-}" ]; then
+        # Manual GPU pin: DROP --gres (srun --gres forces mask {0} for the first
+        # injected task, blanking a CUDA_VISIBLE_DEVICES=1 override). Root-cause
+        # fix verified in M1.5R.
+        CUDA_PIN="export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES_OVERRIDE} && "
+        GRES_ARG=""
+    fi
 fi
 setsid nohup srun --jobid="$JOBID" -w "$NODE" --overlap --ntasks=1 \
     $GRES_ARG --no-kill \
     bash -lc \
-    "$ACTIVATE && cd $P && ${CUDA_PIN}PYTHONUNBUFFERED=1 python -u scripts/train_graph_vae.py \
+    "$ACTIVATE && cd $P && ${CUDA_PIN}${DDP_ENV}PYTHONUNBUFFERED=1 $LAUNCHER scripts/train_graph_vae.py \
      --dataset anytop_truebones --feat_mode anytop13 --attn_mode $ATTN_MODE \
      --decoder_mode $DECODER_MODE \
      --n_graph_temporal_layers $N_GRAPH_TEMPORAL_LAYERS \

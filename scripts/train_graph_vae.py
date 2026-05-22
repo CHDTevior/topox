@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from collections import defaultdict
@@ -34,8 +35,10 @@ from typing import Optional
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -171,6 +174,27 @@ def _per_sample_pos_loss(pred_pos: torch.Tensor, gt_pos: torch.Tensor,
 # Training loop
 # ---------------------------------------------------------------------------
 
+def _ddp_setup() -> "tuple[bool, int, int, int, bool]":
+    """Detect a torchrun DDP launch from the environment.
+
+    Returns (is_ddp, rank, local_rank, world_size, is_main). A plain
+    `python train_graph_vae.py` leaves WORLD_SIZE unset -> is_ddp=False and the
+    single-GPU path runs unchanged. Under `torchrun --nproc_per_node=N` (N>1),
+    WORLD_SIZE=N -> init the NCCL process group and pin this rank's CUDA device.
+    """
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if world_size <= 1:
+        return False, 0, 0, 1, True
+    rank = int(os.environ["RANK"])
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    # device_id binds the process group to this rank's GPU — required by modern
+    # torch to avoid the barrier() "using the device under current context" warning.
+    dist.init_process_group(
+        backend="nccl", device_id=torch.device("cuda", local_rank))
+    return True, rank, local_rank, world_size, rank == 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     # Pool ablation choice
@@ -284,6 +308,10 @@ def main() -> int:
                    help="Run 5 iters smoke test (verifies wiring)")
     args = p.parse_args()
 
+    # DDP: detect a torchrun launch (WORLD_SIZE>1). Single-process otherwise —
+    # then is_ddp=False, is_main=True and every DDP branch below is a no-op.
+    is_ddp, rank, local_rank, world_size, is_main = _ddp_setup()
+
     # feat_mode <-> dataset cross-check: anytop13 needs the AnyTop dataset
     # (only it emits anytop_x / foot_contact_per_joint).
     if args.feat_mode == "anytop13" and args.dataset != "anytop_truebones":
@@ -297,8 +325,9 @@ def main() -> int:
     if args.decoder_mode is None:
         args.decoder_mode = (
             "coarse_xattn" if args.feat_mode == "anytop13" else "unpool_identity")
-        print(f"[ARGS] --decoder_mode unset -> resolved to {args.decoder_mode!r} "
-              f"(feat_mode={args.feat_mode})")
+        if is_main:
+            print(f"[ARGS] --decoder_mode unset -> resolved to {args.decoder_mode!r} "
+                  f"(feat_mode={args.feat_mode})")
     # graph_temporal needs the AnyTop graph tensors (graph_dist/joint_relations)
     # + the 13ch head — anytop13 + the AnyTop dataset only.
     if args.decoder_mode == "graph_temporal" and (
@@ -321,9 +350,10 @@ def main() -> int:
     # --use_text without a caption cache trains a text_proj that every sample
     # gates to zero (has_text=False) — text conditioning is then a silent no-op.
     if args.use_text and args.caption_emb_cache is None:
-        print("[ARGS WARN] --use_text set but --caption_emb_cache is None: "
-              "every sample will have has_text=False, so text conditioning is a "
-              "NO-OP. Pass --caption_emb_cache <npz> (scripts/precompute_t5_captions.py).")
+        if is_main:
+            print("[ARGS WARN] --use_text set but --caption_emb_cache is None: "
+                  "every sample will have has_text=False, so text conditioning is a "
+                  "NO-OP. Pass --caption_emb_cache <npz> (scripts/precompute_t5_captions.py).")
 
     # Seed (codex M1.5 Low: include CUDA seed for full determinism)
     torch.manual_seed(args.seed)
@@ -331,12 +361,16 @@ def main() -> int:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    # Device — fail loud if CUDA requested but unavailable (codex M1.5 High)
-    if args.device == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError(
-            "[DEVICE FAIL] --device cuda requested but torch.cuda.is_available()=False. "
-            "Use --device cpu explicitly or fix the CUDA env.")
-    dev = torch.device(args.device)
+    # Device — fail loud if CUDA requested but unavailable (codex M1.5 High).
+    # Under DDP (torchrun) each rank pins its own GPU regardless of --device.
+    if is_ddp:
+        dev = torch.device("cuda", local_rank)
+    else:
+        if args.device == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError(
+                "[DEVICE FAIL] --device cuda requested but torch.cuda.is_available()=False. "
+                "Use --device cpu explicitly or fix the CUDA env.")
+        dev = torch.device(args.device)
 
     # Output dir — refuse non-empty unless --overwrite (codex M1.5 High)
     out_dir = Path(args.out)
@@ -350,6 +384,9 @@ def main() -> int:
     diag_path = out_dir / "diagnostics.jsonl"
 
     def log(msg: str) -> None:
+        # DDP: only rank 0 prints / writes the log — avoids N-way garbled output.
+        if not is_main:
+            return
         print(msg, flush=True)
         with open(log_path, "a") as f:
             f.write(msg + "\n")
@@ -407,9 +444,17 @@ def main() -> int:
     if len(ds_val) == 0:
         raise RuntimeError("[DATA FAIL] val split is empty.")
 
-    # DataLoader tuning: workers=8 + pin_memory + persistent (codex-side-tuning for util>80%)
+    # DataLoader tuning: workers=8 + pin_memory + persistent (codex-side-tuning for util>80%).
+    # Under DDP the train loader is sharded by a DistributedSampler (one shard per
+    # rank; drop_last so every rank gets an equal batch count — no padding/desync).
+    # dl_val stays a plain full-set loader, iterated only by rank 0.
+    train_sampler = (
+        DistributedSampler(ds_train, shuffle=True, drop_last=True)
+        if is_ddp else None
+    )
     dl_train = DataLoader(
-        ds_train, batch_size=args.batch_size, shuffle=True,
+        ds_train, batch_size=args.batch_size,
+        shuffle=(train_sampler is None), sampler=train_sampler,
         collate_fn=active_collate_fn, num_workers=8, drop_last=True,
         pin_memory=True, persistent_workers=True, prefetch_factor=4,
     )
@@ -495,6 +540,16 @@ def main() -> int:
                 f"(not in allowed-missing prefixes): {bad_missing[:5]}")
         log(f"  loaded {len(sd_filtered)} keys; allowed-missing={len(load_result.missing_keys)} unexpected=0")
 
+    # DDP wrap — AFTER warm-start (init_ckpt loads into the raw module) and the
+    # use_name_embed setattr, which both need the unwrapped module. After this
+    # `vae` is the DDP wrapper; `raw_vae` is the unwrapped module (state_dict).
+    # find_unused_parameters=True is REQUIRED: MotionDecoder.output_proj is never
+    # called (decoder runs return_features=True), and DynamicGraphUnpool is unused
+    # in the coarse_xattn / graph_temporal decoder modes.
+    if is_ddp:
+        vae = DDP(vae, device_ids=[local_rank], find_unused_parameters=True)
+    raw_vae = vae.module if is_ddp else vae
+
     # Pre-build loss weights (codex M1.5 High: use same in train and val).
     # feat_mode picks the loss schema — anytop13 has pos/rot/vel/contact groups,
     # fk6 has the legacy pos/vel/vel_consistency/bone terms.
@@ -531,6 +586,8 @@ def main() -> int:
     smoke_iter_cap = 5 if args.smoke else None
 
     for epoch in range(args.epochs):
+        if is_ddp:
+            train_sampler.set_epoch(epoch)   # reshuffle shards each epoch
         vae.train()
         t0 = time.time()
         epoch_losses = defaultdict(list)
@@ -624,29 +681,34 @@ def main() -> int:
                     f"active_C={diag['active_coarse_mean']:.1f}({diag['active_coarse_min']}-{diag['active_coarse_max']}) "
                     f"mass_min={diag['mass_min']:.2f} ent={diag['assignment_entropy_mean']:.3f} "
                     f"rowsum=[{rowsum_min:.3f},{rowsum_max:.3f}]")
-                # Persist diagnostics to JSON (codex M1.5 Medium)
-                with open(diag_path, "a") as f:
-                    f.write(json.dumps({
-                        "epoch": epoch, "iter": it, "n_iter": n_iter,
-                        "loss": cur_loss, "grad_max": grad_max,
-                        **diag,
-                    }) + "\n")
+                # Persist diagnostics to JSON (codex M1.5 Medium) — rank 0 only
+                if is_main:
+                    with open(diag_path, "a") as f:
+                        f.write(json.dumps({
+                            "epoch": epoch, "iter": it, "n_iter": n_iter,
+                            "loss": cur_loss, "grad_max": grad_max,
+                            **diag,
+                        }) + "\n")
 
         epoch_dt = time.time() - t0
         train_loss_mean = float(np.mean(epoch_losses["total"]))
         log(f"=== epoch {epoch} done in {epoch_dt:.1f}s | "
             f"train_loss={train_loss_mean:.4f} train_diag={train_diag_smoothed:.4f} ===")
 
-        # Save metrics
-        rec = {"epoch": epoch, "train_loss": train_loss_mean,
-               "train_diag": train_diag_smoothed,
-               "epoch_dt_s": epoch_dt, "n_iter": n_iter,
-               "loss_breakdown": {k: float(np.mean(v)) for k, v in epoch_losses.items()}}
-        with open(metrics_path, "a") as f:
-            f.write(json.dumps(rec) + "\n")
+        # Save metrics — rank 0 only
+        if is_main:
+            rec = {"epoch": epoch, "train_loss": train_loss_mean,
+                   "train_diag": train_diag_smoothed,
+                   "epoch_dt_s": epoch_dt, "n_iter": n_iter,
+                   "loss_breakdown": {k: float(np.mean(v)) for k, v in epoch_losses.items()}}
+            with open(metrics_path, "a") as f:
+                f.write(json.dumps(rec) + "\n")
 
-        # Val + per-species recon
-        if (epoch + 1) % args.save_every == 0 or epoch == args.epochs - 1 or args.smoke:
+        # Val + per-species recon — under DDP rank 0 runs the full val set;
+        # other ranks skip the body and wait at the barrier after it.
+        do_val = ((epoch + 1) % args.save_every == 0
+                  or epoch == args.epochs - 1 or args.smoke)
+        if do_val and is_main:
             vae.eval()
             t_v = time.time()
             val_losses = defaultdict(list)
@@ -662,7 +724,10 @@ def main() -> int:
                         k: v.to(dev) if torch.is_tensor(v) else v for k, v in raw.items()
                     })
                     # Deterministic eval: z = mu (codex M1.5 Critical)
-                    out = vae(batch, sample=False)
+                    # raw_vae (unwrapped) — val runs on rank 0 only; calling the
+                    # DDP wrapper here would risk a one-sided buffer-broadcast
+                    # collective if the model ever gains buffers (codex hardening).
+                    out = raw_vae(batch, sample=False)
                     # Codex M1.5 R3 P0: effective frame mask (stride-tail consistency)
                     effective_frame_mask_val = out["frame_mask_recovered"]
                     losses = run_loss(out, batch, args.feat_mode, loss_weights,
@@ -740,7 +805,7 @@ def main() -> int:
             torch.save({
                 "epoch": epoch, "val_loss": val_loss_mean,
                 "val_recon": val_recon,
-                "model_state_dict": vae.state_dict(),
+                "model_state_dict": raw_vae.state_dict(),
                 "optimizer_state_dict": opt.state_dict(),
                 "args": vars(args),
                 "git_sha": git_sha,
@@ -753,7 +818,7 @@ def main() -> int:
                 torch.save({
                     "epoch": epoch, "val_loss": val_loss_mean,
                     "val_recon": val_recon,
-                    "model_state_dict": vae.state_dict(),
+                    "model_state_dict": raw_vae.state_dict(),
                     "args": vars(args),
                     "git_sha": git_sha,
                 }, save_path)
@@ -766,7 +831,7 @@ def main() -> int:
                 torch.save({
                     "epoch": epoch, "val_loss": val_loss_mean,
                     "val_recon": val_recon,
-                    "model_state_dict": vae.state_dict(),
+                    "model_state_dict": raw_vae.state_dict(),
                     "args": vars(args),
                     "git_sha": git_sha,
                 }, save_path)
@@ -798,11 +863,17 @@ def main() -> int:
                     },
                 }) + "\n")
 
+        # DDP: non-main ranks waited here while rank 0 ran validation.
+        if do_val and is_ddp:
+            dist.barrier()
+
         if args.smoke and epoch >= 0:
             log("=== SMOKE MODE: 1 epoch done, exit ===")
             break
 
     log("=== training complete ===")
+    if is_ddp:
+        dist.destroy_process_group()
     return 0
 
 
