@@ -191,6 +191,14 @@ def parse_args() -> argparse.Namespace:
     # Logging / checkpoint
     ap.add_argument("--val_every", type=int, default=5)
     ap.add_argument("--save_every", type=int, default=10)
+    # Resume / warm-start
+    ap.add_argument("--init_ckpt", default=None,
+                    help="warm-start the denoiser from this ckpt's "
+                         "model_state_dict (loaded strict=True). Optimizer + "
+                         "epoch state are NOT restored — fresh AdamW + epoch 0. "
+                         "Use for continuation runs (e.g. ep1000 → ep3000). "
+                         "Pass --warmup_iters 200 (or 0) since the model is "
+                         "already past initial unstable regime.")
     # Misc
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", default="cuda")
@@ -301,6 +309,32 @@ def main() -> int:
     n_params = sum(p.numel() for p in denoiser.parameters())
     log(f"\nDenoiser: n_layers={args.n_layers} d_model={d_model} d_ff={d_ff} "
         f"params={n_params:,}")
+
+    # ---- Warm-start from --init_ckpt (continuation runs only) ----
+    # Mirrors train_graph_vae.py's --init_ckpt pattern: only model weights are
+    # restored; AdamW state + epoch counter + best_val + RNG all start fresh.
+    # This is the conservative continuation pattern (you lose Adam moments but
+    # avoid optimizer-state version skew). For ep1000 → ep3000 continuation,
+    # pass --warmup_iters small (e.g. 200) since the model is past the
+    # zero-init unstable regime.
+    if args.init_ckpt is not None:
+        if not Path(args.init_ckpt).exists():
+            raise SystemExit(f"--init_ckpt {args.init_ckpt!r} does not exist")
+        log(f"\nWarm-start denoiser from {args.init_ckpt}")
+        ck = torch.load(args.init_ckpt, map_location="cpu", weights_only=False)
+        sd = ck.get("model_state_dict", ck)
+        missing, unexpected = denoiser.load_state_dict(sd, strict=True)
+        if missing or unexpected:
+            raise SystemExit(
+                f"[INIT_CKPT FAIL] missing={len(missing)} unexpected={len(unexpected)}; "
+                f"refusing to silently load partial weights"
+            )
+        prev_ep = ck.get("epoch", "?")
+        prev_val = ck.get("val_denoise", "?")
+        log(f"  loaded model_state_dict strict=True (prev epoch={prev_ep} val_denoise={prev_val})")
+        log(f"  optimizer state + epoch counter + best_val are FRESH "
+            f"(continuation pattern; pass --warmup_iters {args.warmup_iters} "
+            f"to control re-warmup)")
 
     # ---- Optimizer + scheduler + lr-warmup ----
     opt = torch.optim.AdamW(
