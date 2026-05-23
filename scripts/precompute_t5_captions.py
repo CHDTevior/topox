@@ -24,8 +24,8 @@ import numpy as np
 import torch
 
 _DEFAULT_TEXTS = (
-    "/iridisfs/scratch/ts1v23/workspace/Anytop/AnyTop/dataset/truebones/zoo/"
-    "truebones_processed/motion_texts_by_file.json"
+    "/scratch/ts1v23/workspace/noKslot_clean/data/anytop_truebones/"
+    "motion_texts_by_file_with_codex_drafts.json"
 )
 
 
@@ -48,20 +48,39 @@ def main() -> int:
     with texts_path.open("r") as f:
         raw = json.load(f)
 
-    # motion_id (filename stem) -> primary_caption
-    items: list[tuple[str, str]] = []
+    # M1.7 Phase-2: encode ALL captions per motion (SALAD random-pick style).
+    # Storage key = "{motion_id}__cap{i}"; AnyTopDataset reads the prefix to
+    # group + random.choice per __getitem__. Index 0 is always primary_caption
+    # (kept first for deterministic val with random_caption=False).
+    items: list[tuple[str, int, str]] = []   # (motion_id, cap_idx, caption_str)
+    n_motions = 0
+    n_caps = 0
     for fname, info in raw.items():
         if not isinstance(info, dict):
             continue
-        cap = info.get("primary_caption") or ""
-        if not cap:
+        primary = info.get("primary_caption") or ""
+        captions_list = info.get("captions") or []
+        # Build per-motion ordered list: primary at idx 0, then remaining
+        # captions (de-duplicated against primary so it isn't stored twice).
+        ordered = []
+        if primary:
+            ordered.append(str(primary))
+        for c in captions_list:
+            cs = str(c)
+            if cs and cs != primary:
+                ordered.append(cs)
+        if not ordered:
             continue
         stem = fname[:-4] if fname.endswith(".npy") else fname
-        items.append((stem, str(cap)))
-    items.sort(key=lambda x: x[0])
+        for i, cap in enumerate(ordered):
+            items.append((stem, i, cap))
+        n_motions += 1
+        n_caps += len(ordered)
+    items.sort(key=lambda x: (x[0], x[1]))
     if args.limit is not None:
         items = items[: args.limit]
-    print(f"Encoding {len(items)} captions with {args.t5_name} ...")
+    print(f"Encoding {n_caps} captions across {n_motions} motions "
+          f"(avg {n_caps/max(n_motions,1):.1f}/motion) with {args.t5_name} ...")
 
     if args.device == "cuda" and not torch.cuda.is_available():
         print("  [INFO] CUDA unavailable, falling back to CPU")
@@ -80,7 +99,7 @@ def main() -> int:
     with torch.no_grad():
         for i in range(0, len(items), args.batch_size):
             chunk = items[i:i + args.batch_size]
-            captions = [c for _, c in chunk]
+            captions = [c for _, _, c in chunk]
             enc = tok(captions, padding=True, truncation=True,
                       max_length=64, return_tensors="pt").to(dev)
             out = model(input_ids=enc["input_ids"],
@@ -90,8 +109,9 @@ def main() -> int:
             # Mean-pool over valid tokens (mirrors AnyTop T5Conditioner).
             pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-6)
             pooled = pooled.cpu().numpy().astype(np.float32)  # [b, 768]
-            for (mid, _), vec in zip(chunk, pooled):
-                embeddings[mid] = vec
+            for (mid, cap_idx, _), vec in zip(chunk, pooled):
+                key = f"{mid}__cap{cap_idx}"
+                embeddings[key] = vec
             print(f"  {min(i + args.batch_size, len(items))}/{len(items)}")
 
     out_path = Path(args.out)
@@ -99,6 +119,9 @@ def main() -> int:
     np.savez(out_path, **embeddings)
     dim = next(iter(embeddings.values())).shape[0] if embeddings else 0
     print(f"Saved {len(embeddings)} caption embeddings (dim={dim}) -> {out_path}")
+    print(f"  key format: '<motion_id>__cap<i>' (i=0 is primary_caption); "
+          f"AnyTopDataset groups by motion_id prefix and random.choice per "
+          f"__getitem__ when random_caption=True.")
     return 0
 
 

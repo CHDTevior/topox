@@ -482,6 +482,7 @@ class AnyTopDataset(Dataset):
         augment_prob: float = 0.3,
         removal_rate: float = 0.5,
         caption_emb_cache: str | Path | None = None,
+        random_caption: bool = False,
     ) -> None:
         self.data_root = Path(data_root)
         self.split = split
@@ -566,26 +567,54 @@ class AnyTopDataset(Dataset):
                 raise ValueError(f"split must be 'train'/'val'/'all', got {split!r}")
             self.samples.sort(key=lambda s: s["motion_id"])
 
-        # ---- Captions (optional, primary caption only) ----
+        # ---- Captions (M1.7 Phase-2: multi-caption per motion, SALAD-style) ----
+        # `self.captions` keeps the PRIMARY caption per motion (for display in
+        # animate / log strings — backward compat with existing consumers).
+        # `self.captions_multi` keeps the FULL list for future use (e.g.
+        # animate captions on gif title selection).
         self.captions: dict[str, str] = {}
+        self.captions_multi: dict[str, list[str]] = {}
         if load_captions:
-            cap_path = self.data_root / "motion_texts_by_file.json"
-            if cap_path.exists():
+            # Prefer the with_codex_drafts file if present (1070 covers full set);
+            # fall back to the legacy file otherwise.
+            for fn in ("motion_texts_by_file_with_codex_drafts.json",
+                       "motion_texts_by_file.json"):
+                cap_path = self.data_root / fn
+                if cap_path.exists():
+                    break
+            else:
+                cap_path = None
+            if cap_path is not None:
                 with cap_path.open("r") as f:
-                    raw = json.load(f)
-                for fname, info in raw.items():
-                    if isinstance(info, dict):
-                        cap = info.get("primary_caption") or ""
-                        # info key is "Alligator___BigMouth_5.npy"; strip .npy
-                        stem = fname[:-4] if fname.endswith(".npy") else fname
-                        self.captions[stem] = str(cap)
+                    raw_caps = json.load(f)
+                for fname, info in raw_caps.items():
+                    if not isinstance(info, dict):
+                        continue
+                    primary = info.get("primary_caption") or ""
+                    captions_list = info.get("captions") or []
+                    stem = fname[:-4] if fname.endswith(".npy") else fname
+                    self.captions[stem] = str(primary)
+                    # Build ordered list: primary first, then de-duped rest
+                    ordered = []
+                    if primary:
+                        ordered.append(str(primary))
+                    for c in captions_list:
+                        cs = str(c)
+                        if cs and cs != primary:
+                            ordered.append(cs)
+                    if ordered:
+                        self.captions_multi[stem] = ordered
 
-        # ---- Caption T5 embeddings (optional, precomputed offline) ----
-        # `caption_emb_cache` is an .npz mapping motion_id -> [768] f32 vector,
-        # produced by scripts/precompute_t5_captions.py. When absent, every
-        # sample emits a zero embedding + has_text=False so the model trains
-        # fine without text (per the M1.7 spec: text is an OPTIONAL condition).
-        self.caption_embs: dict[str, np.ndarray] = {}
+        # ---- Caption T5 embeddings (M1.7 Phase-2: multi-caption cache) ----
+        # New cache format (per scripts/precompute_t5_captions.py post-2026-05-23):
+        #   .npz keys are '<motion_id>__cap<i>' (i=0 is primary_caption); we
+        #   group by motion_id prefix → list[np.ndarray]. __getitem__ then
+        #   random.choice when random_caption=True, else uses index 0
+        #   (primary) for deterministic val.
+        # Backward compat: old flat '{motion_id: [768]}' cache (single primary
+        # caption per motion) is still loaded — each motion gets a single-element
+        # list, so random.choice is degenerate but functional.
+        self.caption_embs_multi: dict[str, list[np.ndarray]] = {}
         if caption_emb_cache is not None:
             cache_path = Path(caption_emb_cache)
             if not cache_path.exists():
@@ -593,12 +622,35 @@ class AnyTopDataset(Dataset):
                     f"caption_emb_cache not found: {cache_path} "
                     f"(run scripts/precompute_t5_captions.py first)"
                 )
+            # Group by motion_id: collect (idx, emb) per motion, then sort by idx.
+            raw_groups: dict[str, list[tuple[int, np.ndarray]]] = {}
             with np.load(cache_path) as npz:
-                for mid in npz.files:
-                    self.caption_embs[mid] = npz[mid].astype(np.float32)
-            print(f"  [AnyTopDataset] loaded {len(self.caption_embs)} caption "
-                  f"embeddings from {cache_path}")
+                for key in npz.files:
+                    vec = npz[key].astype(np.float32)
+                    if "__cap" in key:
+                        mid, _, idx_str = key.rpartition("__cap")
+                        try:
+                            idx = int(idx_str)
+                        except ValueError:
+                            # Defensive: malformed key, treat as single-cap
+                            mid, idx = key, 0
+                    else:
+                        # Backward compat: legacy single-cap key
+                        mid, idx = key, 0
+                    raw_groups.setdefault(mid, []).append((idx, vec))
+            for mid, lst in raw_groups.items():
+                lst.sort(key=lambda x: x[0])
+                self.caption_embs_multi[mid] = [emb for _, emb in lst]
+            n_motions = len(self.caption_embs_multi)
+            n_caps_total = sum(len(v) for v in self.caption_embs_multi.values())
+            print(f"  [AnyTopDataset] loaded {n_caps_total} caption embeddings "
+                  f"across {n_motions} motions (avg "
+                  f"{n_caps_total/max(n_motions,1):.1f}/motion) from {cache_path}")
         self._caption_emb_dim = 768
+        # random_caption: True (default) = per __getitem__ random.choice; False =
+        # always idx 0 (primary). Train uses True (SALAD-style); val uses False
+        # to keep val_denoise loss deterministic across epochs.
+        self.random_caption = bool(random_caption)
 
         print(
             f"AnyTopDataset [{split}]: {len(self.samples)} motions, "
@@ -840,16 +892,28 @@ class AnyTopDataset(Dataset):
         canonical_names_list = joint_names_list[:]
         bone_lengths_rest_list = bone_per_joint.tolist()
 
-        caption = self.captions.get(info["motion_id"], "")
-        # Caption T5 embedding: cached vector if available, else zeros + has_text
-        # False so the model's text branch contributes nothing for this sample.
-        cap_emb = self.caption_embs.get(info["motion_id"])
-        if cap_emb is not None:
-            caption_emb = cap_emb.astype(np.float32)
+        # M1.7 Phase-2: multi-caption SALAD-style. If `random_caption=True`
+        # (train), pick a random caption per __getitem__; else (val) use
+        # index 0 (= primary) for deterministic val_denoise across epochs.
+        # `caption` (string, for display) tracks the SAME index as the embedding
+        # so logs / animate titles reflect what the model actually saw.
+        caps_emb_list = self.caption_embs_multi.get(info["motion_id"])
+        caps_str_list = self.captions_multi.get(info["motion_id"])
+        if caps_emb_list is not None and len(caps_emb_list) > 0:
+            if self.random_caption and len(caps_emb_list) > 1:
+                idx = random.randrange(len(caps_emb_list))
+            else:
+                idx = 0
+            caption_emb = caps_emb_list[idx].astype(np.float32)
             has_text = True
+            if caps_str_list is not None and idx < len(caps_str_list):
+                caption = caps_str_list[idx]
+            else:
+                caption = self.captions.get(info["motion_id"], "")
         else:
             caption_emb = np.zeros(self._caption_emb_dim, dtype=np.float32)
             has_text = False
+            caption = self.captions.get(info["motion_id"], "")
 
         return {
             # ---- GraphMotionBatch-compatible padded tensors ----

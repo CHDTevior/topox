@@ -240,17 +240,40 @@ def main() -> int:
     )
     if args.anytop_root or ta.get("anytop_root"):
         ds_kwargs["data_root"] = args.anytop_root or ta["anytop_root"]
-    ds_train = AnyTopDataset(split="train", **ds_kwargs)
-    ds_val = AnyTopDataset(split="val", **ds_kwargs)
-    log(f"  ds_train={len(ds_train)}  ds_val={len(ds_val)}")
+    # M1.7 Phase-2 P1 fix (2026-05-23): SALAD-style multi-caption random sample
+    # for train (each __getitem__ picks one of the motion's 5-6 captions at random)
+    # vs deterministic primary-only for val (keeps val_denoise loss stable across
+    # epochs for the best-ckpt gate).
+    ds_train = AnyTopDataset(split="train", random_caption=True, **ds_kwargs)
+    ds_val = AnyTopDataset(split="val", random_caption=False, **ds_kwargs)
+    log(f"  ds_train={len(ds_train)} (random_caption=True)  "
+        f"ds_val={len(ds_val)} (random_caption=False, primary only)")
     if len(ds_train) < args.batch_size:
         raise SystemExit(f"[DATA] train size {len(ds_train)} < batch_size {args.batch_size}")
     if len(ds_val) == 0:
         raise SystemExit("[DATA] val split is empty")
 
-    # ---- Preflight: caption coverage ----
+    # ---- Preflight: caption coverage + multi-cap cache check ----
     log(f"\nPreflight: T5 caption coverage check")
     preflight_caption_coverage(ds_train, ds_val)
+    # Codex P1 (2026-05-23): a legacy single-cap cache would PASS the
+    # has_text coverage check above while silently disabling SALAD-style
+    # multi-cap random sampling. Train must see avg > 1 caption/motion.
+    if ds_train.random_caption:
+        n_cached_motions = len(ds_train.caption_embs_multi)
+        n_total_caps = sum(len(v) for v in ds_train.caption_embs_multi.values())
+        avg_caps = n_total_caps / max(n_cached_motions, 1)
+        log(f"  multi-cap check: {n_total_caps} embeddings across "
+            f"{n_cached_motions} motions (avg {avg_caps:.2f}/motion)")
+        if avg_caps < 1.5:
+            raise SystemExit(
+                f"[PREFLIGHT FAIL] random_caption=True but avg captions per "
+                f"motion = {avg_caps:.2f} (< 1.5). Cache "
+                f"{args.caption_emb_cache!r} looks like a legacy single-cap "
+                f"file. Re-run scripts/precompute_t5_captions.py to produce "
+                f"the multi-cap cache (anytop_caption_t5_*_multi.npz), or pass "
+                f"--cond_drop_prob 0 if you truly intend single-cap training."
+            )
 
     dl_train = DataLoader(
         ds_train, batch_size=args.batch_size, shuffle=True,
@@ -356,13 +379,31 @@ def main() -> int:
 
             loss = masked_v_mse(v_pred, v_target, coarse_mask, frame_mask)
 
+            # P3 fail-fast (2026-05-23): a NaN/Inf loss means upstream maths
+            # diverged (bad lr / bad scheduler / nan input). Crashing here
+            # surfaces the bad step + lr instead of training silently into
+            # all-NaN ckpts.
+            if not torch.isfinite(loss):
+                raise SystemExit(
+                    f"[FAIL] non-finite loss at global_it={global_it} "
+                    f"epoch={epoch} batch_idx={batch_idx} lr={lr_for(global_it):.2e} "
+                    f"loss={loss.item()!r}. Likely lr too high or input NaN; "
+                    f"inspect last ckpt + first NaN batch before relaunching."
+                )
+
             # LR warmup
             cur_lr = lr_for(global_it)
             for pg in opt.param_groups:
                 pg["lr"] = cur_lr
             opt.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(denoiser.parameters(), args.grad_clip)
+            # Codex P2 (2026-05-23): error_if_nonfinite=True (default in modern
+            # PyTorch, set explicitly for version safety) — catches NaN grads
+            # that loss-finite check would have missed.
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                denoiser.parameters(), args.grad_clip,
+                error_if_nonfinite=True,
+            )
             opt.step()
 
             ep_losses.append(loss.item())
@@ -422,6 +463,13 @@ def main() -> int:
                     val_num += diff_sq.sum().item()
                     val_den += mask_f.sum().item() * v_pred.shape[-1]
             val_loss = val_num / max(val_den, 1.0)
+            # Codex P2 (2026-05-23): fail-fast on non-finite val too.
+            if not (val_loss == val_loss and val_loss != float("inf")
+                    and val_loss != float("-inf")):
+                raise SystemExit(
+                    f"[FAIL] non-finite val_loss={val_loss!r} at epoch={epoch}. "
+                    f"Inspect last train iter for upstream divergence."
+                )
             log(f"[val ep{epoch}] dt={time.time()-t_v:.1f}s val_denoise={val_loss:.4f} "
                 f"n_valid_positions={int(val_den/v_pred.shape[-1])}")
 
