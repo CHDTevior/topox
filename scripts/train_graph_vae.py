@@ -199,7 +199,8 @@ def main() -> int:
     p = argparse.ArgumentParser()
     # Pool ablation choice
     p.add_argument("--pool_type",
-                   choices=("dynamic", "deterministic", "soft_deterministic", "none"),
+                   choices=("dynamic", "deterministic", "soft_deterministic",
+                            "edge_segment", "none"),
                    required=True)
     p.add_argument("--pool_tau", type=float, default=None,
                    help="Required when --pool_type soft_deterministic (e.g., 0.5)")
@@ -574,6 +575,14 @@ def main() -> int:
             sd_filtered = {k: v for k, v in sd_filtered.items()
                            if ".geodesic_bias." not in k
                            and ".adjacency_bias." not in k}
+        if args.pool_type == "edge_segment":
+            # v2 EdgeSegmentPool has NO learnable pool.* state (rule-based +
+            # hard assignment + segment mean). A v1 (dynamic/deterministic)
+            # init_ckpt carries pool.q_proj/k_proj/etc — drop them, otherwise
+            # they fire as unexpected on strict-load below. codex P1
+            # 2026-05-23 (019e5693-2fcf-7612-adf4-7e920611e7b2).
+            sd_filtered = {k: v for k, v in sd_filtered.items()
+                           if not k.startswith("pool.")}
         load_result = vae.load_state_dict(sd_filtered, strict=False)
         # Strict: no unexpected baseline keys allowed (after slot_assignment filter)
         if len(load_result.unexpected_keys) > 0:

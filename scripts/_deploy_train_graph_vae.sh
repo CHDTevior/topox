@@ -49,11 +49,11 @@ mkdir -p logs runs .aris/meta
 # ---- required env vars -----------------------------------------------------
 : "${JOBID:?ERROR: JOBID env var required (existing RUNNING alloc jobid)}"
 : "${NODE:?ERROR: NODE env var required (compute node hostname)}"
-: "${POOL_TYPE:?ERROR: POOL_TYPE env var required (dynamic | deterministic | none)}"
+: "${POOL_TYPE:?ERROR: POOL_TYPE env var required (dynamic | deterministic | soft_deterministic | edge_segment | none)}"
 
 case "$POOL_TYPE" in
-    dynamic|deterministic|soft_deterministic|none) : ;;
-    *) echo "[deploy_graph] FATAL: POOL_TYPE='$POOL_TYPE' not in {dynamic,deterministic,soft_deterministic,none}" >&2 ; exit 2 ;;
+    dynamic|deterministic|soft_deterministic|edge_segment|none) : ;;
+    *) echo "[deploy_graph] FATAL: POOL_TYPE='$POOL_TYPE' not in {dynamic,deterministic,soft_deterministic,edge_segment,none}" >&2 ; exit 2 ;;
 esac
 
 # soft_deterministic requires POOL_TAU env (e.g., 0.5)

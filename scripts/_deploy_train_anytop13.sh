@@ -59,10 +59,10 @@ mkdir -p logs runs .aris/meta
 # ---- required env vars -----------------------------------------------------
 : "${JOBID:?ERROR: JOBID env var required (existing RUNNING alloc jobid)}"
 : "${NODE:?ERROR: NODE env var required (compute node hostname)}"
-: "${POOL_TYPE:?ERROR: POOL_TYPE env var required (dynamic|deterministic|soft_deterministic|none)}"
+: "${POOL_TYPE:?ERROR: POOL_TYPE env var required (dynamic|deterministic|soft_deterministic|edge_segment|none)}"
 
 case "$POOL_TYPE" in
-    dynamic|deterministic|soft_deterministic|none) : ;;
+    dynamic|deterministic|soft_deterministic|edge_segment|none) : ;;
     *) echo "[deploy_anytop13] FATAL: POOL_TYPE='$POOL_TYPE' invalid" >&2 ; exit 2 ;;
 esac
 

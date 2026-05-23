@@ -44,6 +44,7 @@ from ..treeik_decoder import TreeIKBlock, fk_persample
 
 from .pool_deterministic import DeterministicGraphPool
 from .pool_dynamic import DynamicGraphPool
+from .pool_edge_segment import EdgeSegmentPool
 from .unpool import DynamicGraphUnpool
 
 
@@ -95,10 +96,10 @@ class GraphMotionVAE(nn.Module):
         n_graph_temporal_layers: int = 4,
     ) -> None:
         super().__init__()
-        if pool_type not in ("dynamic", "deterministic", "soft_deterministic", "none"):
+        if pool_type not in ("dynamic", "deterministic", "soft_deterministic", "edge_segment", "none"):
             raise ValueError(
-                f"pool_type must be 'dynamic'/'deterministic'/'soft_deterministic'/'none', "
-                f"got {pool_type!r}"
+                f"pool_type must be 'dynamic'/'deterministic'/'soft_deterministic'/"
+                f"'edge_segment'/'none', got {pool_type!r}"
             )
         # feat_mode selects the motion representation + decoder head:
         #   "fk6"      — 6ch (local_pos+vel) input, FK decoder -> pred_pos/pred_vel
@@ -237,6 +238,15 @@ class GraphMotionVAE(nn.Module):
                 local_radius=local_radius,
                 temporal_stride=temporal_stride,
                 tau=pool_tau,
+            )
+        elif pool_type == "edge_segment":
+            # v2 chain-segment pool — see pool_edge_segment.py docstring.
+            # Hard 1-of-K assignment, segment-mean pooled_skeleton_embeddings,
+            # zero aux_losses. Does NOT use local_radius (no anchor distance
+            # semantics in v2). pool_tau also unused.
+            self.pool = EdgeSegmentPool(
+                d_model=d_model, max_coarse=max_coarse,
+                temporal_stride=temporal_stride,
             )
         else:  # 'none'
             self.pool = None
