@@ -410,43 +410,39 @@ class DynamicGraphPool(nn.Module):
         }
 
     # ------------------------------------------------------------------ #
-    # Forward                                                             #
+    # Motion-independent geometry (used by VAE.encode_skeleton_only)     #
     # ------------------------------------------------------------------ #
-    def forward(
+    def compute_assignment_and_graph(
         self,
-        joint_features: torch.Tensor,        # [B, T, J, D]
         skeleton_embeddings: torch.Tensor,   # [B, J, D]
         adjacency: torch.Tensor,             # [B, J, J]
         geodesic_dist: torch.Tensor,         # [B, J, J]
         joint_mask: torch.Tensor,            # [B, J]
-        frame_mask: torch.Tensor,            # [B, T]
         parent_indices: Optional[list[list[int]]] = None,
         anchor_indices: Optional[torch.Tensor] = None,   # [B, C_max] long
         coarse_mask: Optional[torch.Tensor] = None,      # [B, C_max] bool
     ) -> dict:
-        """Multi-level pool contract (codex M1.2 pool_dynamic round 1 fix #3):
-          - Level-1 use case (called from M1.3 VAE encoder on fine joints):
-              pass `parent_indices`; this method computes anchors via
-              `find_anchors_rulebased`.
-          - Level-2 use case (called from M1.3 VAE on coarse level-1 features):
-              pass pre-computed `anchor_indices` + `coarse_mask`; this method
-              skips anchor selection.
-        Exactly one of the two anchor-source pairs must be provided.
+        """Compute motion-independent pool outputs: anchor selection + soft
+        assignment + pooled graph + anchor skeleton embeddings + aux losses.
+
+        Does NOT consume motion frames — used by GraphMotionVAE.encode_skeleton_only
+        for the Phase-2 graph-aware denoiser at sampling time, when motion frames
+        are themselves being denoised. forward() calls this internally for the
+        motion-independent half of its work and then layers _pool_features on top.
+
+        Returns dict with: assignment, hard_assignment, pooled_adjacency,
+        pooled_geodesic, pooled_mask (= coarse_mask), pooled_skeleton_embeddings,
+        anchor_indices, aux_losses.
         """
-        # --- Input validation (fail loud) ---
-        if joint_features.dim() != 4 or joint_features.shape[-1] != self.d_model:
+        # --- Input validation (skeleton-side; mirrors forward's R12 contract) ---
+        if skeleton_embeddings.dim() != 3 or skeleton_embeddings.shape[-1] != self.d_model:
             raise ValueError(
-                f"joint_features must be [B, T, J, {self.d_model}], "
-                f"got {tuple(joint_features.shape)}"
-            )
-        B, T, J, D = joint_features.shape
-        if B <= 0 or T <= 0 or J <= 0:
-            raise ValueError(f"empty input: B={B} T={T} J={J}")
-        if skeleton_embeddings.shape != (B, J, D):
-            raise ValueError(
-                f"skeleton_embeddings must be [{B}, {J}, {D}], "
+                f"skeleton_embeddings must be [B, J, {self.d_model}], "
                 f"got {tuple(skeleton_embeddings.shape)}"
             )
+        B, J, D = skeleton_embeddings.shape
+        if B <= 0 or J <= 0:
+            raise ValueError(f"empty input: B={B} J={J}")
         if adjacency.shape != (B, J, J) or geodesic_dist.shape != (B, J, J):
             raise ValueError(
                 f"adjacency/geodesic_dist must be [B={B}, J={J}, J={J}], "
@@ -457,33 +453,24 @@ class DynamicGraphPool(nn.Module):
                 f"joint_mask must be [B={B}, J={J}] bool, "
                 f"got {tuple(joint_mask.shape)} dtype {joint_mask.dtype}"
             )
-        if frame_mask.shape != (B, T) or frame_mask.dtype != torch.bool:
-            raise ValueError(
-                f"frame_mask must be [B={B}, T={T}] bool, "
-                f"got {tuple(frame_mask.shape)} dtype {frame_mask.dtype}"
-            )
-        # --- Device consistency (codex M1.2 round 10 R12 #18 + round 11) ---
-        ref_device = joint_features.device
+        # Device consistency
+        ref_device = skeleton_embeddings.device
         for name, t in (
-            ("skeleton_embeddings", skeleton_embeddings),
             ("adjacency", adjacency),
             ("geodesic_dist", geodesic_dist),
             ("joint_mask", joint_mask),
-            ("frame_mask", frame_mask),
         ):
             if t.device != ref_device:
                 raise ValueError(
                     f"DynamicGraphPool: {name}.device {t.device} != "
-                    f"joint_features.device {ref_device}"
+                    f"skeleton_embeddings.device {ref_device}"
                 )
-        # Module params must also match (else matmul crashes deep).
         module_dev = self.q_proj.weight.device
         if module_dev != ref_device:
             raise ValueError(
                 f"DynamicGraphPool: module device {module_dev} != input device "
                 f"{ref_device}; call .to(device) on the module before forward"
             )
-        # Module dtype must match input float dtype (codex M1.2 round 12).
         module_dtype = self.q_proj.weight.dtype
         if module_dtype != torch.float32:
             raise ValueError(
@@ -491,12 +478,8 @@ class DynamicGraphPool(nn.Module):
                 f"(expected; module must stay fp32 — fp16 overflows + fp64 "
                 f"silently up-casts inputs)"
             )
-
-        # --- Finite-value + dtype + topology guards (codex M1.2 rounds 7/9) ---
-        # Float-tensor dtype: must be float32 (consistent with module dtype;
-        # float64 would silently cast deep at matmul, fp16 overflow).
+        # Dtypes (float tensors)
         for name, t in (
-            ("joint_features", joint_features),
             ("skeleton_embeddings", skeleton_embeddings),
             ("adjacency", adjacency),
             ("geodesic_dist", geodesic_dist),
@@ -505,18 +488,11 @@ class DynamicGraphPool(nn.Module):
                 raise ValueError(
                     f"DynamicGraphPool: {name}.dtype must be float32, got {t.dtype}"
                 )
-        # joint_features and skeleton_embeddings: must be finite. Padded slots
-        # are typically zero; non-finite anywhere would propagate via einsum.
-        if not torch.isfinite(joint_features).all():
-            raise ValueError(
-                "DynamicGraphPool: joint_features contains NaN or Inf"
-            )
+        # Finite
         if not torch.isfinite(skeleton_embeddings).all():
             raise ValueError(
                 "DynamicGraphPool: skeleton_embeddings contains NaN or Inf"
             )
-        # Adjacency: finite, symmetric, zero diagonal (binary-or-soft in [0,1]
-        # is the caller's contract via GraphMotionBatch; we re-check structure).
         if not torch.isfinite(adjacency).all():
             raise ValueError(
                 "DynamicGraphPool: adjacency contains NaN or Inf"
@@ -531,9 +507,6 @@ class DynamicGraphPool(nn.Module):
                 "DynamicGraphPool: adjacency has non-zero diagonal "
                 "(self-loops not permitted)"
             )
-        # Adjacency value-domain (codex M1.2 round 8 R12 #14): binary {0,1} or
-        # soft [0,1]. Negative values would silently corrupt MinCut degree and
-        # bias (similar to attention.py contract).
         if (adjacency < 0).any():
             raise ValueError(
                 "DynamicGraphPool: adjacency contains negative values "
@@ -544,7 +517,6 @@ class DynamicGraphPool(nn.Module):
                 "DynamicGraphPool: adjacency contains values > 1.0 "
                 "(contract is binary {0,1} or soft [0,1])"
             )
-        # Geodesic: NaN/-Inf reject (only +Inf legitimate per Floyd unreachable).
         if torch.isnan(geodesic_dist).any():
             raise ValueError(
                 "DynamicGraphPool: geodesic_dist contains NaN"
@@ -554,20 +526,12 @@ class DynamicGraphPool(nn.Module):
                 "DynamicGraphPool: geodesic_dist contains -Inf "
                 "(only +Inf is legitimate for unreachable pairs)"
             )
-        # Negative finite distances are invalid (Floyd output ≥ 0).
-        # Codex M1.2 round 9 R12 #13.
         finite_geo = geodesic_dist[torch.isfinite(geodesic_dist)]
         if (finite_geo < 0).any():
             raise ValueError(
                 "DynamicGraphPool: geodesic_dist has negative finite entries "
                 "(distances must be ≥ 0)"
             )
-        # (Floyd consistency check moved to AFTER all mask validation — must run
-        # last so mask-violation errors fire with their own clear message rather
-        # than getting masked by Floyd's downstream mismatch.)
-        # Geodesic symmetry + zero diagonal (codex M1.2 round 8 K/L):
-        # mirror the adjacency checks. Use finite-pattern symmetry to allow
-        # +Inf at corresponding positions on both sides.
         gt = geodesic_dist.transpose(-2, -1)
         finite_g = torch.isfinite(geodesic_dist)
         finite_gt = torch.isfinite(gt)
@@ -583,8 +547,6 @@ class DynamicGraphPool(nn.Module):
             raise ValueError(
                 "DynamicGraphPool: geodesic_dist is not symmetric on finite entries"
             )
-        # Zero diagonal at valid nodes (i→i distance must be 0)
-        # NOTE: padded slots may have anything (we don't probe them).
         diag = geodesic_dist.diagonal(dim1=-2, dim2=-1)  # [B, J]
         if ((diag != 0) & joint_mask).any():
             raise ValueError(
@@ -592,20 +554,12 @@ class DynamicGraphPool(nn.Module):
                 "at valid nodes (i→i distance must be 0)"
             )
 
-        # Per-sample non-empty joint_mask (codex M1.2 round 3 fix #2):
-        # All-False joint_mask + parent_indices=[[]] silently produces finite
-        # zero output otherwise.
         if not joint_mask.any(dim=-1).all():
             bad = (~joint_mask.any(dim=-1)).nonzero(as_tuple=False).flatten().tolist()
             raise ValueError(
                 f"DynamicGraphPool: batch element(s) {bad} have all-False "
                 f"joint_mask (sample has zero valid joints; pool undefined)"
             )
-        # Per-sample joint_mask must be a CONTIGUOUS True-prefix (codex M1.2
-        # round 5 R12 #11): a hole like [T,T,T,F,T,T] makes compact
-        # parent_indices (length=mask.sum()) alias to wrong raw joint indices.
-        # Anchors emitted in compact-index space then index back into raw
-        # [B, J, D] tensors → silent topological corruption.
         for b in range(B):
             jm_b = joint_mask[b]
             j_valid_b = int(jm_b.sum().item())
@@ -621,11 +575,6 @@ class DynamicGraphPool(nn.Module):
                     f"padded region [{j_valid_b}:{J})"
                 )
 
-        # --- R12 #19: geodesic must equal Floyd(adjacency, joint_mask) ---
-        # Runs LAST among validity checks so all mask + adj + geo structural
-        # violations fire with their own messages first. Otherwise a hole in
-        # joint_mask or wrong adj would surface as "geo inconsistent with adj"
-        # which hides the real bug. Codex M1.2 round 11.
         expected_geo = floyd_shortest_path(adjacency, joint_mask)
         both_valid = joint_mask.unsqueeze(-1) & joint_mask.unsqueeze(1)
         finite_actual = torch.isfinite(geodesic_dist) & both_valid
@@ -645,17 +594,7 @@ class DynamicGraphPool(nn.Module):
                 "shortest-path over adjacency"
             )
 
-        # T must divide temporal_stride evenly (codex M1.2 round 2 fix #3):
-        # else frame_mask.view(B, T_lat, stride) crashes deep in _pool_features.
-        if T % self.temporal_stride != 0:
-            raise ValueError(
-                f"DynamicGraphPool: T={T} must be divisible by "
-                f"temporal_stride={self.temporal_stride} (pad upstream)"
-            )
-
-        # Anchor-source contract (codex M1.2 round 2 fix #1):
-        #   Provide EITHER parent_indices alone OR (anchor_indices AND coarse_mask)
-        #   together. Partial (only one of anchor_indices / coarse_mask) is a bug.
+        # --- Anchor source contract ---
         n_anchor_args = int(anchor_indices is not None) + int(coarse_mask is not None)
         if n_anchor_args == 1:
             which = "anchor_indices" if anchor_indices is not None else "coarse_mask"
@@ -681,7 +620,6 @@ class DynamicGraphPool(nn.Module):
                     f"parent_indices must be list of length B={B}, "
                     f"got {type(parent_indices).__name__}"
                 )
-            # Per-sample length must match joint_mask.sum (codex M1.2 fix #2)
             for b in range(B):
                 j_valid = int(joint_mask[b].sum().item())
                 if len(parent_indices[b]) != j_valid:
@@ -689,9 +627,6 @@ class DynamicGraphPool(nn.Module):
                         f"DynamicGraphPool: parent_indices[{b}] length "
                         f"{len(parent_indices[b])} != joint_mask[{b}].sum() = {j_valid}"
                     )
-                # FK ordering invariant (root=0 + parents[j]<j for j>0; codex
-                # M1.2 round 14 advisory promoted to required). TopoFKDecoder
-                # downstream WILL crash on non-FK-ordered parents.
                 try:
                     assert_root_first_parent_order(parent_indices[b])
                 except ValueError as e:
@@ -699,9 +634,6 @@ class DynamicGraphPool(nn.Module):
                         f"DynamicGraphPool: parent_indices[{b}] violates FK "
                         f"ordering invariant (root=0 + parents[j]<j) — {e}"
                     ) from e
-                # parent_indices must encode the SAME graph as adjacency[b]
-                # (codex M1.2 round 13 R12 #21 + round 14 #22). atol=0 because
-                # adjacency is binary {0,1} — any non-zero entry counts as edge.
                 pi_b = parent_indices[b]
                 expected_adj_sub = torch.zeros(j_valid, j_valid, dtype=adjacency.dtype,
                                                device=adjacency.device)
@@ -710,8 +642,6 @@ class DynamicGraphPool(nn.Module):
                         expected_adj_sub[j, p] = 1.0
                         expected_adj_sub[p, j] = 1.0
                 actual_adj_sub = adjacency[b, :j_valid, :j_valid]
-                # Use exact equality (binary contract); the rest of the
-                # forward path also assumes 0/1 entries elsewhere.
                 if not torch.equal(actual_adj_sub, expected_adj_sub):
                     raise ValueError(
                         f"DynamicGraphPool: sample {b} parent_indices does not "
@@ -719,7 +649,7 @@ class DynamicGraphPool(nn.Module):
                         f"non-zero entry counts as an edge in Floyd)"
                     )
 
-        device = joint_features.device
+        device = skeleton_embeddings.device
 
         # --- 1. Anchor selection ---
         if has_parents:
@@ -727,7 +657,6 @@ class DynamicGraphPool(nn.Module):
             anchor_indices = anchor_indices.to(device)
             coarse_mask = coarse_mask.to(device)
         else:
-            # Validate provided anchor_indices + coarse_mask
             if anchor_indices.shape != (B, self.max_coarse):
                 raise ValueError(
                     f"anchor_indices shape must be (B={B}, max_coarse={self.max_coarse}), "
@@ -742,9 +671,6 @@ class DynamicGraphPool(nn.Module):
                     f"coarse_mask must be ({B}, {self.max_coarse}) bool, "
                     f"got {tuple(coarse_mask.shape)} dtype {coarse_mask.dtype}"
                 )
-            # Padded slots (coarse_mask=False) must be exactly -1 sentinel
-            # (codex M1.2 round 15 R12 #23). Match rule-based path which
-            # writes -1 in padded slots.
             padded_slots = ~coarse_mask
             if padded_slots.any():
                 padded_vals = anchor_indices[padded_slots]
@@ -755,11 +681,6 @@ class DynamicGraphPool(nn.Module):
                         f"must be -1 sentinel; first offending (b, slot) = "
                         f"({bad_pos[0, 0].item()}, {bad_pos[0, 1].item()})"
                     )
-            # Range check on ALL anchor_indices entries (codex M1.2 round 2 fix #2):
-            # even masked-False slots will pass through `gather` deep in compute
-            # — they must be safe values in [-1, J), where -1 is the sentinel
-            # for "padded slot" (downstream clamps to 0 + masks). Values like
-            # 9999 in a masked slot would silently corrupt the gather output.
             if (anchor_indices < -1).any() or (anchor_indices >= J).any():
                 bad = (anchor_indices < -1) | (anchor_indices >= J)
                 pos = bad.nonzero(as_tuple=False)
@@ -769,12 +690,6 @@ class DynamicGraphPool(nn.Module):
                     f"({pos[0, 0].item()}, {pos[0, 1].item()}), value = "
                     f"{anchor_indices[pos[0, 0], pos[0, 1]].item()}"
                 )
-            # Active slots: anchor must be a valid joint, unique, strictly
-            # ascending (matches rule-based path which emits sorted unique
-            # anchors; codex M1.2 round 3 fix #1). Plus coarse_mask must be
-            # a CONTIGUOUS prefix of True — codex M1.2 round 4 R12 fix #9:
-            # rule-based `_select_anchors` writes active slots from index 0
-            # contiguously, so override path must match that convention.
             for b in range(B):
                 valid_anchor_mask = coarse_mask[b]
                 if not valid_anchor_mask.any():
@@ -782,7 +697,6 @@ class DynamicGraphPool(nn.Module):
                         f"DynamicGraphPool: sample {b} has zero active coarse "
                         f"slots (coarse_mask all False); pool undefined"
                     )
-                # Prefix-active check: True entries must be in [0, c_valid_b).
                 c_valid_b = int(valid_anchor_mask.sum().item())
                 if not valid_anchor_mask[:c_valid_b].all():
                     raise ValueError(
@@ -806,7 +720,6 @@ class DynamicGraphPool(nn.Module):
                         f"DynamicGraphPool: sample {b} anchor_indices point "
                         f"to padded joints (anchors must be valid joints)"
                     )
-                # Strictly ascending → no duplicates AND sorted.
                 if len(valid_anchors) > 1:
                     diffs = valid_anchors[1:] - valid_anchors[:-1]
                     if (diffs <= 0).any():
@@ -816,9 +729,6 @@ class DynamicGraphPool(nn.Module):
                             f"+ unique to match rule-based path contract); "
                             f"got {valid_anchors.tolist()}"
                         )
-                # Root invariant: rule-based path (find_anchors_rulebased)
-                # always emits joint 0 (the root) as the first anchor; override
-                # path must match. Codex M1.2 round 6 R12 #12.
                 if valid_anchors[0].item() != 0:
                     raise ValueError(
                         f"DynamicGraphPool: sample {b} anchor_indices missing "
@@ -826,7 +736,6 @@ class DynamicGraphPool(nn.Module):
                         f"match rule-based path contract; got first anchor = "
                         f"{valid_anchors[0].item()}"
                     )
-            # Device normalization (codex M1.2 round 2 fix advisory)
             anchor_indices = anchor_indices.to(device)
             coarse_mask = coarse_mask.to(device)
 
@@ -836,17 +745,12 @@ class DynamicGraphPool(nn.Module):
             anchor_indices, coarse_mask,
         )
 
-        # --- 3. Feature pool + temporal downsample ---
-        pooled_features, frame_mask_down = self._pool_features(
-            joint_features, P, frame_mask,
-        )
-
-        # --- 4. Pooled graph ---
+        # --- 3. Pooled graph ---
         hard_assignment, pooled_adj, pooled_geo = self._build_pooled_graph(
             adjacency, P, joint_mask, coarse_mask,
         )
 
-        # --- 5. Anchor skeleton embeddings (RAW gather; NOT Wk-projected.
+        # --- 4. Anchor skeleton embeddings (RAW gather; NOT Wk-projected.
         # Wk is private to assignment scoring — exposing it would corrupt
         # downstream re-projection; M1.3 VAE wants raw skeleton conditioning.
         # Codex M1.2 round 1 confirmed RAW is correct.) ---
@@ -855,20 +759,110 @@ class DynamicGraphPool(nn.Module):
         pooled_skeleton_embeddings = torch.gather(skeleton_embeddings, dim=1, index=idx)
         pooled_skeleton_embeddings = pooled_skeleton_embeddings * coarse_mask.unsqueeze(-1).to(pooled_skeleton_embeddings.dtype)
 
-        # --- 6. Aux losses ---
+        # --- 5. Aux losses ---
         aux_losses = self._compute_aux_losses(
             P, adjacency, geodesic_dist, joint_mask, coarse_mask, anchor_indices,
         )
 
         return {
-            "pooled_features": pooled_features,
             "assignment": P,
             "hard_assignment": hard_assignment,
             "pooled_adjacency": pooled_adj,
             "pooled_geodesic": pooled_geo,
             "pooled_mask": coarse_mask,
             "pooled_skeleton_embeddings": pooled_skeleton_embeddings,
-            "frame_mask_down": frame_mask_down,
             "anchor_indices": anchor_indices,
             "aux_losses": aux_losses,
+        }
+
+    # ------------------------------------------------------------------ #
+    # Forward (motion-dep: validates motion inputs + delegates geometry) #
+    # ------------------------------------------------------------------ #
+    def forward(
+        self,
+        joint_features: torch.Tensor,        # [B, T, J, D]
+        skeleton_embeddings: torch.Tensor,   # [B, J, D]
+        adjacency: torch.Tensor,             # [B, J, J]
+        geodesic_dist: torch.Tensor,         # [B, J, J]
+        joint_mask: torch.Tensor,            # [B, J]
+        frame_mask: torch.Tensor,            # [B, T]
+        parent_indices: Optional[list[list[int]]] = None,
+        anchor_indices: Optional[torch.Tensor] = None,   # [B, C_max] long
+        coarse_mask: Optional[torch.Tensor] = None,      # [B, C_max] bool
+    ) -> dict:
+        """Multi-level pool contract (codex M1.2 pool_dynamic round 1 fix #3):
+          - Level-1 use case (called from M1.3 VAE encoder on fine joints):
+              pass `parent_indices`; this method computes anchors via
+              `find_anchors_rulebased`.
+          - Level-2 use case (called from M1.3 VAE on coarse level-1 features):
+              pass pre-computed `anchor_indices` + `coarse_mask`; this method
+              skips anchor selection.
+        Exactly one of the two anchor-source pairs must be provided.
+        """
+        # --- Motion-side input validation ---
+        if joint_features.dim() != 4 or joint_features.shape[-1] != self.d_model:
+            raise ValueError(
+                f"joint_features must be [B, T, J, {self.d_model}], "
+                f"got {tuple(joint_features.shape)}"
+            )
+        B, T, J, D = joint_features.shape
+        if B <= 0 or T <= 0 or J <= 0:
+            raise ValueError(f"empty input: B={B} T={T} J={J}")
+        if skeleton_embeddings.shape != (B, J, D):
+            raise ValueError(
+                f"skeleton_embeddings must be [{B}, {J}, {D}], "
+                f"got {tuple(skeleton_embeddings.shape)}"
+            )
+        if frame_mask.shape != (B, T) or frame_mask.dtype != torch.bool:
+            raise ValueError(
+                f"frame_mask must be [B={B}, T={T}] bool, "
+                f"got {tuple(frame_mask.shape)} dtype {frame_mask.dtype}"
+            )
+        # Device consistency for motion-side inputs
+        ref_device = joint_features.device
+        if frame_mask.device != ref_device:
+            raise ValueError(
+                f"DynamicGraphPool: frame_mask.device {frame_mask.device} != "
+                f"joint_features.device {ref_device}"
+            )
+        if skeleton_embeddings.device != ref_device:
+            raise ValueError(
+                f"DynamicGraphPool: skeleton_embeddings.device "
+                f"{skeleton_embeddings.device} != joint_features.device {ref_device}"
+            )
+        if joint_features.dtype != torch.float32:
+            raise ValueError(
+                f"DynamicGraphPool: joint_features.dtype must be float32, "
+                f"got {joint_features.dtype}"
+            )
+        if not torch.isfinite(joint_features).all():
+            raise ValueError(
+                "DynamicGraphPool: joint_features contains NaN or Inf"
+            )
+        if T % self.temporal_stride != 0:
+            raise ValueError(
+                f"DynamicGraphPool: T={T} must be divisible by "
+                f"temporal_stride={self.temporal_stride} (pad upstream)"
+            )
+
+        # --- Motion-independent geometry (anchor + assignment + graph + skel_emb + aux) ---
+        geom = self.compute_assignment_and_graph(
+            skeleton_embeddings=skeleton_embeddings,
+            adjacency=adjacency,
+            geodesic_dist=geodesic_dist,
+            joint_mask=joint_mask,
+            parent_indices=parent_indices,
+            anchor_indices=anchor_indices,
+            coarse_mask=coarse_mask,
+        )
+
+        # --- Feature pool + temporal downsample (motion-dependent) ---
+        pooled_features, frame_mask_down = self._pool_features(
+            joint_features, geom["assignment"], frame_mask,
+        )
+
+        return {
+            "pooled_features": pooled_features,
+            "frame_mask_down": frame_mask_down,
+            **geom,
         }

@@ -299,54 +299,56 @@ class DeterministicGraphPool(nn.Module):
         }
 
     # ------------------------------------------------------------------ #
-    # Forward                                                            #
+    # Motion-independent geometry (used by VAE.encode_skeleton_only)     #
     # ------------------------------------------------------------------ #
-    def forward(
+    def compute_assignment_and_graph(
         self,
-        joint_features: torch.Tensor,
         skeleton_embeddings: torch.Tensor,
         adjacency: torch.Tensor,
         geodesic_dist: torch.Tensor,
         joint_mask: torch.Tensor,
-        frame_mask: torch.Tensor,
         parent_indices: Optional[list[list[int]]] = None,
         anchor_indices: Optional[torch.Tensor] = None,
         coarse_mask: Optional[torch.Tensor] = None,
     ) -> dict:
-        # --- Input validation (mirrors DynamicGraphPool R12 contract) ---
-        if joint_features.dim() != 4 or joint_features.shape[-1] != self.d_model:
+        """Compute motion-independent pool outputs (parity with DynamicGraphPool).
+
+        Does NOT consume motion frames — used by GraphMotionVAE.encode_skeleton_only
+        for the Phase-2 graph-aware denoiser at sampling time. forward() calls
+        this internally for the motion-independent half of its work and then
+        layers _pool_features on top.
+
+        Returns dict with: assignment, hard_assignment, pooled_adjacency,
+        pooled_geodesic, pooled_mask (= coarse_mask), pooled_skeleton_embeddings,
+        anchor_indices, aux_losses.
+        """
+        # --- Input validation (skeleton-side; mirrors forward's contract) ---
+        if skeleton_embeddings.dim() != 3 or skeleton_embeddings.shape[-1] != self.d_model:
             raise ValueError(
-                f"joint_features must be [B, T, J, {self.d_model}], got {tuple(joint_features.shape)}"
+                f"skeleton_embeddings must be [B, J, {self.d_model}], got {tuple(skeleton_embeddings.shape)}"
             )
-        B, T, J, D = joint_features.shape
-        if B <= 0 or T <= 0 or J <= 0:
-            raise ValueError(f"empty input: B={B} T={T} J={J}")
-        if skeleton_embeddings.shape != (B, J, D):
-            raise ValueError(f"skeleton_embeddings shape mismatch: {tuple(skeleton_embeddings.shape)}")
+        B, J, D = skeleton_embeddings.shape
+        if B <= 0 or J <= 0:
+            raise ValueError(f"empty input: B={B} J={J}")
         if adjacency.shape != (B, J, J) or geodesic_dist.shape != (B, J, J):
             raise ValueError(
                 f"adjacency/geodesic shape mismatch: {tuple(adjacency.shape)} / {tuple(geodesic_dist.shape)}"
             )
         if joint_mask.shape != (B, J) or joint_mask.dtype != torch.bool:
             raise ValueError(f"joint_mask must be [B, J] bool, got {tuple(joint_mask.shape)} {joint_mask.dtype}")
-        if frame_mask.shape != (B, T) or frame_mask.dtype != torch.bool:
-            raise ValueError(f"frame_mask must be [B, T] bool, got {tuple(frame_mask.shape)} {frame_mask.dtype}")
 
         # Device consistency
-        ref_device = joint_features.device
+        ref_device = skeleton_embeddings.device
         for name, t in (
-            ("skeleton_embeddings", skeleton_embeddings),
             ("adjacency", adjacency),
             ("geodesic_dist", geodesic_dist),
             ("joint_mask", joint_mask),
-            ("frame_mask", frame_mask),
         ):
             if t.device != ref_device:
-                raise ValueError(f"{name}.device {t.device} != joint_features.device {ref_device}")
+                raise ValueError(f"{name}.device {t.device} != skeleton_embeddings.device {ref_device}")
 
-        # Dtype: all float tensors must be float32
+        # Dtypes
         for name, t in (
-            ("joint_features", joint_features),
             ("skeleton_embeddings", skeleton_embeddings),
             ("adjacency", adjacency),
             ("geodesic_dist", geodesic_dist),
@@ -354,13 +356,11 @@ class DeterministicGraphPool(nn.Module):
             if t.dtype != torch.float32:
                 raise ValueError(f"{name}.dtype must be float32, got {t.dtype}")
 
-        # Finite checks
-        for name, t in (("joint_features", joint_features), ("skeleton_embeddings", skeleton_embeddings)):
-            if not torch.isfinite(t).all():
-                raise ValueError(f"{name} contains NaN or Inf")
+        # Finite
+        if not torch.isfinite(skeleton_embeddings).all():
+            raise ValueError("skeleton_embeddings contains NaN or Inf")
         if not torch.isfinite(adjacency).all():
             raise ValueError("adjacency contains NaN or Inf")
-        # Adjacency value-domain + structure
         if (adjacency < 0).any():
             raise ValueError("adjacency contains negative values")
         if (adjacency > 1.0).any():
@@ -378,13 +378,10 @@ class DeterministicGraphPool(nn.Module):
         finite_geo = geodesic_dist[torch.isfinite(geodesic_dist)]
         if (finite_geo < 0).any():
             raise ValueError("geodesic_dist has negative finite entries")
-        # Hop-bound check restricted to valid (joint_mask=True) pairs only;
-        # padded entries are ignored downstream (parity with pool_dynamic).
         both_valid_jj = joint_mask.unsqueeze(-1) & joint_mask.unsqueeze(1)
         valid_finite_geo = geodesic_dist[torch.isfinite(geodesic_dist) & both_valid_jj]
         if (valid_finite_geo > (J - 1)).any():
             raise ValueError(f"geodesic_dist has finite entries > {J - 1} on valid pairs")
-        # Geo symmetry (finite/+Inf pattern + finite-value)
         gt = geodesic_dist.transpose(-2, -1)
         finite_g = torch.isfinite(geodesic_dist)
         finite_gt = torch.isfinite(gt)
@@ -397,7 +394,7 @@ class DeterministicGraphPool(nn.Module):
         if ((diag != 0) & joint_mask).any():
             raise ValueError("geodesic_dist has non-zero diagonal at valid nodes")
 
-        # Mask contiguity (per-sample prefix-True)
+        # Mask contiguity
         if not joint_mask.any(dim=-1).all():
             raise ValueError("joint_mask has all-False rows")
         for b in range(B):
@@ -408,10 +405,7 @@ class DeterministicGraphPool(nn.Module):
             if j_valid_b < J and jm_b[j_valid_b:].any():
                 raise ValueError(f"joint_mask[{b}] True in padded region")
 
-        if T % self.temporal_stride != 0:
-            raise ValueError(f"T={T} must be divisible by temporal_stride={self.temporal_stride}")
-
-        # Anchor source XOR (same contract as DynamicGraphPool)
+        # Anchor source XOR
         n_anchor_args = int(anchor_indices is not None) + int(coarse_mask is not None)
         if n_anchor_args == 1:
             which = "anchor_indices" if anchor_indices is not None else "coarse_mask"
@@ -465,14 +459,12 @@ class DeterministicGraphPool(nn.Module):
             anchor_indices = anchor_indices.to(ref_device)
             coarse_mask = coarse_mask.to(ref_device)
         else:
-            # Validate provided anchor_indices + coarse_mask
             if anchor_indices.shape != (B, self.max_coarse):
                 raise ValueError(f"anchor_indices shape mismatch: {tuple(anchor_indices.shape)}")
             if anchor_indices.dtype != torch.long:
                 raise ValueError(f"anchor_indices must be int64, got {anchor_indices.dtype}")
             if coarse_mask.shape != (B, self.max_coarse) or coarse_mask.dtype != torch.bool:
                 raise ValueError(f"coarse_mask must be [B, max_coarse] bool")
-            # Padded sentinel -1
             padded_slots = ~coarse_mask
             if padded_slots.any():
                 padded_vals = anchor_indices[padded_slots]
@@ -503,18 +495,15 @@ class DeterministicGraphPool(nn.Module):
             anchor_indices = anchor_indices.to(ref_device)
             coarse_mask = coarse_mask.to(ref_device)
 
-        # --- 1. Hard assignment ---
+        # --- 1. Hard (or soft) assignment ---
         P = self._compute_assignment(geodesic_dist, joint_mask, anchor_indices, coarse_mask)
 
-        # --- 2. Feature pool ---
-        pooled_features, frame_mask_down = self._pool_features(joint_features, P, frame_mask)
-
-        # --- 3. Pooled graph ---
+        # --- 2. Pooled graph ---
         hard_assignment, pooled_adj, pooled_geo = self._build_pooled_graph(
             adjacency, P, joint_mask, coarse_mask
         )
 
-        # --- 4. Anchor skeleton embeddings (raw gather) ---
+        # --- 3. Anchor skeleton embeddings (raw gather) ---
         safe_anchor = anchor_indices.clamp(min=0)
         idx = safe_anchor.unsqueeze(-1).expand(-1, -1, D)
         pooled_skeleton_embeddings = torch.gather(skeleton_embeddings, dim=1, index=idx)
@@ -522,20 +511,79 @@ class DeterministicGraphPool(nn.Module):
             pooled_skeleton_embeddings * coarse_mask.unsqueeze(-1).to(pooled_skeleton_embeddings.dtype)
         )
 
-        # --- 5. Aux losses ---
+        # --- 4. Aux losses ---
         aux_losses = self._compute_aux_losses(
             P, geodesic_dist, joint_mask, coarse_mask, anchor_indices
         )
 
         return {
-            "pooled_features": pooled_features,
             "assignment": P,
             "hard_assignment": hard_assignment,
             "pooled_adjacency": pooled_adj,
             "pooled_geodesic": pooled_geo,
             "pooled_mask": coarse_mask,
             "pooled_skeleton_embeddings": pooled_skeleton_embeddings,
-            "frame_mask_down": frame_mask_down,
             "anchor_indices": anchor_indices,
             "aux_losses": aux_losses,
+        }
+
+    # ------------------------------------------------------------------ #
+    # Forward (motion-dep: validates motion inputs + delegates geometry) #
+    # ------------------------------------------------------------------ #
+    def forward(
+        self,
+        joint_features: torch.Tensor,
+        skeleton_embeddings: torch.Tensor,
+        adjacency: torch.Tensor,
+        geodesic_dist: torch.Tensor,
+        joint_mask: torch.Tensor,
+        frame_mask: torch.Tensor,
+        parent_indices: Optional[list[list[int]]] = None,
+        anchor_indices: Optional[torch.Tensor] = None,
+        coarse_mask: Optional[torch.Tensor] = None,
+    ) -> dict:
+        # --- Motion-side validation ---
+        if joint_features.dim() != 4 or joint_features.shape[-1] != self.d_model:
+            raise ValueError(
+                f"joint_features must be [B, T, J, {self.d_model}], got {tuple(joint_features.shape)}"
+            )
+        B, T, J, D = joint_features.shape
+        if B <= 0 or T <= 0 or J <= 0:
+            raise ValueError(f"empty input: B={B} T={T} J={J}")
+        if skeleton_embeddings.shape != (B, J, D):
+            raise ValueError(f"skeleton_embeddings shape mismatch: {tuple(skeleton_embeddings.shape)}")
+        if frame_mask.shape != (B, T) or frame_mask.dtype != torch.bool:
+            raise ValueError(f"frame_mask must be [B, T] bool, got {tuple(frame_mask.shape)} {frame_mask.dtype}")
+        ref_device = joint_features.device
+        if frame_mask.device != ref_device:
+            raise ValueError(f"frame_mask.device {frame_mask.device} != joint_features.device {ref_device}")
+        if skeleton_embeddings.device != ref_device:
+            raise ValueError(
+                f"skeleton_embeddings.device {skeleton_embeddings.device} != joint_features.device {ref_device}"
+            )
+        if joint_features.dtype != torch.float32:
+            raise ValueError(f"joint_features.dtype must be float32, got {joint_features.dtype}")
+        if not torch.isfinite(joint_features).all():
+            raise ValueError("joint_features contains NaN or Inf")
+        if T % self.temporal_stride != 0:
+            raise ValueError(f"T={T} must be divisible by temporal_stride={self.temporal_stride}")
+
+        # --- Motion-independent geometry ---
+        geom = self.compute_assignment_and_graph(
+            skeleton_embeddings=skeleton_embeddings,
+            adjacency=adjacency,
+            geodesic_dist=geodesic_dist,
+            joint_mask=joint_mask,
+            parent_indices=parent_indices,
+            anchor_indices=anchor_indices,
+            coarse_mask=coarse_mask,
+        )
+
+        # --- Feature pool (motion-dependent) ---
+        pooled_features, frame_mask_down = self._pool_features(joint_features, geom["assignment"], frame_mask)
+
+        return {
+            "pooled_features": pooled_features,
+            "frame_mask_down": frame_mask_down,
+            **geom,
         }

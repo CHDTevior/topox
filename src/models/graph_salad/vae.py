@@ -337,7 +337,23 @@ class GraphMotionVAE(nn.Module):
     def encode(self, batch: "GraphMotionBatch", sample: bool | None = None) -> dict:
         """Encoder → SlotNorm → Pool → Gaussian latent head.
 
-        Returns dict with z, mu, logvar, plus graph_info needed by decode.
+        Returns the latent (z, mu, logvar) plus the graph metadata needed by
+        both decode() AND a future Phase-2 graph-aware denoiser:
+            z, mu, logvar, s_j, assignment, coarse_mask, frame_mask_lat,
+            aux_losses, pooled_adjacency, pooled_geodesic, hard_assignment,
+            pooled_skeleton_embeddings, anchor_indices.
+
+        The Phase-2 keys (pooled_adjacency / pooled_geodesic / hard_assignment /
+        pooled_skeleton_embeddings / anchor_indices) are pure intermediates the
+        pool already computes — exposing them is wiring-only (no new compute,
+        no parameter change, no ckpt-envelope change). A frozen Phase-1 VAE
+        checkpoint loads strict=True unchanged.
+
+        For pool_type='none' the contract is uniform: pooled_adjacency /
+        pooled_geodesic = batch.adjacency / batch.geodesic_dist (C == J, each
+        joint is its own slot); hard_assignment / anchor_indices are identity
+        (arange), with anchor_indices padded entries set to -1 per the pool
+        variants' convention.
 
         Args:
             sample: if None (default), follows self.training (sample in train,
@@ -406,6 +422,15 @@ class GraphMotionVAE(nn.Module):
             frame_mask_lat = pool_out["frame_mask_down"]
             assignment = pool_out["assignment"]
             aux_losses = pool_out["aux_losses"]
+            # M2 Phase-2 wiring: surface the pool's coarse-graph metadata so a
+            # downstream graph-aware denoiser can condition on it + sampling can
+            # decode without recomputing. Pure pass-through of intermediates the
+            # pool already produced.
+            pooled_adjacency = pool_out["pooled_adjacency"]                  # [B, C, C]
+            pooled_geodesic = pool_out["pooled_geodesic"]                    # [B, C, C]
+            hard_assignment = pool_out["hard_assignment"]                    # [B, J] long
+            pooled_skeleton_embeddings = pool_out["pooled_skeleton_embeddings"]  # [B, C, D]
+            anchor_indices = pool_out["anchor_indices"]                      # [B, C] long, -1 = padded
         else:
             # No-pool: temporal compress only; skeletal dim unchanged
             B, T, J, D = h0.shape
@@ -433,6 +458,20 @@ class GraphMotionVAE(nn.Module):
                 "locality": torch.zeros((), device=h0.device, dtype=h0.dtype),
                 "entropy": torch.zeros((), device=h0.device, dtype=h0.dtype),
             }
+            # M2 Phase-2 wiring: no-pool identity equivalents (C == J, each
+            # joint is its own slot). Mirrors the pool variants' schema so
+            # encode()'s contract is uniform across pool_type.
+            arange_j = torch.arange(
+                J, device=h0.device, dtype=torch.long
+            ).unsqueeze(0).expand(B, J)
+            pooled_adjacency = batch.adjacency                               # [B, J, J]
+            pooled_geodesic = batch.geodesic_dist                            # [B, J, J]
+            hard_assignment = arange_j.contiguous()                          # [B, J] j -> j
+            pooled_skeleton_embeddings = s_j                                 # [B, J, D]
+            anchor_indices = torch.where(
+                batch.joint_mask, arange_j,
+                torch.full_like(arange_j, -1),
+            )                                                                 # [B, J] -1 = padded
 
         # Gaussian latent head
         dist_out = self.dist(h_lat)  # [B, T_lat, C, 2D]
@@ -457,7 +496,96 @@ class GraphMotionVAE(nn.Module):
             "coarse_mask": coarse_mask,
             "frame_mask_lat": frame_mask_lat,
             "aux_losses": aux_losses,
+            # M2 Phase-2 wiring (graph-aware denoiser conditioning + decode-time
+            # sampling). forward() auto-propagates via {**enc, **dec, ...}.
+            "pooled_adjacency": pooled_adjacency,
+            "pooled_geodesic": pooled_geodesic,
+            "hard_assignment": hard_assignment,
+            "pooled_skeleton_embeddings": pooled_skeleton_embeddings,
+            "anchor_indices": anchor_indices,
         }
+
+    def encode_skeleton_only(self, batch: "GraphMotionBatch") -> dict:
+        """Compute coarse-graph metadata (motion-independent pool outputs)
+        without consuming motion frames. Used by the Phase-2 graph-aware
+        denoiser at sampling time, when motion is itself the unknown being
+        denoised and z_T is initialized from N(0,I).
+
+        Returns a schema-aligned subset of encode()'s Phase-2 keys, plus s_j
+        and the soft assignment matrix:
+            s_j, pooled_adjacency, pooled_geodesic, coarse_mask,
+            pooled_skeleton_embeddings, anchor_indices, hard_assignment, assignment
+
+        For pool variants: delegates to pool.compute_assignment_and_graph(...).
+        For pool_type='none': synthesizes identity equivalents (same convention
+        as encode()'s else branch — C == J, each joint is its own slot).
+
+        Caller is responsible for the freeze contract (vae.eval() +
+        with torch.no_grad(): ...) at the Phase-2 denoiser training/sampling site.
+
+        Note: when called on a DDP-wrapped model, dispatch through
+        `vae.module.encode_skeleton_only(...)` — PyTorch's DDP only proxies
+        `forward()` on the wrapper.
+        """
+        # Graphormer-attn bias tensors (only when attn_mode=graphormer)
+        if self.attn_mode == "graphormer":
+            if batch.anytop_graph_dist is None or batch.anytop_joint_relations is None:
+                raise ValueError(
+                    "GraphMotionVAE(attn_mode=graphormer) requires "
+                    "batch.anytop_graph_dist + batch.anytop_joint_relations; "
+                    "use --dataset anytop_truebones"
+                )
+            _gd, _jr = batch.anytop_graph_dist, batch.anytop_joint_relations
+        else:
+            _gd, _jr = None, None
+
+        s_j = self.encoder.encode_skeleton(
+            batch.skeleton_features,
+            batch.adjacency,
+            batch.geodesic_dist,
+            batch.joint_mask,
+            name_hashes=batch.name_hashes,
+            graph_dist=_gd, joint_relations=_jr,
+        )  # [B, J, D]
+
+        if self.pool is not None:
+            geom = self.pool.compute_assignment_and_graph(
+                skeleton_embeddings=s_j,
+                adjacency=batch.adjacency,
+                geodesic_dist=batch.geodesic_dist,
+                joint_mask=batch.joint_mask,
+                parent_indices=batch.parent_indices,
+            )
+            return {
+                "s_j": s_j,
+                # Phase-2 keys (schema-aligned with encode()'s return)
+                "pooled_adjacency": geom["pooled_adjacency"],
+                "pooled_geodesic": geom["pooled_geodesic"],
+                "coarse_mask": geom["pooled_mask"],
+                "pooled_skeleton_embeddings": geom["pooled_skeleton_embeddings"],
+                "anchor_indices": geom["anchor_indices"],
+                "hard_assignment": geom["hard_assignment"],
+                "assignment": geom["assignment"],
+            }
+        else:
+            # No-pool: identity equivalents (matches encode()'s else branch).
+            B, J, _ = s_j.shape
+            arange_j = torch.arange(
+                J, device=s_j.device, dtype=torch.long
+            ).unsqueeze(0).expand(B, J)
+            return {
+                "s_j": s_j,
+                "pooled_adjacency": batch.adjacency,
+                "pooled_geodesic": batch.geodesic_dist,
+                "coarse_mask": batch.joint_mask,
+                "pooled_skeleton_embeddings": s_j,
+                "anchor_indices": torch.where(
+                    batch.joint_mask, arange_j,
+                    torch.full_like(arange_j, -1),
+                ),
+                "hard_assignment": arange_j.contiguous(),
+                "assignment": _identity_assignment(batch.joint_mask),
+            }
 
     def decode(self, encode_out: dict, batch: "GraphMotionBatch") -> dict:
         """Unpool → decoder head.
