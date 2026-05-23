@@ -40,7 +40,7 @@ import torch.nn as nn
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.animate import animate_clip, contact_sheet
+from scripts.animate import animate_clip, contact_sheet, animate_t2m_input_pred, fk_rest_pose
 from src.data.anytop_dataset import (
     AnyTopDataset, collate_fn as anytop_collate_fn,
     _recover_world_positions, _STD_FLOOR,
@@ -296,22 +296,30 @@ def main() -> int:
         parents = [int(p) for p in item["parent_indices"][:J]]
 
         k = picked[sp]
-        gif_path = out_dir / f"{sp}_clip{k}_denoiser_gtvspred.gif"
+        gif_path = out_dir / f"{sp}_clip{k}_t2m.gif"
         g_spd = float(np.linalg.norm(np.diff(gt_world, axis=0), axis=-1).mean())
         p_spd = float(np.linalg.norm(np.diff(pred_world, axis=0), axis=-1).mean())
         ratio = p_spd / max(g_spd, 1e-9)
-        ttl = (
-            f"{sp} clip{k} [denoiser cfg={args.cond_scale} steps={args.n_ddim_steps}] "
-            f"J={J} T={T}  speed_ratio={ratio:.3f}"
+        # T2M demo layout (per cross-project rule feedback_t2m_gif_layout):
+        # static input skeleton + prompt + pred animation, NO GT panel.
+        # Static skeleton = T-pose via FK from rest_offsets (purely topology,
+        # not a frame of GT motion — keeps "input-only" semantics).
+        rest_off = raw["rest_offsets"][0, :J].cpu().numpy()
+        static_pose = fk_rest_pose(rest_off, parents)
+        prompt_text = item.get("caption") or ""
+        skel_label = (
+            f"{sp} skeleton (J={J})\n"
+            f"T={T}  cfg={args.cond_scale} steps={args.n_ddim_steps}\n"
+            f"speed_ratio={ratio:.3f}"
         )
-        animate_clip(pred_world, gt_world, parents, str(gif_path),
-                     ttl, args.stride, args.fps)
-        for elev, azim, tag in [(12, -70, "obl"), (75, -90, "top")]:
-            contact_sheet(pred_world, gt_world, parents,
-                          str(out_dir / f"{sp}_clip{k}_sheet_{tag}.png"),
-                          ttl, elev=elev, azim=azim)
-        line = (f"{sp} clip{k}: J={J} T={T} GT_speed={g_spd:.4f} "
-                f"PRED_speed={p_spd:.4f} ratio={ratio:.3f} -> {gif_path.name}")
+        animate_t2m_input_pred(
+            pred_world, static_pose, parents, str(gif_path),
+            prompt_text=prompt_text, stride=args.stride, fps=args.fps,
+            skeleton_label=skel_label,
+        )
+        line = (f"{sp} clip{k}: J={J} T={T} prompt={prompt_text[:60]!r} "
+                f"GT_speed={g_spd:.4f} PRED_speed={p_spd:.4f} ratio={ratio:.3f} "
+                f"-> {gif_path.name}")
         print(line)
         summary.append(line)
         picked[sp] += 1

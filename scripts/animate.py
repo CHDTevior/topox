@@ -147,6 +147,84 @@ def animate_clip(pp, gp, par, path, title, stride, fps):
     plt.close(fig)
 
 
+def fk_rest_pose(rest_offsets, parents):
+    """T-pose world positions via FK at identity rotations.
+    rest_offsets: [J, 3] local joint offsets in parent frame at rest.
+    parents: list[int] length J; parents[0] = -1 (root).
+    """
+    J = len(parents)
+    world_pos = np.zeros((J, 3), dtype=np.float32)
+    world_pos[0] = rest_offsets[0]
+    for j in range(1, J):
+        p = parents[j]
+        if p < 0:
+            world_pos[j] = rest_offsets[j]
+        else:
+            world_pos[j] = world_pos[p] + rest_offsets[j]
+    return world_pos
+
+
+def animate_t2m_input_pred(pred, static_pose, par, path, prompt_text,
+                            stride, fps, skeleton_label="input skeleton"):
+    """T2M demo gif (per cross-project rule feedback_t2m_gif_layout):
+    LEFT panel = static input skeleton (T-pose / rest pose, gray, no animation).
+    RIGHT panel = predicted motion animation (blue).
+    TOP title = prompt text (wrapped, shown across all frames).
+
+    NO GT panel — T2M inference takes only skeleton + prompt as input.
+
+    Args:
+        pred: [T, J, 3] predicted world positions per frame
+        static_pose: [J, 3] static skeleton pose (e.g. T-pose from rest_offsets)
+        par: list[int] parents
+        path: output gif path
+        prompt_text: caption string used as conditioning
+        stride: frame subsample for gif
+        fps: gif fps
+        skeleton_label: text shown on the static skeleton panel
+    """
+    import textwrap
+    T = pred.shape[0]
+    idx = list(range(0, T, max(stride, 1)))
+    if idx[-1] != T - 1:
+        idx.append(T - 1)
+    # Equal cubic axis limits — UNION of pred extent + static pose extent
+    # so both panels share the same scale and a frozen pred shows as ≈static.
+    union = np.concatenate([pred.reshape(-1, 3), static_pose.reshape(-1, 3)], axis=0)
+    ctr = union.mean(0)
+    rad = max(float(np.abs(union - ctr).max()), 1e-3) * 1.05
+
+    fig = plt.figure(figsize=(12, 6.5))
+    axes = [fig.add_subplot(1, 2, k + 1, projection='3d') for k in range(2)]
+
+    def draw(ax, P, name, col):
+        ax.clear()
+        for j, pj in enumerate(par):
+            if 0 <= pj < P.shape[0] and j < P.shape[0]:
+                ax.plot3D([P[j, 0], P[pj, 0]], [P[j, 2], P[pj, 2]],
+                          [P[j, 1], P[pj, 1]], color='#888', lw=1.4)
+        ax.scatter3D(P[:, 0], P[:, 2], P[:, 1], c=col, s=12)
+        ax.set_xlim(ctr[0] - rad, ctr[0] + rad)
+        ax.set_ylim(ctr[2] - rad, ctr[2] + rad)
+        ax.set_zlim(ctr[1] - rad, ctr[1] + rad)
+        ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
+        ax.view_init(12, -70)
+        ax.set_title(name, fontsize=10)
+
+    # Wrap long prompts so the suptitle stays readable.
+    wrapped = "\n".join(textwrap.wrap(prompt_text or "(no prompt)", width=80))
+
+    def update(fi):
+        draw(axes[0], static_pose, skeleton_label, '#7f8c8d')   # gray, static
+        draw(axes[1], pred[fi], f'pred f{fi}', '#2980b9')       # blue, animated
+        fig.suptitle(f'prompt: "{wrapped}"', fontsize=10, y=0.98)
+        return axes
+
+    ani = FuncAnimation(fig, update, frames=idx, blit=False)
+    ani.save(path, writer=PillowWriter(fps=fps))
+    plt.close(fig)
+
+
 def contact_sheet(pp, gp, par, path, title, n_t=6, elev=12, azim=-70):
     """Read-able motion view: n_t evenly-spaced timepoints x (GT,PRED) grid in
     ONE static PNG. The Read tool only shows a gif's first frame, so this is
