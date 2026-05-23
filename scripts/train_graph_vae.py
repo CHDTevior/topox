@@ -217,6 +217,15 @@ def main() -> int:
     p.add_argument("--anytop_root", type=str, default=None,
                    help="Override AnyTop processed-data root (default: AnyTop's "
                         ".../truebones/zoo/truebones_processed)")
+    p.add_argument("--full_data_val_species", type=str, default=None,
+                   help="(anytop_truebones only) Full-data training mode with "
+                        "species-filtered val. When set: train uses split='all' "
+                        "(all 1070 motions, no holdout); val uses split='all' "
+                        "then filters to the listed comma-separated species "
+                        "(e.g. 'Dragon,Monkey,Centipede,Horse' = 4 largest-J "
+                        "skeletons). Train and val OVERLAP on those species — "
+                        "intentional, val measures recon quality on the hardest "
+                        "skeletons. Skips the per-species 80/20 split.")
     # AnyTop remove-joints augmentation (train split only; --dataset anytop_truebones)
     p.add_argument("--augment", action="store_true",
                    help="Enable AnyTop remove-joints augmentation on the train "
@@ -415,12 +424,62 @@ def main() -> int:
         # caption_emb_cache goes to BOTH (text condition is eval-relevant too).
         if args.caption_emb_cache is not None:
             atk["caption_emb_cache"] = args.caption_emb_cache
-        ds_train = AnyTopDataset(
-            split="train", augment=args.augment,
-            augment_prob=args.augment_prob, removal_rate=args.removal_rate,
-            **atk,
-        )
-        ds_val = AnyTopDataset(split="val", **atk)
+        if args.full_data_val_species is not None:
+            # Full-data training mode: train=all 1070 (no holdout), val=species-filtered
+            val_species_set = set(
+                s.strip() for s in args.full_data_val_species.split(",") if s.strip()
+            )
+            if not val_species_set:
+                raise SystemExit(
+                    f"--full_data_val_species parsed to empty set from "
+                    f"{args.full_data_val_species!r}"
+                )
+            # Codex P2 fail-loud (2026-05-23): AnyTopDataset internally forces
+            # augment=False unless split=='train'. In full-data mode train uses
+            # split='all' → --augment would silently no-op. Fail loud instead.
+            if args.augment:
+                raise SystemExit(
+                    "[ARGS FAIL] --augment + --full_data_val_species combo is "
+                    "currently a silent no-op (AnyTopDataset gates augment to "
+                    "split=='train' only). Either drop --augment, or extend "
+                    "AnyTopDataset to support augment in split='all' mode."
+                )
+            # Codex P1 fix (2026-05-23): split='all' default disables random
+            # temporal crop on T>num_frames clips (731/1070 affected) → train
+            # would see same first-64 frames each epoch. Pass random_crop=True
+            # for train, False for val to preserve baseline data augmentation.
+            ds_train = AnyTopDataset(
+                split="all", augment=args.augment,
+                augment_prob=args.augment_prob, removal_rate=args.removal_rate,
+                random_crop=True,
+                **atk,
+            )
+            ds_val = AnyTopDataset(split="all", random_crop=False, **atk)
+            # Filter val samples in-place to the requested species (train+val
+            # overlap on those species is INTENTIONAL — val measures recon
+            # quality on the hardest skeletons, not OOD generalization).
+            ds_val.samples = [s for s in ds_val.samples
+                              if s["object_type"] in val_species_set]
+            if len(ds_val.samples) == 0:
+                raise SystemExit(
+                    f"[DATA] val species filter {sorted(val_species_set)!r} matched "
+                    f"0 motions. Check spelling against AnyTop cond.npy species keys."
+                )
+            present = sorted({s["object_type"] for s in ds_val.samples})
+            missing = sorted(val_species_set - set(present))
+            if missing:
+                log(f"  [WARN] val species not in dataset (skipped): {missing}")
+            log(f"  [FULL-DATA MODE] train=all 1070 ({len(ds_train)} samples), "
+                f"val=species-filtered to {sorted(val_species_set)!r} "
+                f"({len(ds_val)} samples). Train/val OVERLAP on these species "
+                f"(intentional — val = recon quality on hard skeletons).")
+        else:
+            ds_train = AnyTopDataset(
+                split="train", augment=args.augment,
+                augment_prob=args.augment_prob, removal_rate=args.removal_rate,
+                **atk,
+            )
+            ds_val = AnyTopDataset(split="val", **atk)
         active_collate_fn = anytop_collate_fn
     else:
         log(f"Loading UnifiedMotionDataset from {args.data_dir} ...")

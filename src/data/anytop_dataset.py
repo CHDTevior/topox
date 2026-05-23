@@ -483,6 +483,7 @@ class AnyTopDataset(Dataset):
         removal_rate: float = 0.5,
         caption_emb_cache: str | Path | None = None,
         random_caption: bool = False,
+        random_crop: bool | None = None,
     ) -> None:
         self.data_root = Path(data_root)
         self.split = split
@@ -651,6 +652,13 @@ class AnyTopDataset(Dataset):
         # always idx 0 (primary). Train uses True (SALAD-style); val uses False
         # to keep val_denoise loss deterministic across epochs.
         self.random_caption = bool(random_caption)
+        # random_crop: explicit override for the temporal crop policy on T>Tm
+        # clips. None (default) = backward-compat: random crop when split=='train',
+        # deterministic start=0 otherwise. True/False = force on/off regardless
+        # of split. Use random_crop=True with split='all' to keep training-time
+        # data augmentation (codex P1 2026-05-23: split='all' had silently
+        # disabled random crop, hurting full-data training).
+        self.random_crop = random_crop
 
         print(
             f"AnyTopDataset [{split}]: {len(self.samples)} motions, "
@@ -775,7 +783,15 @@ class AnyTopDataset(Dataset):
 
         # ---------- Temporal crop/pad (shared across all derived fields) ----------
         if T_var > Tm:
-            if self.split == "train":
+            # Explicit random_crop override takes precedence; else fall back
+            # to split-based default (random for train, deterministic for val/all).
+            if self.random_crop is True:
+                do_random = True
+            elif self.random_crop is False:
+                do_random = False
+            else:
+                do_random = (self.split == "train")
+            if do_random:
                 start = np.random.randint(0, T_var - Tm + 1)
             else:
                 start = 0
