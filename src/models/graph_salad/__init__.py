@@ -12,6 +12,7 @@ from .batch import GraphMotionBatch
 from .denoiser_stub import GraphSaladDenoiserStub
 from .pool_deterministic import DeterministicGraphPool
 from .pool_dynamic import DynamicGraphPool
+from .pool_edge_segment import EdgeSegmentPool
 from .unpool import DynamicGraphUnpool
 from .losses import (
     aggregate_pool_aux,
@@ -39,6 +40,7 @@ __all__ = [
     "GraphAttentionBlock",
     "DynamicGraphPool",
     "DeterministicGraphPool",
+    "EdgeSegmentPool",
     "DynamicGraphUnpool",
     # M1.2 step 5 losses
     "masked_l1_pos",
