@@ -169,6 +169,17 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--max_frames", type=int, default=64)
     ap.add_argument("--max_joints", type=int, default=143)
     ap.add_argument("--num_workers", type=int, default=8)
+    ap.add_argument("--full_data_val_species", type=str, default=None,
+                    help="Full-data training mode with species-filtered val. "
+                         "When set: train uses split='all' (all 1070 motions, "
+                         "no holdout, random_caption=True for SALAD-style "
+                         "multi-cap sampling); val uses split='all' filtered "
+                         "to listed comma-separated species "
+                         "(e.g. 'Dragon,Monkey,Centipede,Horse', random_caption"
+                         "=False primary-only). Train and val OVERLAP on those "
+                         "species — intentional, val measures denoise quality "
+                         "on hardest skeletons. Mirrors train_graph_vae.py "
+                         "--full_data_val_species (2026-05-24).")
     # Optim
     ap.add_argument("--epochs", type=int, default=500)
     ap.add_argument("--batch_size", type=int, default=16)
@@ -252,10 +263,46 @@ def main() -> int:
     # for train (each __getitem__ picks one of the motion's 5-6 captions at random)
     # vs deterministic primary-only for val (keeps val_denoise loss stable across
     # epochs for the best-ckpt gate).
-    ds_train = AnyTopDataset(split="train", random_caption=True, **ds_kwargs)
-    ds_val = AnyTopDataset(split="val", random_caption=False, **ds_kwargs)
-    log(f"  ds_train={len(ds_train)} (random_caption=True)  "
-        f"ds_val={len(ds_val)} (random_caption=False, primary only)")
+    if args.full_data_val_species is not None:
+        # Full-data mode (2026-05-24): mirrors train_graph_vae.py. train=all
+        # 1070 (no holdout), val=all 1070 filtered to listed species. Both use
+        # multi-cap sampling rules: train random_caption=True (5498-cap pool),
+        # val random_caption=False (primary-only deterministic).
+        val_species_set = set(
+            s.strip() for s in args.full_data_val_species.split(",") if s.strip()
+        )
+        if not val_species_set:
+            raise SystemExit(
+                f"--full_data_val_species parsed to empty set from "
+                f"{args.full_data_val_species!r}"
+            )
+        # split='all' default disables random temporal crop (731/1070 long
+        # clips affected). Pass random_crop=True for train to preserve
+        # variation, False for val (deterministic eval). Same fix as
+        # train_graph_vae.py L448-451.
+        ds_train = AnyTopDataset(
+            split="all", random_caption=True, random_crop=True, **ds_kwargs)
+        ds_val = AnyTopDataset(
+            split="all", random_caption=False, random_crop=False, **ds_kwargs)
+        ds_val.samples = [s for s in ds_val.samples
+                          if s["object_type"] in val_species_set]
+        if len(ds_val.samples) == 0:
+            raise SystemExit(
+                f"[DATA] val species filter {sorted(val_species_set)!r} "
+                f"matched 0 motions. Check spelling vs AnyTop cond.npy keys.")
+        present = sorted({s["object_type"] for s in ds_val.samples})
+        missing = sorted(val_species_set - set(present))
+        if missing:
+            log(f"  [WARN] val species not in dataset (skipped): {missing}")
+        log(f"  [FULL-DATA MODE] train=all 1070 ({len(ds_train)} samples), "
+            f"val=species-filtered to {sorted(val_species_set)!r} "
+            f"({len(ds_val)} samples). Train/val OVERLAP on these species "
+            f"(intentional — val = denoise quality on hard skeletons).")
+    else:
+        ds_train = AnyTopDataset(split="train", random_caption=True, **ds_kwargs)
+        ds_val = AnyTopDataset(split="val", random_caption=False, **ds_kwargs)
+        log(f"  ds_train={len(ds_train)} (random_caption=True)  "
+            f"ds_val={len(ds_val)} (random_caption=False, primary only)")
     if len(ds_train) < args.batch_size:
         raise SystemExit(f"[DATA] train size {len(ds_train)} < batch_size {args.batch_size}")
     if len(ds_val) == 0:
