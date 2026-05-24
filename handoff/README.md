@@ -9,7 +9,11 @@ Read in chronological order (newest at bottom).
 - `20260522_005629_m1_7_anytop_progress.md` — M1.7 AnyTop integration: iter-2 progress snapshot — **OUTDATED (superseded by 20260522_165647)**
 - `20260522_151840_m1_7_runbook_and_lessons.md` — **CURRENT (reference)** — 操作手册:执行命令 + 绝对路径、harness 工作流程 + 铁律、M1.5R→M1.7 失败经验教训。常驻参考,非进度快照。
 - `20260522_165647_m1_7_progress.md` — M1.7 VAE Phase-1 阶段:coarse_xattn ep829 (val_recon=2.0442) 选定为冻结基线;graph_temporal A/B 仍在跑;**superseded for Phase-2 work by 20260523_053439**。
-- `20260523_053439_phase2_v1_steps_2_5_done.md` — **CURRENT (progress)** — Phase-2 v1 Steps 2-5 全 commit (`bd19216`→`e3445b9`) + 4 codex review PASS;实训 launch (1000 ep, ETA ~3.5h) on swarma1004 GPU0 (alloc 925436)。覆盖 pool refactor + encode_skeleton_only / T5 1070 cache / GraphSaladDenoiser 18.6M / train + animate scripts;首 val ep0 val_denoise=0.4255 best_model.pt saved。
+- `20260523_053439_phase2_v1_steps_2_5_done.md` — Phase-2 v1 Steps 2-5 全 commit (`bd19216`→`e3445b9`) + 4 codex review PASS;实训 launch (1000 ep, ETA ~3.5h) on swarma1004 GPU0 (alloc 925436)。覆盖 pool refactor + encode_skeleton_only / T5 1070 cache / GraphSaladDenoiser 18.6M / train + animate scripts;首 val ep0 val_denoise=0.4255 best_model.pt saved。**SUPERSEDED by 20260525_002639 (v2 取代 v1 backbone)**。
+- `20260523_054058_phase2_v1_audit_walkthrough.md` — v1 audit (人视角过 dataset/model/train 流程 + 关键代码行号)。
+- `20260523_210312_pool_v2_edge_chain_design.md` — Pool v2 (EdgeSegmentPool, chain-segment) 设计文档 — SAN 启发 + Dragon wing 假设 + 7Q 答疑 + 接口契约。
+- `20260523_220324_pool_v2_audit_walkthrough.md` — Pool v2 audit (启动命令 / 超参 / 关键代码行号 / 三种执行选项)。
+- `20260525_002639_pool_v2_full_state_and_repro.md` — **CURRENT (progress)** — Pool v2 全 phase 完成: VAE C=96 + C=64 dual-AB 跑完 ep1-2000 (C=96 ep49 val_recon **1.3750**, 比 anchor best 低 22%); denoiser v2 (855/215) + fulldata (1070/69) 两版训完 ep1000; T2M demo + cross-topology + 自定义 prompt 全部渲;train_denoiser DDP 支持 commit `af19117` codex PASS (未跑)。**含 §3 完整复现命令**。
 
 ## How to interpret
 - Each handoff doc has a **STATE** block at top with 5 fields (status / current stage / next-critical / resource / pending)
