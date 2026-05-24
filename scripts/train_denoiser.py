@@ -31,9 +31,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
 
 # Repo path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -218,16 +219,39 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
+def _ddp_setup() -> tuple[bool, int, int, int, bool]:
+    """Detect DDP from torchrun env (WORLD_SIZE/RANK/LOCAL_RANK). When ws>1,
+    init nccl + set_device. Returns (is_ddp, rank, local_rank, world_size,
+    is_main). Mirrors train_graph_vae.py DDP setup."""
+    ws = int(os.environ.get("WORLD_SIZE", 1))
+    if ws > 1:
+        if not dist.is_initialized():
+            dist.init_process_group(backend="nccl")
+        rank = dist.get_rank()
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        torch.cuda.set_device(local_rank)
+        return True, rank, local_rank, ws, (rank == 0)
+    return False, 0, 0, 1, True
+
+
 def main() -> int:
     args = parse_args()
+    is_ddp, rank, local_rank, world_size, is_main = _ddp_setup()
+
     if args.device == "cuda" and not torch.cuda.is_available():
-        print("  [INFO] CUDA unavailable; falling back to CPU"); args.device = "cpu"
-    dev = torch.device(args.device)
+        if is_main:
+            print("  [INFO] CUDA unavailable; falling back to CPU")
+        args.device = "cpu"
+    if is_ddp:
+        dev = torch.device(f"cuda:{local_rank}")
+    else:
+        dev = torch.device(args.device)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     if dev.type == "cuda":
         torch.cuda.manual_seed_all(args.seed)
 
+    # Out dir guard runs on all ranks (same args → all raise → clean exit, no hang)
     out_dir = Path(args.out)
     if out_dir.exists() and any(out_dir.iterdir()):
         if not args.overwrite:
@@ -235,10 +259,16 @@ def main() -> int:
                 f"out dir {out_dir} is non-empty; pass --overwrite to allow"
             )
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Logging fns
-    log_fp = open(out_dir / "train.log", "w")
+    # Codex P1 fix (2026-05-25): barrier here BEFORE rank-0 creates train.log,
+    # so a slower non-main rank checking "non-empty out dir" doesn't see the
+    # newly-created log file and falsely fail the guard.
+    if is_ddp:
+        dist.barrier()
+    # Logging fns — rank 0 writes log file; other ranks no-op
+    log_fp = open(out_dir / "train.log", "w") if is_main else None
     def log(msg: str) -> None:
-        print(msg); log_fp.write(msg + "\n"); log_fp.flush()
+        if is_main:
+            print(msg); log_fp.write(msg + "\n"); log_fp.flush()
     log(f"=== M1.7 Phase-2 train_denoiser ===")
     log(f"git_sha: {os.popen('git rev-parse HEAD 2>/dev/null').read().strip() or 'unknown'}")
     log(f"device: {dev}")
@@ -330,8 +360,16 @@ def main() -> int:
                 f"--cond_drop_prob 0 if you truly intend single-cap training."
             )
 
+    if is_ddp:
+        train_sampler = DistributedSampler(
+            ds_train, shuffle=True, drop_last=True,
+            num_replicas=world_size, rank=rank,
+        )
+    else:
+        train_sampler = None
     dl_train = DataLoader(
-        ds_train, batch_size=args.batch_size, shuffle=True,
+        ds_train, batch_size=args.batch_size,
+        sampler=train_sampler, shuffle=(train_sampler is None),
         collate_fn=anytop_collate_fn, num_workers=args.num_workers,
         drop_last=True, pin_memory=True,
         persistent_workers=(args.num_workers > 0),
@@ -383,6 +421,17 @@ def main() -> int:
             f"(continuation pattern; pass --warmup_iters {args.warmup_iters} "
             f"to control re-warmup)")
 
+    # ---- DDP wrap (AFTER warm-start: init_ckpt loads into raw module) ----
+    # find_unused_parameters=True: GraphSaladDenoiser has CFG dropout (some text
+    # samples gated to zero each batch). Text-projection weights are still
+    # touched via masked tensor, but to be safe under varying cond mixes we
+    # enable the conservative check. Mirrors train_graph_vae.py.
+    if is_ddp:
+        denoiser = nn.parallel.DistributedDataParallel(
+            denoiser, device_ids=[local_rank], find_unused_parameters=True,
+        )
+    raw_denoiser = denoiser.module if is_ddp else denoiser
+
     # ---- Optimizer + scheduler + lr-warmup ----
     opt = torch.optim.AdamW(
         denoiser.parameters(), lr=args.lr,
@@ -401,14 +450,17 @@ def main() -> int:
             return args.lr * (it + 1) / args.warmup_iters
         return args.lr
 
-    metrics_fp = open(out_dir / "metrics.jsonl", "w")
+    metrics_fp = open(out_dir / "metrics.jsonl", "w") if is_main else None
     best_val = float("inf")
     global_it = 0
     epochs = 1 if args.smoke else args.epochs
     log(f"\nTraining for {epochs} epochs (smoke={args.smoke})")
-    log(f"steps per epoch: {len(dl_train)}")
+    log(f"steps per epoch: {len(dl_train)}"
+        + (f" (per-rank, world_size={world_size})" if is_ddp else ""))
 
     for epoch in range(epochs):
+        if is_ddp:
+            train_sampler.set_epoch(epoch)
         denoiser.train()
         t_ep = time.time()
         ep_losses = []
@@ -495,99 +547,115 @@ def main() -> int:
         log(f"\n=== epoch {epoch} done in {ep_dt:.1f}s | train_loss={epoch_loss:.4f} "
             f"lr={cur_lr:.2e} n_iter={len(ep_losses)} ===")
 
-        # Val
+        # Val — only rank 0 runs (full val set, no metric all-reduce needed).
+        # Other ranks wait at barrier OUTSIDE the is_main block (placed below
+        # the periodic-save block so all rank-0-only IO is bounded together).
         if (epoch % args.val_every == 0) or (epoch == epochs - 1) or args.smoke:
-            denoiser.eval()
-            t_v = time.time()
-            # P1 (codex 2026-05-23): use a FIXED seed (not args.seed+epoch) so
-            # the best-ckpt gate measures a static objective across epochs.
-            # And create the generator ONCE before the batch loop so consecutive
-            # batches don't reuse the same noise/timestep draw.
-            g_val = torch.Generator(device=dev).manual_seed(args.seed)
-            # Aggregate numerator + denominator separately so val_loss is a true
-            # element-weighted mean over all valid positions, not a batch-mean
-            # of per-batch element-weighted means (codex P2-3).
-            val_num = 0.0
-            val_den = 0.0
-            with torch.no_grad():
-                for raw in dl_val:
-                    raw = {k: v.to(dev) if torch.is_tensor(v) else v for k, v in raw.items()}
-                    batch = GraphMotionBatch.from_collate_dict(raw)
-                    enc = vae.encode(batch, sample=False)  # deterministic eval (z=mu)
-                    z0 = enc["z"]
-                    pooled_adj = enc["pooled_adjacency"]
-                    pooled_geo = enc["pooled_geodesic"]
-                    coarse_mask = enc["coarse_mask"]
-                    frame_mask = enc["frame_mask_lat"]
-                    pooled_skel = enc["pooled_skeleton_embeddings"]
-                    B = z0.shape[0]
-                    noise = torch.randn(z0.shape, generator=g_val, device=dev, dtype=z0.dtype)
-                    timesteps = torch.randint(
-                        0, args.num_train_timesteps, (B,),
-                        generator=g_val, device=dev
-                    ).long()
-                    z_t = sched.add_noise(z0, noise, timesteps)
-                    v_target = sched.get_velocity(z0, noise, timesteps)
-                    mask = (coarse_mask[:, None, :, None] & frame_mask[:, :, None, None])
-                    mask_f = mask.to(z0.dtype)
-                    z_t = z_t * mask_f; v_target = v_target * mask_f
-                    has_text = batch.has_text.to(dev) if batch.has_text.device != dev else batch.has_text
-                    text_emb = batch.caption_emb.to(dev) * has_text[:, None].to(batch.caption_emb.dtype)
-                    v_pred = denoiser(
-                        z_t=z_t, timesteps=timesteps, text=text_emb,
-                        adjacency=pooled_adj, geodesic_dist=pooled_geo,
-                        coarse_mask=coarse_mask, frame_mask=frame_mask,
-                        pooled_skeleton_embeddings=pooled_skel,
-                        has_text=has_text, validate_inputs=False,
+            if is_main:
+                denoiser.eval()
+                t_v = time.time()
+                # P1 (codex 2026-05-23): use a FIXED seed (not args.seed+epoch) so
+                # the best-ckpt gate measures a static objective across epochs.
+                # And create the generator ONCE before the batch loop so consecutive
+                # batches don't reuse the same noise/timestep draw.
+                g_val = torch.Generator(device=dev).manual_seed(args.seed)
+                # Aggregate numerator + denominator separately so val_loss is a true
+                # element-weighted mean over all valid positions, not a batch-mean
+                # of per-batch element-weighted means (codex P2-3).
+                val_num = 0.0
+                val_den = 0.0
+                with torch.no_grad():
+                    for raw in dl_val:
+                        raw = {k: v.to(dev) if torch.is_tensor(v) else v for k, v in raw.items()}
+                        batch = GraphMotionBatch.from_collate_dict(raw)
+                        enc = vae.encode(batch, sample=False)  # deterministic eval (z=mu)
+                        z0 = enc["z"]
+                        pooled_adj = enc["pooled_adjacency"]
+                        pooled_geo = enc["pooled_geodesic"]
+                        coarse_mask = enc["coarse_mask"]
+                        frame_mask = enc["frame_mask_lat"]
+                        pooled_skel = enc["pooled_skeleton_embeddings"]
+                        B = z0.shape[0]
+                        noise = torch.randn(z0.shape, generator=g_val, device=dev, dtype=z0.dtype)
+                        timesteps = torch.randint(
+                            0, args.num_train_timesteps, (B,),
+                            generator=g_val, device=dev
+                        ).long()
+                        z_t = sched.add_noise(z0, noise, timesteps)
+                        v_target = sched.get_velocity(z0, noise, timesteps)
+                        mask = (coarse_mask[:, None, :, None] & frame_mask[:, :, None, None])
+                        mask_f = mask.to(z0.dtype)
+                        z_t = z_t * mask_f; v_target = v_target * mask_f
+                        has_text = batch.has_text.to(dev) if batch.has_text.device != dev else batch.has_text
+                        text_emb = batch.caption_emb.to(dev) * has_text[:, None].to(batch.caption_emb.dtype)
+                        # Codex P2 fix (2026-05-25): rank-0-only val uses raw
+                        # module, not DDP wrapper, to avoid any future one-sided
+                        # collective if denoiser ever grows DDP-tracked buffers.
+                        v_pred = raw_denoiser(
+                            z_t=z_t, timesteps=timesteps, text=text_emb,
+                            adjacency=pooled_adj, geodesic_dist=pooled_geo,
+                            coarse_mask=coarse_mask, frame_mask=frame_mask,
+                            pooled_skeleton_embeddings=pooled_skel,
+                            has_text=has_text, validate_inputs=False,
+                        )
+                        diff_sq = (v_pred - v_target).pow(2) * mask_f
+                        val_num += diff_sq.sum().item()
+                        val_den += mask_f.sum().item() * v_pred.shape[-1]
+                val_loss = val_num / max(val_den, 1.0)
+                # Codex P2 (2026-05-23): fail-fast on non-finite val too.
+                if not (val_loss == val_loss and val_loss != float("inf")
+                        and val_loss != float("-inf")):
+                    raise SystemExit(
+                        f"[FAIL] non-finite val_loss={val_loss!r} at epoch={epoch}. "
+                        f"Inspect last train iter for upstream divergence."
                     )
-                    diff_sq = (v_pred - v_target).pow(2) * mask_f
-                    val_num += diff_sq.sum().item()
-                    val_den += mask_f.sum().item() * v_pred.shape[-1]
-            val_loss = val_num / max(val_den, 1.0)
-            # Codex P2 (2026-05-23): fail-fast on non-finite val too.
-            if not (val_loss == val_loss and val_loss != float("inf")
-                    and val_loss != float("-inf")):
-                raise SystemExit(
-                    f"[FAIL] non-finite val_loss={val_loss!r} at epoch={epoch}. "
-                    f"Inspect last train iter for upstream divergence."
-                )
-            log(f"[val ep{epoch}] dt={time.time()-t_v:.1f}s val_denoise={val_loss:.4f} "
-                f"n_valid_positions={int(val_den/v_pred.shape[-1])}")
+                log(f"[val ep{epoch}] dt={time.time()-t_v:.1f}s val_denoise={val_loss:.4f} "
+                    f"n_valid_positions={int(val_den/v_pred.shape[-1])}")
 
-            metrics_fp.write(json.dumps({
-                "epoch": epoch, "train_loss": epoch_loss, "val_denoise": val_loss,
-                "lr": cur_lr, "epoch_dt_s": ep_dt, "global_it": global_it,
-            }) + "\n"); metrics_fp.flush()
+                metrics_fp.write(json.dumps({
+                    "epoch": epoch, "train_loss": epoch_loss, "val_denoise": val_loss,
+                    "lr": cur_lr, "epoch_dt_s": ep_dt, "global_it": global_it,
+                }) + "\n"); metrics_fp.flush()
 
-            # Best ckpt
-            if val_loss < best_val:
-                best_val = val_loss
-                best_path = out_dir / "best_model.pt"
-                torch.save({
-                    "epoch": epoch, "val_denoise": val_loss, "train_loss": epoch_loss,
-                    "model_state_dict": denoiser.state_dict(),
-                    "optimizer_state_dict": opt.state_dict(),
-                    "args": vars(args),
-                    "vae_ckpt_args": ta,
-                }, best_path)
-                log(f"  saved best ckpt → {best_path} (val_denoise={best_val:.4f})")
+                # Best ckpt — rank 0 only; unwrap DDP for clean state_dict
+                if val_loss < best_val:
+                    best_val = val_loss
+                    best_path = out_dir / "best_model.pt"
+                    torch.save({
+                        "epoch": epoch, "val_denoise": val_loss, "train_loss": epoch_loss,
+                        "model_state_dict": raw_denoiser.state_dict(),
+                        "optimizer_state_dict": opt.state_dict(),
+                        "args": vars(args),
+                        "vae_ckpt_args": ta,
+                    }, best_path)
+                    log(f"  saved best ckpt → {best_path} (val_denoise={best_val:.4f})")
+            # END val + best block (rank 0 only)
 
-        # Periodic save
+        # Periodic last save — rank 0 only
         if (epoch % args.save_every == 0) or (epoch == epochs - 1) or args.smoke:
-            last_path = out_dir / "last_model.pt"
-            torch.save({
-                "epoch": epoch, "val_denoise": best_val, "train_loss": epoch_loss,
-                "model_state_dict": denoiser.state_dict(),
-                "optimizer_state_dict": opt.state_dict(),
-                "args": vars(args), "vae_ckpt_args": ta,
-            }, last_path)
+            if is_main:
+                last_path = out_dir / "last_model.pt"
+                torch.save({
+                    "epoch": epoch, "val_denoise": best_val, "train_loss": epoch_loss,
+                    "model_state_dict": raw_denoiser.state_dict(),
+                    "optimizer_state_dict": opt.state_dict(),
+                    "args": vars(args), "vae_ckpt_args": ta,
+                }, last_path)
+
+        # Barrier: re-sync all ranks after rank-0 val/save IO. Must be outside
+        # any is_main block (otherwise rank!=0 never reaches → deadlock).
+        if is_ddp:
+            dist.barrier()
 
         if args.smoke:
             log(f"\n=== SMOKE MODE: 1 epoch done, exit ===")
             break
 
     log("\n=== training complete ===")
-    metrics_fp.close(); log_fp.close()
+    if is_main:
+        metrics_fp.close(); log_fp.close()
+    if is_ddp:
+        dist.destroy_process_group()
     return 0
 
 
