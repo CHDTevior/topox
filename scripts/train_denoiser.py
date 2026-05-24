@@ -203,6 +203,12 @@ def parse_args() -> argparse.Namespace:
     # Logging / checkpoint
     ap.add_argument("--val_every", type=int, default=5)
     ap.add_argument("--save_every", type=int, default=10)
+    ap.add_argument("--periodic_save_every", type=int, default=0,
+                    help="Also save a PRESERVED ckpt named ep{N}_model.pt every "
+                         "N epochs (in addition to last_model.pt overwrite). "
+                         "0 disables. Useful for long runs (e.g. 4000 ep) where "
+                         "you want sweeping ckpt history rather than only "
+                         "best+last.")
     # Resume / warm-start
     ap.add_argument("--init_ckpt", default=None,
                     help="warm-start the denoiser from this ckpt's "
@@ -641,6 +647,20 @@ def main() -> int:
                     "optimizer_state_dict": opt.state_dict(),
                     "args": vars(args), "vae_ckpt_args": ta,
                 }, last_path)
+
+        # Periodic PRESERVED save (every periodic_save_every epochs, ep{N}_model.pt)
+        # Uses (epoch+1) so first save is at epoch=periodic_save_every-1 (i.e.
+        # after 500 epochs done, save ep0500_model.pt). Rank 0 only.
+        if args.periodic_save_every > 0 and ((epoch + 1) % args.periodic_save_every) == 0:
+            if is_main:
+                periodic_path = out_dir / f"ep{epoch + 1:04d}_model.pt"
+                torch.save({
+                    "epoch": epoch, "val_denoise": best_val, "train_loss": epoch_loss,
+                    "model_state_dict": raw_denoiser.state_dict(),
+                    "optimizer_state_dict": opt.state_dict(),
+                    "args": vars(args), "vae_ckpt_args": ta,
+                }, periodic_path)
+                log(f"  saved periodic ckpt → {periodic_path}")
 
         # Barrier: re-sync all ranks after rank-0 val/save IO. Must be outside
         # any is_main block (otherwise rank!=0 never reaches → deadlock).
