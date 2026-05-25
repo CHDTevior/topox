@@ -203,6 +203,20 @@ def main() -> int:
     print(f"  denoiser params: {sum(p.numel() for p in denoiser.parameters()):,}")
     print(f"  denoiser ckpt epoch={dck.get('epoch', '?')} val_denoise={dck.get('val_denoise', '?')}")
 
+    # Full-motion mode (2026-05-25): use denoiser ckpt's max_frames (NOT VAE's).
+    # Old single-window ckpts default to 64; new full-motion ckpts use 260.
+    # fail-loud divisibility check — bad ckpt or version skew would otherwise
+    # crash later at frame_mask.view(B, T/stride, stride) with cryptic error.
+    denoiser_max_frames = da.get("max_frames", 64)
+    if denoiser_max_frames % temporal_stride != 0:
+        raise SystemExit(
+            f"[ARGS FAIL] denoiser ckpt max_frames={denoiser_max_frames} "
+            f"not divisible by VAE temporal_stride={temporal_stride}. "
+            f"Bad ckpt or version skew."
+        )
+    print(f"  denoiser ckpt max_frames={denoiser_max_frames} "
+          f"→ T_lat={denoiser_max_frames // temporal_stride}")
+
     sched_kwargs = dict(
         num_train_timesteps=da.get("num_train_timesteps", 1000),
         beta_start=da.get("beta_start", 0.00085),
@@ -217,7 +231,7 @@ def main() -> int:
     anytop_root = args.anytop_root or ta.get("anytop_root")
     ds_kwargs = dict(
         split=args.split,
-        num_frames=ta.get("max_frames", 64),
+        num_frames=denoiser_max_frames,
         max_joints=ta.get("max_joints", 143),
         caption_emb_cache=cap_cache,
     )

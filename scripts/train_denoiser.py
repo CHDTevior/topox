@@ -167,7 +167,15 @@ def parse_args() -> argparse.Namespace:
     # Dataset
     ap.add_argument("--anytop_root", default=None,
                     help="override AnyTop processed-data root (default: take from VAE ckpt args)")
-    ap.add_argument("--max_frames", type=int, default=64)
+    ap.add_argument("--max_frames", type=int, default=260,
+                    help="Max motion frames for denoiser (full-motion mode, "
+                         "2026-05-25). Default 260 covers AnyTop bank max T=237 "
+                         "with safety margin. MUST be divisible by VAE's "
+                         "temporal_stride (260/4=65 latent frames). VAE itself "
+                         "is unaffected — still trained at 64-window. This "
+                         "param ONLY controls denoiser dataset crop/pad target, "
+                         "eliminating file-level caption + random-64-crop "
+                         "misalignment (see handoff design doc 20260525_221220).")
     ap.add_argument("--max_joints", type=int, default=143)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--full_data_val_species", type=str, default=None,
@@ -287,9 +295,26 @@ def main() -> int:
         f"attn_mode={ta.get('attn_mode')} decoder_mode={ta.get('decoder_mode')} "
         f"d_model={ta['d_model']} max_coarse={ta['max_coarse']} max_frames={ta['max_frames']}")
 
+    # Full-motion mode (2026-05-25): denoiser uses args.max_frames (default 260),
+    # NOT inherited from VAE ckpt's max_frames (=64). This eliminates the random
+    # 64-crop / file-level caption misalignment. VAE itself is unchanged — still
+    # trained at 64-window but encodes arbitrary T at inference (Conv1d/AvgPool1d
+    # + attention are shape-flexible). See handoff/20260525_221220.
+    temporal_stride = ta["temporal_stride"]
+    if args.max_frames % temporal_stride != 0:
+        raise SystemExit(
+            f"[ARGS FAIL] --max_frames {args.max_frames} not divisible by "
+            f"VAE temporal_stride {temporal_stride}. Pick a multiple "
+            f"(e.g. 260 with stride 4 → T_lat=65)."
+        )
+    T_lat_expected = args.max_frames // temporal_stride
+    log(f"  denoiser_max_frames={args.max_frames}  vae_training_max_frames="
+        f"{ta['max_frames']}  temporal_stride={temporal_stride}  "
+        f"→ T_lat={T_lat_expected}")
+
     # ---- Dataset ----
     ds_kwargs = dict(
-        num_frames=ta.get("max_frames", args.max_frames),
+        num_frames=args.max_frames,
         max_joints=ta.get("max_joints", args.max_joints),
         caption_emb_cache=args.caption_emb_cache,
     )
@@ -312,12 +337,12 @@ def main() -> int:
                 f"--full_data_val_species parsed to empty set from "
                 f"{args.full_data_val_species!r}"
             )
-        # split='all' default disables random temporal crop (731/1070 long
-        # clips affected). Pass random_crop=True for train to preserve
-        # variation, False for val (deterministic eval). Same fix as
-        # train_graph_vae.py L448-451.
+        # Full-motion mode (2026-05-25): random_crop=False on BOTH train + val
+        # so denoiser sees pad-to-max_frames full motion + frame_mask, eliminating
+        # random 64-crop / file-level caption misalignment. random_caption=True
+        # for train (SALAD multi-cap) preserved; val deterministic primary-only.
         ds_train = AnyTopDataset(
-            split="all", random_caption=True, random_crop=True, **ds_kwargs)
+            split="all", random_caption=True, random_crop=False, **ds_kwargs)
         ds_val = AnyTopDataset(
             split="all", random_caption=False, random_crop=False, **ds_kwargs)
         ds_val.samples = [s for s in ds_val.samples
@@ -335,14 +360,40 @@ def main() -> int:
             f"({len(ds_val)} samples). Train/val OVERLAP on these species "
             f"(intentional — val = denoise quality on hard skeletons).")
     else:
-        ds_train = AnyTopDataset(split="train", random_caption=True, **ds_kwargs)
-        ds_val = AnyTopDataset(split="val", random_caption=False, **ds_kwargs)
-        log(f"  ds_train={len(ds_train)} (random_caption=True)  "
-            f"ds_val={len(ds_val)} (random_caption=False, primary only)")
+        # Full-motion mode (2026-05-25): default split (855/215) also uses
+        # random_crop=False for symmetry with full_data mode. random_caption=True
+        # for train preserved (multi-cap diversity unchanged).
+        ds_train = AnyTopDataset(
+            split="train", random_caption=True, random_crop=False, **ds_kwargs)
+        ds_val = AnyTopDataset(
+            split="val", random_caption=False, random_crop=False, **ds_kwargs)
+        log(f"  ds_train={len(ds_train)} (random_caption=True, random_crop=False)"
+            f"  ds_val={len(ds_val)} (random_caption=False, primary only)")
     if len(ds_train) < args.batch_size:
         raise SystemExit(f"[DATA] train size {len(ds_train)} < batch_size {args.batch_size}")
     if len(ds_val) == 0:
         raise SystemExit("[DATA] val split is empty")
+
+    # ---- Preflight: max_frames coverage of all source motions ----
+    # Full-motion mode (2026-05-25): AnyTopDataset silently truncates if T_var
+    # > num_frames. With max_frames=260 and AnyTop max T=237, no truncation
+    # should ever fire. Verify by reading npy headers via mmap (~1s for 1070).
+    log(f"\nPreflight: max_frames={args.max_frames} coverage check")
+    violations = []
+    for s in list(ds_train.samples) + list(ds_val.samples):
+        T_raw = int(np.load(s["path"], mmap_mode="r").shape[0])
+        if T_raw > args.max_frames:
+            violations.append((s["object_type"], s.get("motion_id", "?"), T_raw))
+    if violations:
+        msg = "\n".join(f"    {sp}/{mid}: T={T}" for sp, mid, T in violations[:10])
+        raise SystemExit(
+            f"[DATA FAIL] {len(violations)} samples exceed --max_frames="
+            f"{args.max_frames} (would be silently truncated, breaking "
+            f"caption-motion alignment). Examples:\n{msg}\n"
+            f"Bump --max_frames or filter dataset."
+        )
+    log(f"  preflight: 0 / {len(ds_train) + len(ds_val)} samples exceed "
+        f"max_frames={args.max_frames}")
 
     # ---- Preflight: caption coverage + multi-cap cache check ----
     log(f"\nPreflight: T5 caption coverage check")
