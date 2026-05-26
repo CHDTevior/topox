@@ -505,22 +505,55 @@ class AnyTopDataset(Dataset):
         if not motions_dir.exists():
             raise FileNotFoundError(f"motions/ dir not found at {motions_dir}")
 
-        # ---- Load + per-object preprocess cond ----
-        raw_cond = np.load(cond_path, allow_pickle=True).item()
-        self.cond: dict[str, dict] = {}
-        for obj_type, c in raw_cond.items():
-            try:
-                normalized = self._normalize_cond_entry(c, obj_type)
-                if normalized["n_joints"] > self.max_joints:
-                    print(
-                        f"  [AnyTopDataset] WARNING: {obj_type} has J="
-                        f"{normalized['n_joints']} > max_joints={self.max_joints}; "
-                        f"clips of this type will be skipped"
-                    )
-                    continue
-                self.cond[obj_type] = normalized
-            except (ValueError, KeyError) as e:
-                print(f"  [AnyTopDataset] WARNING: skip cond[{obj_type}]: {e}")
+        # ---- Load + per-object preprocess cond (with disk cache) ----
+        # Cache rationale (2026-05-26): for PlanetZoo L1 (473 object types) the
+        # pure-Python _normalize_cond_entry × _create_topology_edge_relations
+        # O(J²) loop takes ~107s single-process,~25 min under 4-way DDP
+        # contention. Cache normalized cond next to cond.npy so subsequent runs
+        # (including DDP per-rank construct + cont chains) load in <1s.
+        # Invalidation: cache filename includes max_joints (entries are skipped
+        # if J > max_joints) so different max_joints get different caches.
+        import pickle
+        cache_path = self.data_root / f"_cond_normalized_J{self.max_joints}.pkl"
+        if cache_path.exists() and cache_path.stat().st_mtime > cond_path.stat().st_mtime:
+            with cache_path.open("rb") as f:
+                self.cond: dict[str, dict] = pickle.load(f)
+            print(f"  [AnyTopDataset] loaded normalized cond from cache "
+                  f"({len(self.cond)} object types, {cache_path.name})")
+        else:
+            raw_cond = np.load(cond_path, allow_pickle=True).item()
+            self.cond: dict[str, dict] = {}
+            for obj_type, c in raw_cond.items():
+                try:
+                    normalized = self._normalize_cond_entry(c, obj_type)
+                    if normalized["n_joints"] > self.max_joints:
+                        print(
+                            f"  [AnyTopDataset] WARNING: {obj_type} has J="
+                            f"{normalized['n_joints']} > max_joints={self.max_joints}; "
+                            f"clips of this type will be skipped"
+                        )
+                        continue
+                    self.cond[obj_type] = normalized
+                except (ValueError, KeyError) as e:
+                    print(f"  [AnyTopDataset] WARNING: skip cond[{obj_type}]: {e}")
+            # Save cache (atomic write via globally-unique tmp + rename to
+            # handle DDP race). Codex P1 fix 2026-05-26: shared tmp suffix
+            # between ranks was unsafe (multiple ranks open/truncate/write
+            # same inode). PID alone is host-local — multi-node DDP could
+            # still collide. Use tempfile.NamedTemporaryFile to get a
+            # filesystem-unique name regardless of host/pid/rank; rename to
+            # cache_path is atomic (POSIX), last rank wins, content
+            # deterministic so no corruption.
+            import tempfile
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=cache_path.parent,
+                prefix=cache_path.name + ".tmp.", delete=False
+            ) as f:
+                pickle.dump(self.cond, f, protocol=pickle.HIGHEST_PROTOCOL)
+                tmp_path = Path(f.name)
+            tmp_path.replace(cache_path)
+            print(f"  [AnyTopDataset] saved normalized cond cache "
+                  f"({len(self.cond)} object types → {cache_path.name})")
 
         # ---- Scan motions/, match prefix, build sample list ----
         keys_sorted = sorted(self.cond.keys(), key=lambda k: -len(k))

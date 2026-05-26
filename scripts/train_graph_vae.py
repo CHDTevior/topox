@@ -428,8 +428,11 @@ def main() -> int:
     # Data
     if args.dataset == "anytop_truebones":
         log(f"Loading AnyTop truebones (root={args.anytop_root or 'default'}) ...")
+        # PlanetZoo L1 has 88MB caption JSON which AnyTopDataset would json.load
+        # at init even when not used (use_text=False). Skip caption load in
+        # VAE-no-text mode to avoid 5-10 min init stall (2026-05-26).
         atk = dict(num_frames=args.max_frames, max_joints=args.max_joints,
-                   val_frac=args.val_frac)
+                   val_frac=args.val_frac, load_captions=bool(args.use_text))
         if args.anytop_root is not None:
             atk["data_root"] = args.anytop_root
         # Augmentation: train split only — ds_val never gets the aug args.
