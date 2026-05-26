@@ -263,6 +263,16 @@ def main() -> int:
     # Train
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--save_every", type=int, default=10)
+    p.add_argument("--periodic_save_every", type=int, default=0,
+                   help="Also save a PRESERVED ckpt named ep{N}_model.pt every "
+                         "N epochs (in addition to last_model.pt overwrite). "
+                         "0 disables. Mirrors train_denoiser.py (2026-05-25); "
+                         "useful for long multi-cont VAE training where you "
+                         "want sweeping ckpt history rather than only best+last.")
+    p.add_argument("--val_frac", type=float, default=0.2,
+                   help="AnyTopDataset object-stratified split val fraction. "
+                         "Default 0.2 = 80/20 split (legacy). Pass 0.05 = 19:1 "
+                         "for large datasets (PlanetZoo L1, 2026-05-26).")
     p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--seed", type=int, default=42)
@@ -418,7 +428,8 @@ def main() -> int:
     # Data
     if args.dataset == "anytop_truebones":
         log(f"Loading AnyTop truebones (root={args.anytop_root or 'default'}) ...")
-        atk = dict(num_frames=args.max_frames, max_joints=args.max_joints)
+        atk = dict(num_frames=args.max_frames, max_joints=args.max_joints,
+                   val_frac=args.val_frac)
         if args.anytop_root is not None:
             atk["data_root"] = args.anytop_root
         # Augmentation: train split only — ds_val never gets the aug args.
@@ -930,6 +941,23 @@ def main() -> int:
                         for sid, vals in per_species_pos.items()
                     },
                 }) + "\n")
+
+        # Periodic PRESERVED save (every periodic_save_every epochs, ep{N}_model.pt).
+        # Mirrors train_denoiser.py (commit f407aec). For long multi-cont VAE
+        # runs (e.g., PlanetZoo 300ep) keep sweeping ckpt history beyond best+last.
+        # Rank 0 only; raw_vae unwrap consistent with last_model save pattern.
+        if args.periodic_save_every > 0 and ((epoch + 1) % args.periodic_save_every) == 0:
+            if is_main:
+                periodic_path = out_dir / f"ep{epoch + 1:04d}_model.pt"
+                torch.save({
+                    "epoch": epoch, "val_loss": best_val_loss,
+                    "val_recon": best_val_recon,
+                    "model_state_dict": raw_vae.state_dict(),
+                    "optimizer_state_dict": opt.state_dict(),
+                    "args": vars(args),
+                    "git_sha": git_sha,
+                }, periodic_path)
+                log(f"  saved periodic ckpt → {periodic_path}")
 
         # DDP: non-main ranks waited here while rank 0 ran validation.
         if do_val and is_ddp:
