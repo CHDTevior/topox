@@ -148,7 +148,17 @@ def main():
             out = vae(batch, sample=False)               # deterministic z=mu
 
             J = int(item["num_joints"])
-            T = int(item["num_frames"])
+            # Stride-aware T (2026-05-28, mirrors animate_denoiser.py codex P1
+            # fix 2026-05-23): VAE temporal_stride=4 collapses every 4 frames
+            # via .all() on encode, so a clip with T_var=67 has only
+            # floor(67/4)*4=64 valid latent-recovered frames; the trailing 3
+            # frames come back zero/garbage from decoder. Use frame_mask
+            # _recovered to clip — otherwise GIF tail shows collapse/jitter
+            # that LOOKS like recon failure but is just stride-incomplete tail.
+            T_clip = int(item["num_frames"])
+            T_valid = int(out["frame_mask_recovered"][0].sum().item())
+            T = min(T_clip, T_valid)
+            T_dropped = T_clip - T
             # De-normalize pred 13ch: raw = norm * (std + eps) + mean.
             # anytop_mean/std are de-norm stats — only needed for visualization,
             # not a model input, so they ride the raw collate dict (not the
@@ -175,8 +185,10 @@ def main():
                 contact_sheet(pred_world, gt_world, parents,
                               str(out_dir / f"{sp}_clip{k}_sheet_{tag}.png"),
                               ttl, elev=elev, azim=azim)
-            line = (f"{sp} clip{k}: J={J} T={T} GT_speed={g_spd:.4f} "
-                    f"PRED_speed={p_spd:.4f} ratio={ratio:.3f} -> {gif.name}")
+            line = (f"{sp} clip{k}: J={J} T={T} effective_T={T} "
+                    f"T_clip={T_clip} dropped_tail={T_dropped} "
+                    f"GT_speed={g_spd:.4f} PRED_speed={p_spd:.4f} "
+                    f"ratio={ratio:.3f} -> {gif.name}")
             print(line)
             summary.append(line)
             picked[sp] += 1
