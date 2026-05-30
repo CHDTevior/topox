@@ -71,11 +71,18 @@ def render_gtvspred(gt, pred, parents, out_path, fps=8, stride=1):
 
 
 def main() -> int:
-    TARGET_MOTION = "Die_296"
-    SPECIES = "Dragon"
-    VAE_CKPT = ROOT / "runs/m1_7_anytop13_edge_segment_C96_fulldata_ddp2a100_seed42/last_model.pt"
+    import os
+    TARGET_MOTION = os.environ.get("TARGET_MOTION", "Die_296")
+    SPECIES = os.environ.get("SPECIES", "Dragon")
+    VAE_CKPT = ROOT / os.environ.get(
+        "VAE_CKPT_REL",
+        "runs/m1_7_anytop13_edge_segment_C96_fulldata_ddp2a100_seed42/last_model.pt",
+    )
     CAP_CACHE = ROOT / "data/anytop_caption_t5_1070_multi.npz"
-    OUT = ROOT / "runs/m1_7_anytop13_edge_segment_C96_fulldata_ddp2a100_seed42/qa_dragon_die_recon.gif"
+    OUT = ROOT / os.environ.get(
+        "OUT_REL",
+        "runs/m1_7_anytop13_edge_segment_C96_fulldata_ddp2a100_seed42/qa_dragon_die_recon.gif",
+    )
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(42); np.random.seed(42)

@@ -1,3 +1,25 @@
 logs/
 runs/
 .aris/
+
+# Datasets & large artifacts (never commit)
+data/
+outside_docs/
+_qa_local/
+_qa_*/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Local tooling / editor state
+.claude/
+
+# Logs & transient probe/poll files
+*.log
+1.log
+_poll_out.txt
+_poll_probe.txt
+
+# Codex raw review outputs (large, reproducible). Briefs (.md) are kept.
+scripts/_codex_*.txt

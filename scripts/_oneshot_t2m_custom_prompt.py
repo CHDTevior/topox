@@ -29,14 +29,24 @@ def main() -> int:
     PROMPT = os.environ.get("PROMPT", "An animal energetically bucks, jumping and kicking its hind legs high into the air.")
     SPECIES = os.environ.get("SPECIES", "Horse")
     OUT_TAG = os.environ.get("OUT_TAG", "out")
-    VAE_CKPT = ROOT / "runs/m1_7_anytop13_edge_segment_C96_fulldata_ddp2a100_seed42/last_model.pt"
-    DEN_CKPT = ROOT / "runs/m2_denoiser_v2_edge_segment_C96_seed42/last_model.pt"
+    VAE_CKPT = ROOT / os.environ.get(
+        "VAE_CKPT_REL",
+        "runs/m1_7_anytop13_edge_segment_C96_fulldata_ddp2a100_seed42/last_model.pt",
+    )
+    DEN_CKPT = ROOT / os.environ.get(
+        "DEN_CKPT_REL",
+        "runs/m2_denoiser_v4_max260_C96_ddp2a100_lr5e-4_1000ep_fulldata_seed42_cont1/last_model.pt",
+    )
     CAP_CACHE = ROOT / "data/anytop_caption_t5_1070_multi.npz"
-    OUT_DIR = ROOT / "runs/m2_denoiser_v2_edge_segment_C96_seed42/qa_custom_prompt"
+    OUT_DIR_REL = os.environ.get(
+        "OUT_DIR_REL",
+        "runs/m2_denoiser_v4_max260_C96_ddp2a100_lr5e-4_1000ep_fulldata_seed42_cont1/qa_custom_prompt",
+    )
+    OUT_DIR = ROOT / OUT_DIR_REL
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    SEED = 42
+    SEED = int(os.environ.get("SEED", "42"))
     N_DDIM = 50
-    CFG = 7.5
+    CFG = float(os.environ.get("CFG", "2.0"))
     STRIDE = 2
     FPS = 8
     T5_NAME = "t5-base"
@@ -53,6 +63,15 @@ def main() -> int:
     print(f"Loading denoiser: {DEN_CKPT}")
     denoiser, dck = load_denoiser(str(DEN_CKPT), dev)
     da = dck.get("args", {})
+    # Full-motion mode (2026-05-25): use denoiser ckpt's max_frames, NOT VAE's
+    # (was a bug — old ckpts wouldn't have max_frames in args, fallback to 64).
+    denoiser_max_frames = da.get("max_frames", 64)
+    if denoiser_max_frames % temporal_stride != 0:
+        raise SystemExit(
+            f"[ARGS FAIL] denoiser ckpt max_frames={denoiser_max_frames} "
+            f"not divisible by temporal_stride={temporal_stride}"
+        )
+    print(f"  denoiser ckpt max_frames={denoiser_max_frames}  → T_lat={denoiser_max_frames // temporal_stride}")
 
     sched_kwargs = dict(
         num_train_timesteps=da.get("num_train_timesteps", 1000),
@@ -78,7 +97,7 @@ def main() -> int:
     print("Loading Dragon sample for skeleton conditioning")
     ds_kwargs = dict(
         split="val",
-        num_frames=ta.get("max_frames", 64),
+        num_frames=denoiser_max_frames,
         max_joints=ta.get("max_joints", 143),
         caption_emb_cache=str(CAP_CACHE),
     )
