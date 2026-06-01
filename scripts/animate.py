@@ -147,6 +147,76 @@ def animate_clip(pp, gp, par, path, title, stride, fps):
     plt.close(fig)
 
 
+def animate_clip_3col(gt_ric, pred_ric, pred_fk, par, path, title, stride, fps):
+    """3-col GT_RIC | PRED_RIC | PRED_FK 3D skeleton gif for rot6d_fk QA.
+
+    Root-relative framing: subtract each clip's joint-0 (root) XZ translation per
+    frame, keep Y. This matches the dataset QA renderers
+    (render_planet_zoo_clean_gifs.py / render_anytop_vlm_previews.py) and fixes the
+    "tiny skeleton" problem of whole-clip extent — with the root's horizontal travel
+    removed the skeleton stays centered and FILLS the box, so bone/limb detail is
+    visible. Shared cubic axes from GT_RIC's root-relative extent (collapse/explosion
+    shows against the same scale across all three panels).
+
+    PRED_RIC = pred via the RIC/position route (ch0:3, world_geometry-supervised);
+    PRED_FK  = pred via the rot6d-FK route (ch3:9 rotations -> FK). PRED_RIC vs
+    PRED_FK reveals whether the predicted rotations, when FK'd, agree with the
+    position route — the core rot6d_fk signal. (Root-relative framing trades absolute
+    root-drift visibility for clear local pose; the on-figure per-frame disp still
+    reflects pose change.)"""
+    def root_rel(P):  # [T,J,3] -> subtract joint-0 XZ per frame, keep Y
+        Q = np.array(P, dtype=float, copy=True)
+        Q[:, :, 0] -= P[:, 0:1, 0]
+        Q[:, :, 2] -= P[:, 0:1, 2]
+        return Q
+    g, r, f = root_rel(gt_ric), root_rel(pred_ric), root_rel(pred_fk)
+    T = g.shape[0]
+    idx = list(range(0, T, max(stride, 1)))
+    if idx[-1] != T - 1:
+        idx.append(T - 1)
+    # cubic axis limits from GT_RIC root-relative BOUNDING BOX (bbox center + half of
+    # the largest dim). Fills the box better than mean+max-dist — matches the
+    # fit-to-bounds scaling of the reference dataset renderers
+    # (render_planet_zoo_clean_gifs.py compute_transform). Cubic (single rad) keeps
+    # equal aspect so the skeleton is not distorted; collapse/explosion still shows.
+    allc = g.reshape(-1, 3)
+    lo, hi = allc.min(0), allc.max(0)
+    ctr = (lo + hi) * 0.5
+    rad = max(float((hi - lo).max()) * 0.5, 1e-3) * 1.10
+    g0, r0, f0 = g[0], r[0], f[0]
+    fig = plt.figure(figsize=(18, 6))
+    axes = [fig.add_subplot(1, 3, k + 1, projection='3d') for k in range(3)]
+
+    def draw(ax, P, name, col):
+        ax.clear()
+        for j, pj in enumerate(par):
+            if 0 <= pj < P.shape[0] and j < P.shape[0]:
+                ax.plot3D([P[j, 0], P[pj, 0]], [P[j, 2], P[pj, 2]],
+                          [P[j, 1], P[pj, 1]], color='#888', lw=1.4)
+        ax.scatter3D(P[:, 0], P[:, 2], P[:, 1], c=col, s=12)
+        ax.set_xlim(ctr[0] - rad, ctr[0] + rad)
+        ax.set_ylim(ctr[2] - rad, ctr[2] + rad)
+        ax.set_zlim(ctr[1] - rad, ctr[1] + rad)
+        ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
+        ax.view_init(12, -70)
+        ax.set_title(name, fontsize=10)
+
+    def update(fi):
+        gd = float(np.linalg.norm(g[fi] - g0, axis=-1).mean())
+        rd = float(np.linalg.norm(r[fi] - r0, axis=-1).mean())
+        fd = float(np.linalg.norm(f[fi] - f0, axis=-1).mean())
+        draw(axes[0], g[fi], f'GT_RIC f{fi} d={gd:.3f}', '#e74c3c')
+        draw(axes[1], r[fi], f'PRED_RIC f{fi} d={rd:.3f}', '#2980b9')
+        draw(axes[2], f[fi], f'PRED_FK f{fi} d={fd:.3f}', '#27ae60')
+        fig.suptitle(f'{title}  (GT_RIC | PRED_RIC | PRED_FK, root-relative — RIC vs FK route)',
+                     fontsize=11)
+        return axes
+
+    ani = FuncAnimation(fig, update, frames=idx, blit=False)
+    ani.save(path, writer=PillowWriter(fps=fps))
+    plt.close(fig)
+
+
 def fk_rest_pose(rest_offsets, parents):
     """T-pose world positions via FK at identity rotations.
     rest_offsets: [J, 3] local joint offsets in parent frame at rest.

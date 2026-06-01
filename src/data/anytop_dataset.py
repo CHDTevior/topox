@@ -658,20 +658,45 @@ class AnyTopDataset(Dataset):
                 )
             # Group by motion_id: collect (idx, emb) per motion, then sort by idx.
             raw_groups: dict[str, list[tuple[int, np.ndarray]]] = {}
-            with np.load(cache_path) as npz:
-                for key in npz.files:
-                    vec = npz[key].astype(np.float32)
-                    if "__cap" in key:
-                        mid, _, idx_str = key.rpartition("__cap")
-                        try:
-                            idx = int(idx_str)
-                        except ValueError:
-                            # Defensive: malformed key, treat as single-cap
-                            mid, idx = key, 0
-                    else:
-                        # Backward compat: legacy single-cap key
-                        mid, idx = key, 0
-                    raw_groups.setdefault(mid, []).append((idx, vec))
+
+            def _split_caption_key(key: str) -> tuple[str, int]:
+                if "__cap" in key:
+                    mid, _, idx_str = key.rpartition("__cap")
+                    try:
+                        return mid, int(idx_str)
+                    except ValueError:
+                        # Defensive: malformed key, treat as single-cap
+                        return key, 0
+                # Backward compat: legacy single-cap key
+                return key, 0
+
+            # Fast path (sidecar): a single .embs.npy [N,768] + .keys.json avoids
+            # the per-key zip decompression of np.load(npz)[key], which is ~O(N^2)
+            # for the 409970-key clean-L2 cache (~68 min). Sidecar load is seconds.
+            # Build offline once via scripts/convert_caption_npz_to_npy.py.
+            # Falls back to the legacy per-key npz path if sidecar is absent.
+            sidecar_embs = cache_path.with_suffix(".embs.npy")
+            sidecar_keys = cache_path.with_suffix(".keys.json")
+            if sidecar_embs.exists() and sidecar_keys.exists():
+                embs = np.load(sidecar_embs, mmap_mode="r")
+                with open(sidecar_keys) as _kf:
+                    keys = json.load(_kf)
+                if len(keys) != embs.shape[0]:
+                    raise ValueError(
+                        f"caption sidecar length mismatch: {sidecar_keys} "
+                        f"({len(keys)}) vs {sidecar_embs} ({embs.shape[0]})"
+                    )
+                for ki, key in enumerate(keys):
+                    mid, idx = _split_caption_key(key)
+                    raw_groups.setdefault(mid, []).append(
+                        (idx, np.asarray(embs[ki], dtype=np.float32))
+                    )
+            else:
+                with np.load(cache_path) as npz:
+                    for key in npz.files:
+                        vec = npz[key].astype(np.float32)
+                        mid, idx = _split_caption_key(key)
+                        raw_groups.setdefault(mid, []).append((idx, vec))
             for mid, lst in raw_groups.items():
                 lst.sort(key=lambda x: x[0])
                 self.caption_embs_multi[mid] = [emb for _, emb in lst]

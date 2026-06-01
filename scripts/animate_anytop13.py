@@ -35,10 +35,11 @@ matplotlib.use("Agg")
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
-from scripts.animate import animate_clip, contact_sheet  # noqa: E402  model-agnostic renderers
+from scripts.animate import animate_clip, animate_clip_3col, contact_sheet  # noqa: E402  model-agnostic renderers
 from src.data.anytop_dataset import (  # noqa: E402
     AnyTopDataset, collate_fn, _recover_world_positions, _STD_FLOOR,
 )
+from src.data.anytop_rot6d_fk import recover_from_bvh_rot_np  # noqa: E402  rot6d FK path
 from src.models.graph_salad import GraphMotionBatch, GraphMotionVAE  # noqa: E402
 
 
@@ -100,6 +101,12 @@ def main():
                     help="AnyTop processed-data root; defaults to the ckpt's "
                          "training root if omitted")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--render_mode", choices=("rot6d", "pos", "three_col"), default="rot6d",
+                    help="rot6d (default): recover world via rotation channels "
+                         "(3:9) + bone offsets + parent chain (official FK, bone "
+                         "lengths exact). pos: legacy RIC path via position "
+                         "channels (0:3). BOTH GT and pred use the same mode so "
+                         "the comparison is apples-to-apples.")
     args = ap.parse_args()
 
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -128,6 +135,12 @@ def main():
         num_frames=ta.get("max_frames", 64),
         max_joints=ta.get("max_joints", 143),
         caption_emb_cache=cap_cache,
+        # Reproduce the ckpt's TRAINING val split. AnyTopDataset defaults
+        # val_frac=0.2 seed=42, but these ckpts trained with val_frac=0.05 —
+        # without this, QA renders a different (larger) val set that can include
+        # clips the model trained on (leakage). Read from the ckpt's own args.
+        val_frac=ta.get("val_frac", 0.2),
+        seed=ta.get("seed", 42),
     )
     if anytop_root:
         ds_kwargs["data_root"] = anytop_root
@@ -167,24 +180,51 @@ def main():
             mean = raw["anytop_mean"][0, :J].cpu().numpy()  # [J, 13]
             pred_norm = out["pred_motion"][0, :T, :J, :].cpu().numpy()  # [T, J, 13]
             pred_raw = pred_norm * (std[None] + _STD_FLOOR) + mean[None]
-            pred_world = _recover_world_positions(pred_raw)             # [T, J, 3]
-            # GT world positions: the dataset already recovered them.
-            gt_world = batch.motion_features[0, :T, :J, :3].cpu().numpy()
             parents = [int(p) for p in item["parent_indices"][:J]]
+            # Render mode: rot6d FK (default) or legacy pos/RIC. BOTH GT and pred
+            # use the SAME recovery so the visual comparison is apples-to-apples.
+            if args.render_mode == "rot6d":
+                # GT raw 13ch (same de-norm as pred); offsets share the item's
+                # new_to_old_perm ordering with anytop_x, so FK is aligned.
+                # anytop_x is a [J,13,T] tensor -> numpy [T,J,13].
+                gt_norm = np.asarray(item["anytop_x"]).transpose(2, 0, 1)[:T, :J, :]
+                gt_raw = gt_norm * (std[None] + _STD_FLOOR) + mean[None]
+                offsets = np.asarray(item["rest_offsets"])[:J]
+                pred_world = recover_from_bvh_rot_np(pred_raw, parents, offsets)
+                gt_world = recover_from_bvh_rot_np(gt_raw, parents, offsets)
+            elif args.render_mode == "three_col":
+                # 3-col QA: GT_RIC | PRED_RIC | PRED_FK. pred goes through BOTH the
+                # RIC/position route AND the rot6d-FK route; their agreement is the
+                # core rot6d_fk signal. speed_ratio reported on the RIC route.
+                gt_norm = np.asarray(item["anytop_x"]).transpose(2, 0, 1)[:T, :J, :]
+                gt_raw = gt_norm * (std[None] + _STD_FLOOR) + mean[None]
+                offsets = np.asarray(item["rest_offsets"])[:J]
+                gt_ric = _recover_world_positions(gt_raw)
+                pred_ric = _recover_world_positions(pred_raw)
+                pred_fk = recover_from_bvh_rot_np(pred_raw, parents, offsets)
+                pred_world, gt_world = pred_ric, gt_ric
+            else:  # pos (legacy RIC path)
+                pred_world = _recover_world_positions(pred_raw)             # [T, J, 3]
+                gt_world = batch.motion_features[0, :T, :J, :3].cpu().numpy()
 
             k = picked[sp]
-            gif = out_dir / f"{sp}_clip{k}_gtvspred.gif"
             g_spd = float(np.linalg.norm(np.diff(gt_world, axis=0), axis=-1).mean())
             p_spd = float(np.linalg.norm(np.diff(pred_world, axis=0), axis=-1).mean())
             ratio = p_spd / max(g_spd, 1e-9)
             ttl = (f"{sp} clip{k} [anytop13/{ta['pool_type']}] J={J} T={T}  "
                    f"speed_ratio={ratio:.3f}")
-            animate_clip(pred_world, gt_world, parents, str(gif),
-                         ttl, args.stride, args.fps)
-            for elev, azim, tag in [(12, -70, "obl"), (75, -90, "top")]:
-                contact_sheet(pred_world, gt_world, parents,
-                              str(out_dir / f"{sp}_clip{k}_sheet_{tag}.png"),
-                              ttl, elev=elev, azim=azim)
+            if args.render_mode == "three_col":
+                gif = out_dir / f"{sp}_clip{k}_3col.gif"
+                animate_clip_3col(gt_ric, pred_ric, pred_fk, parents, str(gif),
+                                  ttl, args.stride, args.fps)
+            else:
+                gif = out_dir / f"{sp}_clip{k}_gtvspred.gif"
+                animate_clip(pred_world, gt_world, parents, str(gif),
+                             ttl, args.stride, args.fps)
+                for elev, azim, tag in [(12, -70, "obl"), (75, -90, "top")]:
+                    contact_sheet(pred_world, gt_world, parents,
+                                  str(out_dir / f"{sp}_clip{k}_sheet_{tag}.png"),
+                                  ttl, elev=elev, azim=azim)
             line = (f"{sp} clip{k}: J={J} T={T} effective_T={T} "
                     f"T_clip={T_clip} dropped_tail={T_dropped} "
                     f"GT_speed={g_spd:.4f} PRED_speed={p_spd:.4f} "

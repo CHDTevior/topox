@@ -129,6 +129,11 @@ class GraphMotionBatch:
     anytop_graph_dist: Optional[torch.Tensor] = None       # [B, J_max, J_max] AnyTop clamped (≤5)
     anytop_joint_relations: Optional[torch.Tensor] = None  # [B, J_max, J_max] edge type 0..5
     foot_contact_per_joint: Optional[torch.Tensor] = None  # [B, T_max, J_max] raw 0/1 per joint
+    # De-norm stats for the 13ch view — needed by loss_mode="anytop13_world_geometry"
+    # to recover raw motion (raw = norm*(std+1e-6) + mean) before differentiable
+    # world recovery. Raw (un-normalized) AnyTop mean/std, padded per joint.
+    anytop_mean: Optional[torch.Tensor] = None             # [B, J_max, 13] raw de-norm mean
+    anytop_std: Optional[torch.Tensor] = None              # [B, J_max, 13] raw de-norm std
     caption_emb: Optional[torch.Tensor] = None             # [B, 768] T5 caption embedding
     has_text: Optional[torch.Tensor] = None                # [B] bool — caption present
 
@@ -509,6 +514,8 @@ class GraphMotionBatch:
             ("anytop_joint_relations", 3, (J_max_val, J_max_val)),
             ("foot_contact_per_joint", 3, (T_max_val, J_max_val)),
             ("caption_emb",            2, (768,)),
+            ("anytop_mean",            3, (J_max_val, 13)),
+            ("anytop_std",             3, (J_max_val, 13)),
         )
         for key, expected_rank, tail_shape in _OPTIONAL_TENSOR_SPEC:
             if key not in d:
@@ -587,6 +594,8 @@ class GraphMotionBatch:
             anytop_graph_dist=d.get("anytop_graph_dist"),
             anytop_joint_relations=d.get("anytop_joint_relations"),
             foot_contact_per_joint=d.get("foot_contact_per_joint"),
+            anytop_mean=d.get("anytop_mean"),
+            anytop_std=d.get("anytop_std"),
             caption_emb=d.get("caption_emb"),
             has_text=d.get("has_text"),
         )

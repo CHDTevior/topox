@@ -526,3 +526,61 @@ Decision after diagnostic:
 - If per-joint latent improves long-chain/wing/tail details, design a new pool_type="hybrid_prism_segment".
 - If it does not, investigate decoder/loss/data representation before pool changes.
 ```
+
+
+---
+
+## 执行计划 v3 — per-joint latent + graph-temporal 长链诊断 [user 已审核, 进入 launch+smoke]
+
+> CC 2026-05-30 ~22:45。baseline commit=1e2a823。v3 采纳 user 代码审核两点修正。
+
+### user 审核修正 (v2→v3)
+1. **none+graph_temporal ≠ 纯空间池化诊断** (我 v2 错判)。它同时改 pool + decoder = 联合诊断。
+   → 加 **none+coarse_xattn 对照** 做归因保险。三点归因:
+   - baseline (edge_segment + coarse_xattn)  ──纯pool变量──>  A: none + coarse_xattn
+   - A: none + coarse_xattn  ──纯decoder变量──>  B: none + graph_temporal
+   - 改善来自"不池化"还是"更强decoder", 靠 A 区分。
+2. **--batch_size 是 per-GPU, 不是 global** (train_graph_vae.py:529)。launch 脚本必须标全:
+   `per_gpu_batch / world_size / global_batch / reference_global_batch=128 / lr`。
+   Goyal: lr = 4e-4 × (global_batch / 128)。
+
+### 三个 run
+| run | pool_type | decoder_mode | 角色 | 成本 |
+|---|---|---|---|---|
+| baseline (已有) | edge_segment | coarse_xattn | 对照基准 (H200, best ep34 val1.378) | — |
+| **A 归因保险** | none | coarse_xattn | 隔离"纯不池化"效果 | 低 (短跑/几十ep) |
+| **B 主诊断** | none | graph_temporal | per-joint + 强 decoder (long-chain 主攻) | 长跑 |
+
+### 显存硬点 (user 提示)
+- graph_temporal 的 fine-joint spatial attention 显存 ∝ **B·T·J²** (J=144, J²≈20736, decode 全帧 T=64)。**B 显存压力 >> A**。
+- → A、B 各自 smoke; bz 可能不同。对照公平性: 建议 A、B 用**相同 per_gpu_batch**(取 B 能跑的上限), 让 A↔B 差异纯来自 decoder。smoke 后定。
+
+### 数据层 — 零改动
+J∈[52,140], max_joints=144 全覆盖 0 丢失。none expected_C=max_joints (train_graph_vae.py:653)。同 clean L2 + numpy1.26 cond 缓存。
+
+### 模型层 — 零 src 改动 (全走现有 none 路径)
+- 共同: feat_mode=anytop13 attn_mode=graphormer max_joints=144 temporal_stride=4 use_name_embed seed=42 **从头训(无 init_ckpt)**。
+- 结构超参锁 baseline (d512/h8/d_ff1536/各层数同)。
+- 参数量: A none+coarse_xattn=**41.07M**; B none+graph_temporal=**55.84M** (实测)。
+- **从头训, 不 warm-start** (user 提示: 从 edge_segment ckpt warm-start 会有 unpool.* unexpected keys, 因 none 无 unpool)。
+
+### 训练层 — bz 尽量高 (smoke 实测), lr 按 global 缩放
+- bz 从 per_gpu=48 试起, OOM 降 (48→40→32→24)。B 因 J² 显存大, 上限大概率低于 A。
+- world_size 由资源定: 4×A100 可 (a) 串行各用 4 卡, 或 (b) 并行 2+2 各 world_size=2 (对齐 baseline 的 world_size=2 结构)。alloc 925439 剩 ~22h → 倾向并行 2+2 保两个都跑完。smoke 后定。
+- lr = 4e-4 × global/128。epochs: 跑到 ~ep40-50 出 ≥6 val 点 (≥5ep 窗口)。
+- run dir: A=`runs/m1_l2_anytop13_noneJ144_coarse_p1diagA_seed42`, B=`runs/m1_l2_anytop13_noneJ144_gtemporal_p1diagB_seed42`。
+
+### QA — 聚焦长链 (可视化>metric)
+长链物种 (cond.npy 实证): Grey Seal(J140)、Asian Water Monitor♂♀(user 截图)、Croc/Alligator 尾、Elephant(137)。多帧 gif 看末端 traveling wave 逐帧恢复。**baseline vs A vs B 同物种同 epoch** 三方对比。短链反退化检查。
+
+### 决策树
+- B 改善长链 + A 也改善 → "不池化"是主因 → 进 hybrid_prism_segment (新 pool src, 必 codex 审)。
+- B 改善但 A 不改善 → 是 graph_temporal decoder 的功劳, 不是池化 → 重心转 decoder。
+- 都不改善 → 根因不在 pool/decoder → 查 loss/数据表示。
+
+### 执行顺序 (user 已批 launch+smoke)
+1. ✅ 计划 v3 (本段)。
+2. 写 launch 脚本 ×2 (A/B), batch/lr 口径标全 → 给 user 过目。
+3. smoke: swarma1001 单卡, A、B 各扫 bz 上限, 实测显存。
+4. 报告 smoke (bz/lr/world_size/资源方案) → user 拍板正式起。
+5. 正式起 + durable monitor + hourly。 ~ep40-50 渲长链三方 QA。

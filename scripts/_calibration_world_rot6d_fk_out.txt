@@ -1,0 +1,20 @@
+  [AnyTopDataset] loaded normalized cond from cache (473 object types, _cond_normalized_J144.pkl)
+AnyTopDataset [val]: 4112 motions, 473 object types, max_joints=144, num_frames=64
+=== RAW (mean over 5 batches x 4) ===
+  base_total=1.4598
+    pos      =0.2253
+    rot      =0.8500
+    vel      =0.2590
+    contact  =0.0319
+    kl       =122.3244
+    pool_aux =0.0000
+  world=0.1561  fk=0.2847  traj=0.1411  gt_fk_mismatch=0.1433
+=== WEIGHTED @ w_world=0.25 w_fk=0.25 w_traj=0.1 ===
+  w_world*world=0.0390 (2.7% of base)
+  w_fk*fk      =0.0712 (4.9% of base)
+  w_traj*traj  =0.0141 (1.0% of base)
+  total geometry = 0.1243 (8.5% of base)
+=== PLAN §6 RECOMMENDATION ===
+  Both geometry terms <10% of base -> ALSO run stronger arm 0.5/0.5/0.25
+  To equalize contributions (w_world*world==w_fk*fk): w_fk≈0.137 (world=0.1561 vs fk=0.2847, ratio=1.82x)
+DONE

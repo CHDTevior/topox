@@ -18,6 +18,8 @@ from .losses import (
     aggregate_pool_aux,
     compute_total_loss,
     compute_total_loss_13ch,
+    compute_world_geometry_terms,
+    compute_world_rot6d_fk_terms,
     masked_bone_length,
     masked_contact_bce,
     masked_kl_gaussian,

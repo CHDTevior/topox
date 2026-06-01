@@ -1,0 +1,9 @@
+  [AnyTopDataset] loaded normalized cond from cache (473 object types, _cond_normalized_J144.pkl)
+AnyTopDataset [train]: 77882 motions, 473 object types, max_joints=144, num_frames=64
+target idx counts: {'Pronghorn_Antelope': 400, 'Saiga': 414, 'Western_Lowland_Gorilla': 479, 'Southern_White_Rhinoceros': 240, 'Komodo': 378}
+  [MAMMAL-outlier] PZ_Pronghorn_Antelope_Female               absL1=0.4290 L2/bbox=5.9% -> WORST_PZ_Pronghorn_Antelope_Female.gif
+  [MAMMAL-outlier] PZ_Saiga_Female                            absL1=0.6522 L2/bbox=12.1% -> WORST_PZ_Saiga_Female.gif
+  [MAMMAL-outlier] PZ_Western_Lowland_Gorilla_Female          absL1=0.3090 L2/bbox=11.5% -> WORST_PZ_Western_Lowland_Gorilla_Female.gif
+  [MAMMAL-outlier] PZ_Southern_White_Rhinoceros_Female        absL1=0.8502 L2/bbox=20.4% -> WORST_PZ_Southern_White_Rhinoceros_Female.gif
+  [reptile-control] PZ_Komodo_Dragon_Female                    absL1=0.9008 L2/bbox=12.5% -> WORST_PZ_Komodo_Dragon_Female.gif
+DONE -> /iridisfs/scratch/ts1v23/workspace/noKslot_clean/_qa_gt_ric_vs_fk

@@ -576,3 +576,167 @@ def compute_total_loss_13ch(
         total = total + losses[key] * w
     losses["total"] = total
     return losses
+
+
+# ============================================================================
+# World-geometry terms (loss_mode="anytop13_world_geometry")
+# ============================================================================
+# Standalone ADD-ON terms — does NOT touch compute_total_loss_13ch, so the
+# default anytop13 numerics are byte-for-byte unchanged (the new terms are only
+# summed into `total` by run_loss when loss_mode="anytop13_world_geometry").
+#
+# Inspired by PRISM's geometry supervision (supervise consequences, not just
+# parameters), but this is NOT PRISM FK supervision. We recover world-space
+# joint positions from BOTH pred and gt via the SAME AnyTop RIFKE recovery the
+# visual QA renders (recover_world_positions_torch), then L1 them. This directly
+# supervises the rendered skeleton geometry — exactly what the long-chain visual
+# QA judges.
+#
+# IMPORTANT SEMANTIC BOUND (codex review 2026-05-31, gradient-verified):
+#   AnyTop RIFKE recovery uses ONLY: root 6D rot (j0 ch3:9), root xz vel
+#   (j0 ch9/11), root height (j0 ch1), and NON-root RELATIVE POSITION (j>=1
+#   ch0:3). It does NOT use non-root joints' 6D rotation (ch3:9). Therefore this
+#   loss gives ZERO gradient to non-root rotation channels (verified: grad=0.0).
+#   It is a WORLD-POSITION geometry loss, NOT an FK-chain loss — do not claim FK
+#   supervision. Non-root tip/limb POSITION error IS supervised (via ch0:3, the
+#   channels the renderer actually uses). If we later need "rotation error
+#   propagating through the chain to distal joints", add a separate true
+#   FK-consistency branch (anytop13_fk_consistency) — out of scope here.
+
+_ANYTOP_STD_FLOOR = 1e-6  # == anytop_dataset._STD_FLOOR; denorm must invert
+                          # dataset's normed = (raw-mean)/(std+_STD_FLOOR).
+
+
+def _denorm_13ch(motion_norm, anytop_mean, anytop_std):
+    """Invert AnyTop normalization: raw = norm*(std+floor) + mean.
+
+    motion_norm [B,T,J,13] normalized; anytop_mean/std [B,J,13] raw stats.
+    Returns raw 13ch [B,T,J,13]. Padded joints (std=1,mean=0) pass ~through;
+    they are masked out downstream anyway.
+    """
+    mean = anytop_mean.unsqueeze(1)  # [B,1,J,13]
+    std = anytop_std.unsqueeze(1)    # [B,1,J,13]
+    return motion_norm * (std + _ANYTOP_STD_FLOOR) + mean
+
+
+def compute_world_geometry_terms(
+    *,
+    pred_motion: torch.Tensor,   # [B,T,J,13] normalized decoder output
+    gt_motion: torch.Tensor,     # [B,T,J,13] normalized anytop_x
+    anytop_mean: torch.Tensor,   # [B,J,13] raw de-norm mean
+    anytop_std: torch.Tensor,    # [B,J,13] raw de-norm std
+    joint_mask: torch.Tensor,    # [B,J] bool
+    frame_mask: torch.Tensor,    # [B,T] bool
+) -> dict[str, torch.Tensor]:
+    """World-geometry add-on terms (differentiable; NOT FK supervision — gives
+    ZERO gradient to non-root rotation, see section header for the verified bound).
+
+    Returns {"world": L_world, "traj": L_traj}:
+      L_world : masked L1 of recover_world(pred_raw) vs recover_world(gt_raw)
+                over all valid (joint,frame) — distal-error-exposing geometry loss.
+      L_traj  : masked L1 of the ROOT trajectory (joint 0) over valid frames —
+                catches root drift / overshoot. Taken from the SAME recovered
+                world tensor (no separate cumsum, semantics consistent).
+
+    recover_world_positions_torch was verified == numpy `_recover_world_positions`
+    to ~5e-7 on real long-chain clips (smoke gate 1, 2026-05-31). Lazy-imported
+    so importing losses.py is unchanged for the default path.
+    """
+    from src.models.graph_salad.world_recovery import (
+        recover_world_positions_torch,
+    )
+    if anytop_mean is None or anytop_std is None:
+        raise ValueError(
+            "compute_world_geometry_terms requires batch.anytop_mean / "
+            "anytop_std (loss_mode=anytop13_world_geometry needs de-norm stats)"
+        )
+    pred_raw = _denorm_13ch(pred_motion, anytop_mean, anytop_std)  # [B,T,J,13]
+    gt_raw = _denorm_13ch(gt_motion, anytop_mean, anytop_std)
+    if not torch.isfinite(pred_raw).all() or not torch.isfinite(gt_raw).all():
+        raise ValueError("compute_world_geometry_terms: denorm produced NaN/Inf")
+
+    world_pred = recover_world_positions_torch(pred_raw)  # [B,T,J,3]
+    world_gt = recover_world_positions_torch(gt_raw)      # [B,T,J,3]
+
+    mask = _broadcast_pos_vel_mask(joint_mask, frame_mask)  # [B,T,J]
+    mf = mask.to(world_pred.dtype)
+    # L_world: L1 over xyz, masked over (joint, frame)
+    diff = (world_pred - world_gt).abs().sum(dim=-1) * mf   # [B,T,J]
+    l_world = diff.sum() / mask.sum().clamp(min=_EPS)
+
+    # L_traj: root joint (index 0) trajectory, masked by frame only
+    fm = frame_mask.to(world_pred.dtype)                   # [B,T]
+    root_diff = (world_pred[:, :, 0, :] - world_gt[:, :, 0, :]).abs().sum(dim=-1)  # [B,T]
+    l_traj = (root_diff * fm).sum() / frame_mask.sum().clamp(min=_EPS)
+
+    return {"world": l_world, "traj": l_traj}
+
+
+def _masked_l1_xyz(pred_pos, gt_pos, joint_mask, frame_mask):
+    """Masked L1 over xyz for [B,T,J,3] positions, averaged over valid (joint,
+    frame). Shared by the world_rot6d_fk terms below."""
+    mask = _broadcast_pos_vel_mask(joint_mask, frame_mask)  # [B,T,J]
+    mf = mask.to(pred_pos.dtype)
+    diff = (pred_pos - gt_pos).abs().sum(dim=-1) * mf
+    return diff.sum() / mask.sum().clamp(min=_EPS)
+
+
+def compute_world_rot6d_fk_terms(
+    *,
+    pred_motion: torch.Tensor,      # [B,T,J,13] normalized
+    gt_motion: torch.Tensor,        # [B,T,J,13] normalized
+    anytop_mean: torch.Tensor,      # [B,J,13]
+    anytop_std: torch.Tensor,       # [B,J,13]
+    parent_indices,                 # list[list[int]] length B
+    rest_offsets: torch.Tensor,     # [B,J,3]
+    joint_mask: torch.Tensor,       # [B,J] bool
+    frame_mask: torch.Tensor,       # [B,T] bool — use frame_mask_recovered
+) -> dict[str, torch.Tensor]:
+    """Combined world/RIC + true rot6d-FK geometry terms
+    (loss_mode="anytop13_world_rot6d_fk", plan 2026-06-01).
+
+    Returns {"world", "fk", "traj", "gt_fk_mismatch"}:
+      world : masked L1 of RIC(pred) vs RIC(gt)  — keeps the current pose/render
+              route (channels 0:3 + root) aligned with the GT world skeleton.
+      fk    : masked L1 of rot6d-FK(pred) vs RIC(gt) — maps predicted non-root 6D
+              rotations through the parent tree + rest offsets, supervising the
+              resulting joint positions against the SAME GT target. Gives nonzero
+              gradient to non-root rotation channels (3:9), unlike world-only.
+      traj  : masked L1 of RIC root trajectory (joint 0) — root drift/overshoot.
+              FK and RIC share root channels, so only ONE traj term (no fk_traj).
+      gt_fk_mismatch : masked L1 of rot6d-FK(gt) vs RIC(gt) — DIAGNOSTIC ONLY,
+              the dataset's own Route-B-vs-Route-A floor. NOT added to total
+              (preflight 2026-06-01: clean_L2 val main p95~30%, median~1.2%).
+
+    Targets RIC(gt) for both geometry branches (plan §3 Option 2): RIC is the
+    trusted visual/world target; training against FK(gt_rot6d) would preserve
+    the GT-route disagreement rather than correct it.
+    """
+    from src.models.graph_salad.world_recovery import recover_world_positions_torch
+    from src.models.graph_salad.rot6d_fk_recovery import recover_rot6d_fk_positions_torch
+    if anytop_mean is None or anytop_std is None:
+        raise ValueError(
+            "compute_world_rot6d_fk_terms requires batch.anytop_mean / "
+            "anytop_std (loss_mode=anytop13_world_rot6d_fk needs de-norm stats)")
+    pred_raw = _denorm_13ch(pred_motion, anytop_mean, anytop_std)  # [B,T,J,13]
+    gt_raw = _denorm_13ch(gt_motion, anytop_mean, anytop_std)
+    if not torch.isfinite(pred_raw).all() or not torch.isfinite(gt_raw).all():
+        raise ValueError("compute_world_rot6d_fk_terms: denorm produced NaN/Inf")
+
+    P_gt_ric = recover_world_positions_torch(gt_raw)              # [B,T,J,3] target
+    P_pred_ric = recover_world_positions_torch(pred_raw)
+    P_pred_fk = recover_rot6d_fk_positions_torch(
+        pred_raw, parent_indices, rest_offsets, joint_mask)
+    # diagnostic: GT's own two-route mismatch (the fk-loss floor)
+    P_gt_fk = recover_rot6d_fk_positions_torch(
+        gt_raw, parent_indices, rest_offsets, joint_mask)
+
+    world = _masked_l1_xyz(P_pred_ric, P_gt_ric, joint_mask, frame_mask)
+    fk = _masked_l1_xyz(P_pred_fk, P_gt_ric, joint_mask, frame_mask)
+    gt_fk_mismatch = _masked_l1_xyz(P_gt_fk, P_gt_ric, joint_mask, frame_mask)
+    # traj: root trajectory, frame-masked only (root is joint 0)
+    fm = frame_mask.to(P_pred_ric.dtype)
+    root_diff = (P_pred_ric[:, :, 0, :] - P_gt_ric[:, :, 0, :]).abs().sum(dim=-1)
+    traj = (root_diff * fm).sum() / frame_mask.sum().clamp(min=_EPS)
+
+    return {"world": world, "fk": fk, "traj": traj, "gt_fk_mismatch": gt_fk_mismatch}

@@ -1,0 +1,19 @@
+  [AnyTopDataset] loaded normalized cond from cache (473 object types, _cond_normalized_J144.pkl)
+AnyTopDataset [train]: 77882 motions, 473 object types, max_joints=144, num_frames=64
+object                                        absL1    absL2    bbox  L1/bbox%  L2/bbox%
+PZ_American_Alligator_Female                 0.0851   0.0690   5.043      1.69      1.37  reptile/other
+PZ_Asian_Water_Monitor_Female                0.0777   0.0659   6.628      1.17      0.99  reptile/other
+PZ_Black_Rhino_Female                        0.0032   0.0029   3.466      0.09      0.08  MAMMAL-outlier
+PZ_Grey_Seal_Female                          0.0104   0.0088   8.404      0.12      0.11  reptile/other
+PZ_Komodo_Dragon_Female                      0.0122   0.0097   5.631      0.22      0.17  reptile/other
+PZ_Pronghorn_Antelope_Female                 0.0127   0.0113   4.955      0.26      0.23  MAMMAL-outlier
+PZ_Saiga_Female                              0.0155   0.0138   4.072      0.38      0.34  MAMMAL-outlier
+PZ_Saltwater_Crocodile_Female                0.0833   0.0677   4.994      1.67      1.36  reptile/other
+PZ_Sun_Bear_Female                           0.0107   0.0094   2.813      0.38      0.33  MAMMAL-outlier
+PZ_Western_Lowland_Gorilla_Female            0.0350   0.0273   2.281      1.54      1.20  MAMMAL-outlier
+
+=== train 60-clip 平均 ===
+  abs-L1 (gt_fk_mismatch 口径): mean=0.3665 median=0.2887 p95=0.8844
+     → 对照训练实测 gt_fk_mismatch = 0.2921 (train epoch mean)
+  L2/bbox% (preflight 口径):    mean=8.87% median=6.80% p95=29.54%
+     → 对照 preflight train main_nonhelper mean=9.63% median=3.44%

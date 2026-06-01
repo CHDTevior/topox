@@ -49,14 +49,24 @@ from src.models.graph_salad import (
     GraphMotionVAE,
     compute_total_loss,
     compute_total_loss_13ch,
+    compute_world_geometry_terms,
+    compute_world_rot6d_fk_terms,
 )
 
 
-def run_loss(out, batch, feat_mode, loss_weights, effective_frame_mask, dev):
+def run_loss(out, batch, feat_mode, loss_weights, effective_frame_mask, dev,
+             loss_mode="anytop13", w_world=0.0, w_traj=0.0, w_fk=0.0):
     """Dispatch to the feat_mode-appropriate loss function.
 
     fk6      -> compute_total_loss (pred_pos/pred_vel vs motion_features).
     anytop13 -> compute_total_loss_13ch (pred_motion vs anytop_x, + contact BCE).
+
+    loss_mode="anytop13_world_geometry" ADDS world-geometry terms (recovered
+    world-position L1 + root-trajectory L1) on top of the standard anytop13 loss.
+    loss_mode="anytop13_world_rot6d_fk" ADDS world/RIC + true rot6d-FK + root-traj
+    terms (the FK term gives nonzero grad to non-root rotation channels).
+    Default loss_mode="anytop13" leaves the computation byte-for-byte unchanged
+    (no geometry branch is entered).
     """
     if feat_mode == "anytop13":
         if batch.anytop_x is None or batch.foot_contact_per_joint is None:
@@ -65,7 +75,7 @@ def run_loss(out, batch, feat_mode, loss_weights, effective_frame_mask, dev):
                 "batch.foot_contact_per_joint; use --dataset anytop_truebones"
             )
         gt_motion = batch.anytop_x.permute(0, 3, 1, 2).contiguous()  # [B,T,J,13]
-        return compute_total_loss_13ch(
+        losses = compute_total_loss_13ch(
             pred_motion=out["pred_motion"],
             gt_motion=gt_motion,
             foot_contact_per_joint=batch.foot_contact_per_joint,
@@ -77,6 +87,46 @@ def run_loss(out, batch, feat_mode, loss_weights, effective_frame_mask, dev):
             frame_mask_lat=out["frame_mask_lat"],
             weights=loss_weights,
         )
+        if loss_mode == "anytop13_world_geometry":
+            # codex review P2: compute_total_loss_13ch already returned `total`,
+            # so we MUST explicitly add the new terms here — passing them via
+            # `weights` alone would NOT take effect (its total loop only iterates
+            # the keys it computes itself).
+            terms = compute_world_geometry_terms(
+                pred_motion=out["pred_motion"],
+                gt_motion=gt_motion,
+                anytop_mean=batch.anytop_mean,
+                anytop_std=batch.anytop_std,
+                joint_mask=batch.joint_mask,
+                frame_mask=effective_frame_mask,
+            )
+            losses["world"] = terms["world"]
+            losses["traj"] = terms["traj"]
+            losses["total"] = (losses["total"]
+                               + w_world * terms["world"]
+                               + w_traj * terms["traj"])
+        elif loss_mode == "anytop13_world_rot6d_fk":
+            # Combined world/RIC + true rot6d-FK + root-traj (plan 2026-06-01).
+            # gt_fk_mismatch is diagnostic-only (NOT added to total).
+            terms = compute_world_rot6d_fk_terms(
+                pred_motion=out["pred_motion"],
+                gt_motion=gt_motion,
+                anytop_mean=batch.anytop_mean,
+                anytop_std=batch.anytop_std,
+                parent_indices=batch.parent_indices,
+                rest_offsets=batch.rest_offsets,
+                joint_mask=batch.joint_mask,
+                frame_mask=effective_frame_mask,
+            )
+            losses["world"] = terms["world"]
+            losses["fk"] = terms["fk"]
+            losses["traj"] = terms["traj"]
+            losses["gt_fk_mismatch"] = terms["gt_fk_mismatch"]  # diagnostic only
+            losses["total"] = (losses["total"]
+                               + w_world * terms["world"]
+                               + w_fk * terms["fk"]
+                               + w_traj * terms["traj"])
+        return losses
     # fk6
     gt_pos = batch.motion_features[..., :3]
     gt_vel = batch.motion_features[..., 3:6]
@@ -278,6 +328,11 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--init_ckpt", type=str, default=None,
                    help="Optional baseline ckpt to warm-start encoder+slot_norm+decoder")
+    p.add_argument("--resume", type=str, default=None,
+                   help="Resume model+optimizer+epoch from a ckpt to CONTINUE the same "
+                        "experiment (mutually exclusive with --init_ckpt). Valid for exact "
+                        "comparability because training uses a fixed lr with no scheduler — "
+                        "restoring model + AdamW state + start_epoch == uninterrupted run.")
     # feat_mode: fk6 (legacy 6ch+FK) vs anytop13 (AnyTop native 13ch end-to-end)
     p.add_argument("--feat_mode", choices=("fk6", "anytop13"), default="fk6",
                    help="fk6: 6ch local_pos+vel -> FK decoder. anytop13: AnyTop "
@@ -316,6 +371,27 @@ def main() -> int:
     p.add_argument("--w_kl", type=float, default=1e-3)
     p.add_argument("--w_bone", type=float, default=1.0)
     p.add_argument("--w_pool_aux", type=float, default=0.5)
+    # World-geometry loss (anytop13 only; supervises RIFKE-recovered world-space
+    # joint positions — the space the visual QA renders). Default loss_mode keeps
+    # the original anytop13 loss bit-for-bit. NOT FK supervision (zero grad to
+    # non-root rotation; codex review 2026-05-31).
+    p.add_argument("--loss_mode",
+                   choices=("anytop13", "anytop13_world_geometry",
+                            "anytop13_world_rot6d_fk"),
+                   default="anytop13",
+                   help="anytop13 (default, unchanged) | anytop13_world_geometry "
+                        "(adds w_world*L_world + w_traj*L_traj) | "
+                        "anytop13_world_rot6d_fk (adds w_world*L_world + "
+                        "w_fk*L_rot6d_fk + w_traj*L_traj)")
+    p.add_argument("--w_world", type=float, default=0.5,
+                   help="weight for recovered world-position (RIC) L1 "
+                        "(active when --loss_mode is a geometry mode)")
+    p.add_argument("--w_traj", type=float, default=0.25,
+                   help="weight for root-trajectory L1 "
+                        "(active when --loss_mode is a geometry mode)")
+    p.add_argument("--w_fk", type=float, default=0.25,
+                   help="weight for true rot6d-FK L1 vs RIC(gt) "
+                        "(only active when --loss_mode anytop13_world_rot6d_fk)")
     # M1.5R decision #4: enable name embedding (cross-species shared semantics)
     p.add_argument("--use_name_embed", action="store_true",
                    help="M1.5R decision #4: encoder.use_name_embed=True for cross-species transfer")
@@ -338,6 +414,13 @@ def main() -> int:
         raise RuntimeError(
             "[ARGS FAIL] --feat_mode anytop13 requires --dataset anytop_truebones "
             f"(got --dataset {args.dataset})")
+    # geometry loss modes (world_geometry / world_rot6d_fk) require the anytop13
+    # path; run_loss would silently ignore them under fk6 (codex review P1).
+    if args.loss_mode != "anytop13" and (
+            args.feat_mode != "anytop13" or args.dataset != "anytop_truebones"):
+        raise RuntimeError(
+            f"[ARGS FAIL] --loss_mode {args.loss_mode} requires --feat_mode "
+            "anytop13 and --dataset anytop_truebones")
     # decoder_mode default resolution: an unset --decoder_mode resolves by
     # feat_mode — anytop13 -> coarse_xattn (A/B-validated: coarse slots + real
     # pool assignment P), fk6 -> unpool_identity (its historical M1.5R behavior,
@@ -565,6 +648,25 @@ def main() -> int:
     n_params = sum(p.numel() for p in vae.parameters())
     log(f"VAE params: {n_params:,}")
 
+    # --resume: continue the SAME experiment (model + optimizer + epoch). Distinct
+    # from --init_ckpt warm-start (weights-only, from epoch 0). Model is loaded into
+    # the raw module BEFORE DDP wrap; optimizer state is restored after the optimizer
+    # is built (below). Exact comparability holds because training uses a fixed lr
+    # with no scheduler (codex 2026-06-01, thread 019e818d).
+    resume_ckpt = None
+    start_epoch = 0
+    if args.resume is not None:
+        if args.init_ckpt is not None:
+            raise RuntimeError("[RESUME FAIL] --resume and --init_ckpt are mutually exclusive")
+        if not Path(args.resume).exists():
+            raise RuntimeError(f"[RESUME FAIL] {args.resume} does not exist.")
+        log(f"Resuming (model+optimizer+epoch) from: {args.resume}")
+        resume_ckpt = torch.load(args.resume, map_location=dev, weights_only=False)
+        vae.load_state_dict(resume_ckpt["model_state_dict"], strict=True)
+        start_epoch = int(resume_ckpt["epoch"]) + 1
+        log(f"  resumed model weights (strict=True); start_epoch={start_epoch} "
+            f"(ckpt epoch={resume_ckpt['epoch']}, val_loss={resume_ckpt.get('val_loss')})")
+
     # Warm-start from baseline ckpt — fail loud on missing/unexpected (codex M1.5 Critical)
     if args.init_ckpt is not None:
         if not Path(args.init_ckpt).exists():
@@ -667,7 +769,41 @@ def main() -> int:
     best_val_recon = float("inf")
     smoke_iter_cap = 5 if args.smoke else None
 
-    for epoch in range(args.epochs):
+    # --resume: restore AdamW state + best-val bookkeeping (model + start_epoch were
+    # already restored above). Optimizer is built on the same vae.parameters() order
+    # as the original run (both built AFTER DDP wrap), so param identity matches.
+    # load_state_dict may leave state tensors on CPU — move them to the current
+    # device (codex DDP/optimizer-device caveat). best_val_* carried forward so the
+    # first post-resume validation does not overwrite a prior best with a worse one.
+    if resume_ckpt is not None:
+        opt.load_state_dict(resume_ckpt["optimizer_state_dict"])
+        for state in opt.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v):
+                    state[k] = v.to(dev)
+        # best_val_* : prefer the historical bests persisted in the resume ckpt; if
+        # the field is absent (legacy ckpt) fall back to the sibling best_model.pt /
+        # best_recon_model.pt — those ARE the historical bests — else inf. Do NOT use
+        # the ckpt's own current val_* (that is the checkpointed epoch's value, not
+        # the historical best, and would overwrite a better earlier best on the first
+        # post-resume validation; codex 2026-06-01, thread 019e8198).
+        if "best_val_loss" in resume_ckpt:
+            best_val_loss = float(resume_ckpt["best_val_loss"])
+            best_val_recon = float(resume_ckpt.get("best_val_recon", float("inf")))
+        else:
+            _rdir = Path(args.resume).parent
+            _bm, _brm = _rdir / "best_model.pt", _rdir / "best_recon_model.pt"
+            best_val_loss = (float(torch.load(_bm, map_location="cpu", weights_only=False)["val_loss"])
+                             if _bm.exists() else float("inf"))
+            best_val_recon = (float(torch.load(_brm, map_location="cpu", weights_only=False)["val_recon"])
+                              if _brm.exists() else float("inf"))
+            log("  [resume] legacy ckpt (no best_val field) → best_val from "
+                "sibling best_model.pt / best_recon_model.pt")
+        log(f"  resumed optimizer state ({len(opt.state)} params on {dev}); "
+            f"best_val_loss={best_val_loss:.4f} best_val_recon={best_val_recon:.4f}")
+        del resume_ckpt
+
+    for epoch in range(start_epoch, args.epochs):
         if is_ddp:
             train_sampler.set_epoch(epoch)   # reshuffle shards each epoch
         vae.train()
@@ -704,7 +840,10 @@ def main() -> int:
                 log(f"  [stride-tail] frames dropped by stride={args.temporal_stride}: "
                     f"{dropped}/{batch.frame_mask.sum().item()}")
             losses = run_loss(out, batch, args.feat_mode, loss_weights,
-                              effective_frame_mask, dev)
+                              effective_frame_mask, dev,
+                              loss_mode=args.loss_mode,
+                              w_world=args.w_world, w_traj=args.w_traj,
+                              w_fk=args.w_fk)
 
             # Gate #3: pre-backward loss finite check (codex M1.5 High)
             for k, v in losses.items():
@@ -813,7 +952,10 @@ def main() -> int:
                     # Codex M1.5 R3 P0: effective frame mask (stride-tail consistency)
                     effective_frame_mask_val = out["frame_mask_recovered"]
                     losses = run_loss(out, batch, args.feat_mode, loss_weights,
-                                      effective_frame_mask_val, dev)
+                                      effective_frame_mask_val, dev,
+                                      loss_mode=args.loss_mode,
+                                      w_world=args.w_world, w_traj=args.w_traj,
+                                      w_fk=args.w_fk)
                     for k, v in losses.items():
                         val_losses[k].append(v.item())
                     # Position prediction for diagnostics: fk6 -> pred_pos;
@@ -858,16 +1000,30 @@ def main() -> int:
             else:
                 recon_keys = ("pos", "vel", "vel_normalized", "vel_consistency",
                               "speed_mag", "bone")
+            # Active geometry terms must enter val_recon (codex review P2):
+            # otherwise best_recon_model.pt selects an old-objective ckpt even
+            # though training optimizes world/fk/traj. Their weights live in
+            # args (not loss_weights); gt_fk_mismatch stays excluded (diagnostic).
+            geo_w = {}
+            if args.loss_mode == "anytop13_world_geometry":
+                geo_w = {"world": args.w_world, "traj": args.w_traj}
+            elif args.loss_mode == "anytop13_world_rot6d_fk":
+                geo_w = {"world": args.w_world, "fk": args.w_fk, "traj": args.w_traj}
             val_recon_components_raw = {k: float(np.mean(val_losses[k]))
                                        for k in recon_keys
                                        if k in val_losses and loss_weights.get(k, 0.0) > 0.0}
-            val_recon = sum(
-                loss_weights[k] * v for k, v in val_recon_components_raw.items()
-            )
+            geo_raw = {k: float(np.mean(val_losses[k]))
+                       for k, w in geo_w.items()
+                       if k in val_losses and w > 0.0}
+            val_recon = (sum(loss_weights[k] * v for k, v in val_recon_components_raw.items())
+                         + sum(geo_w[k] * v for k, v in geo_raw.items()))
             val_recon_components = {
                 k: {"raw": v, "weighted": loss_weights[k] * v}
                 for k, v in val_recon_components_raw.items()
             }
+            val_recon_components.update({
+                k: {"raw": v, "weighted": geo_w[k] * v} for k, v in geo_raw.items()
+            })
             # Frozen-pred audit (codex 2026-05-21): expose static-shortcut early
             mean_speed_ratio = float(np.mean(speed_ratios)) if speed_ratios else float("nan")
             mean_pred_speed = float(np.mean(pred_speeds)) if pred_speeds else float("nan")
@@ -887,6 +1043,11 @@ def main() -> int:
             torch.save({
                 "epoch": epoch, "val_loss": val_loss_mean,
                 "val_recon": val_recon,
+                # Historical bests (incl. current epoch) so --resume restores the
+                # right best-val bookkeeping and does NOT overwrite a better earlier
+                # ckpt on the first post-resume validation (codex 2026-06-01, 019e8198).
+                "best_val_loss": min(best_val_loss, val_loss_mean),
+                "best_val_recon": min(best_val_recon, val_recon),
                 "model_state_dict": raw_vae.state_dict(),
                 "optimizer_state_dict": opt.state_dict(),
                 "args": vars(args),
@@ -955,6 +1116,9 @@ def main() -> int:
                 torch.save({
                     "epoch": epoch, "val_loss": best_val_loss,
                     "val_recon": best_val_recon,
+                    # Explicit best-val fields for --resume (codex 2026-06-01, 019e8198).
+                    "best_val_loss": best_val_loss,
+                    "best_val_recon": best_val_recon,
                     "model_state_dict": raw_vae.state_dict(),
                     "optimizer_state_dict": opt.state_dict(),
                     "args": vars(args),

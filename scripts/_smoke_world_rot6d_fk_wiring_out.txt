@@ -1,0 +1,9 @@
+  [AnyTopDataset] loaded normalized cond from cache (473 object types, _cond_normalized_J144.pkl)
+AnyTopDataset [val]: 4112 motions, 473 object types, max_joints=144, num_frames=64
+G2 default==direct & no geo keys: True (ref=1.996638 def=1.996638)
+G3 keys finite: True  world=0.0708 fk=0.2063 traj=0.0556 gt_fk_mismatch=0.1581 total=2.0715
+G4 nonroot rot6d(3:9) grad>0: True (6.0167e+00) [FK signature]
+G5 nonroot pos(0:3) grad>0: True (3.0037e+00) [world/RIC route]
+G7 gt_fk_mismatch (route floor, NOT asserted 0): 0.1581
+
+WIRING_SMOKE PASS

@@ -1,0 +1,9 @@
+  [AnyTopDataset] loaded normalized cond from cache (473 object types, _cond_normalized_J144.pkl)
+AnyTopDataset [val]: 4112 motions, 473 object types, max_joints=144, num_frames=64
+  PZ_Asian_Water_Monitor_Male      J=114 T=64 max|np-torch|=1.192e-06 nonroot_rot6d_grad=1.760e+00
+  PZ_Grey_Seal_Male                J=140 T=32 max|np-torch|=9.537e-07 nonroot_rot6d_grad=4.197e+00
+  PZ_Komodo_Dragon_Male            J=92 T=64 max|np-torch|=7.153e-07 nonroot_rot6d_grad=1.886e+00
+  PZ_Saltwater_Crocodile_Male      J=96 T=48 max|np-torch|=9.537e-07 nonroot_rot6d_grad=2.259e+00
+
+MAX DIFF vs numpy: 1.192e-06
+SMOKE1 PASS (max_diff 1.192e-06 < 0.0001)

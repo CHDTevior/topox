@@ -133,15 +133,24 @@ def preflight_caption_coverage(ds_train, ds_val) -> None:
     100% caption coverage: cond_drop is explicit (forced False with prob 0.1).
     A silent has_text=False from missing cache → that sample is always uncond
     → CFG schedule breaks.
+
+    Coverage is determined purely by membership: __getitem__ sets
+    has_text=True iff `info["motion_id"]` has a non-empty entry in
+    `ds.caption_embs_multi` (see AnyTopDataset.__getitem__). So the check is a
+    pure in-memory dict lookup over ds.samples — NO need to materialize every
+    sample via ds[i], which loads each motion .npy + runs geometry derivation
+    (~30-60 min for the 80k clean-L2 set; the old loop did exactly that).
     """
     for split_name, ds in (("train", ds_train), ("val", ds_val)):
-        n = len(ds); n_has = 0; missing = []
-        for i in range(n):
-            it = ds[i]
-            if bool(it.get("has_text", False)):
+        cov = ds.caption_embs_multi
+        n = len(ds.samples); n_has = 0; missing = []
+        for s in ds.samples:
+            mid = s["motion_id"]
+            caps = cov.get(mid)
+            if caps is not None and len(caps) > 0:
                 n_has += 1
             else:
-                missing.append(it.get("motion_id", "?"))
+                missing.append(mid)
         if missing:
             raise SystemExit(
                 f"PREFLIGHT FAIL: {split_name} split has {len(missing)} samples "
@@ -177,6 +186,12 @@ def parse_args() -> argparse.Namespace:
                          "eliminating file-level caption + random-64-crop "
                          "misalignment (see handoff design doc 20260525_221220).")
     ap.add_argument("--max_joints", type=int, default=143)
+    ap.add_argument("--val_frac", type=float, default=0.05,
+                    help="train/val split fraction; MUST match the Phase-1 VAE "
+                         "(VAE used val_frac=0.05) so the diffusion val set is the "
+                         "SAME per-object-stratified holdout — otherwise val is "
+                         "incomparable and risks leakage (diffusion val motions the "
+                         "VAE trained on). Ignored when --full_data_val_species set.")
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--full_data_val_species", type=str, default=None,
                     help="Full-data training mode with species-filtered val. "
@@ -317,6 +332,7 @@ def main() -> int:
         num_frames=args.max_frames,
         max_joints=ta.get("max_joints", args.max_joints),
         caption_emb_cache=args.caption_emb_cache,
+        val_frac=args.val_frac,
     )
     if args.anytop_root or ta.get("anytop_root"):
         ds_kwargs["data_root"] = args.anytop_root or ta["anytop_root"]
