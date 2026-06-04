@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import contextlib
 import math
 import os
 import sys
@@ -326,6 +327,12 @@ def main() -> int:
     p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--amp_dtype", choices=["fp32", "bf16"], default="fp32",
+                   help="fp32 (default, exact legacy path). bf16 wraps the VAE forward "
+                        "in torch.autocast(bfloat16) for ~1.5-2x throughput; "
+                        "GraphAttentionBlock softmax stays fp32 (sentinel-safe), loss "
+                        "reduction promotes to fp32, no GradScaler needed. fp32 path is "
+                        "byte-for-byte unchanged (nullcontext).")
     p.add_argument("--init_ckpt", type=str, default=None,
                    help="Optional baseline ckpt to warm-start encoder+slot_norm+decoder")
     p.add_argument("--resume", type=str, default=None,
@@ -803,6 +810,15 @@ def main() -> int:
             f"best_val_loss={best_val_loss:.4f} best_val_recon={best_val_recon:.4f}")
         del resume_ckpt
 
+    # AMP: bf16 autocast around the VAE forward (GraphAttentionBlock softmax stays
+    # fp32; loss promotes to fp32). bf16 needs no GradScaler. fp32 path = nullcontext.
+    amp_enabled = (args.amp_dtype == "bf16")
+    amp_ctx = (
+        (lambda: torch.autocast(device_type="cuda", dtype=torch.bfloat16))
+        if amp_enabled else contextlib.nullcontext
+    )
+    log(f"\nAMP: amp_dtype={args.amp_dtype} (autocast {'ON bf16' if amp_enabled else 'OFF fp32'})")
+
     for epoch in range(start_epoch, args.epochs):
         if is_ddp:
             train_sampler.set_epoch(epoch)   # reshuffle shards each epoch
@@ -817,8 +833,11 @@ def main() -> int:
                 k: v.to(dev) if torch.is_tensor(v) else v for k, v in raw.items()
             })
 
-            out = vae(batch)
-            # Gate #2: z-shape contract verify + fp32 dtype assert (1st iter of every epoch)
+            with amp_ctx():
+                out = vae(batch)
+            # Gate #2: z-shape contract verify + dtype assert (1st iter of every epoch).
+            # Under bf16 autocast the VAE outputs bf16 (expected); the fp32 path still
+            # asserts strict fp32 so legacy behavior is unchanged.
             if it == 0:
                 B, T_lat, C, D = out["mu"].shape
                 assert C == expected_C, (
@@ -826,12 +845,13 @@ def main() -> int:
                     f"(pool_type={args.pool_type})")
                 assert D == args.d_model, (
                     f"[GATE2 FAIL] z D={D} != d_model={args.d_model}")
-                assert out["mu"].dtype == torch.float32, (
-                    f"[DTYPE FAIL] mu={out['mu'].dtype} not fp32")
+                _allowed_dt = (torch.float32, torch.bfloat16) if amp_enabled else (torch.float32,)
+                assert out["mu"].dtype in _allowed_dt, (
+                    f"[DTYPE FAIL] mu={out['mu'].dtype} not in {_allowed_dt}")
                 _pred_key = "pred_motion" if args.feat_mode == "anytop13" else "pred_pos"
-                assert out[_pred_key].dtype == torch.float32, (
-                    f"[DTYPE FAIL] {_pred_key}={out[_pred_key].dtype} not fp32")
-                log(f"  [gate2 ok] z=[{B},{T_lat},{C},{D}] dtype=fp32")
+                assert out[_pred_key].dtype in _allowed_dt, (
+                    f"[DTYPE FAIL] {_pred_key}={out[_pred_key].dtype} not in {_allowed_dt}")
+                log(f"  [gate2 ok] z=[{B},{T_lat},{C},{D}] dtype={out['mu'].dtype}")
             # Codex M1.5 R3 P0: use frame_mask_recovered (⊆ batch.frame_mask) as effective
             # mask so stride-tail frames the decoder zeros are not penalized.
             effective_frame_mask = out["frame_mask_recovered"]
@@ -948,7 +968,8 @@ def main() -> int:
                     # raw_vae (unwrapped) — val runs on rank 0 only; calling the
                     # DDP wrapper here would risk a one-sided buffer-broadcast
                     # collective if the model ever gains buffers (codex hardening).
-                    out = raw_vae(batch, sample=False)
+                    with amp_ctx():
+                        out = raw_vae(batch, sample=False)
                     # Codex M1.5 R3 P0: effective frame mask (stride-tail consistency)
                     effective_frame_mask_val = out["frame_mask_recovered"]
                     losses = run_loss(out, batch, args.feat_mode, loss_weights,

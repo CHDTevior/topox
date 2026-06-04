@@ -165,15 +165,22 @@ class GraphAttentionBlock(nn.Module):
         # softmax with -1e9 mask sentinel and at large bias terms), and
         # (b) match the module's parameter dtype (mixed-dtype matmul crashes
         # opaquely deep in attention compute).
+        # bf16-safe (2026-06-03): bf16 IS allowed — its 8-bit exponent (range ±3e38,
+        # same as fp32) does NOT overflow the -1e9 softmax sentinel or the additive
+        # topology bias; softmax is forced to fp32 in _compute below. fp16 is STILL
+        # rejected (5-bit exponent overflows at -1e9). The fp32/fp64 path is
+        # byte-for-byte unchanged. Under autocast(bf16), x may be bf16 while module
+        # weights stay fp32 — a valid autocast pattern (matmul casts internally), so
+        # the strict x.dtype==weight.dtype check is enforced ONLY on the fp32/64 path.
         expected_dtype = self.q_proj.weight.dtype
         for name, t in (("x", x), ("adjacency", adjacency), ("geodesic_dist", geodesic_dist)):
-            if t.dtype not in (torch.float32, torch.float64):
+            if t.dtype not in (torch.float32, torch.float64, torch.bfloat16):
                 raise ValueError(
-                    f"GraphAttentionBlock: {name}.dtype must be float32 or float64, "
-                    f"got {t.dtype} (fp16/bf16 are unsupported due to softmax "
-                    f"sentinel + bias-additive overflow)"
+                    f"GraphAttentionBlock: {name}.dtype must be float32/float64/bfloat16, "
+                    f"got {t.dtype} (fp16 unsupported: 5-bit exponent overflows the "
+                    f"-1e9 softmax sentinel + additive bias)"
                 )
-            if t.dtype != expected_dtype:
+            if t.dtype in (torch.float32, torch.float64) and t.dtype != expected_dtype:
                 raise ValueError(
                     f"GraphAttentionBlock: {name}.dtype {t.dtype} != module dtype "
                     f"{expected_dtype} (cast inputs OR module to match)"
@@ -360,7 +367,11 @@ class GraphAttentionBlock(nn.Module):
         # entirely -1e9 → no NaN in softmax output → no nan_to_num needed.
         # Padded-query rows still compute attention (over valid keys); their
         # output is zeroed downstream by the caller's joint_mask multiplication.
-        attn = F.softmax(scores, dim=-1)
+        # softmax in fp32 for bf16-safety (sentinel + reduction precision). On the
+        # fp32 path scores.float() is a no-op and .to(scores.dtype) returns fp32, so
+        # behavior is byte-for-byte unchanged; on the bf16 path softmax runs in fp32
+        # then casts the probabilities back to bf16 for the attn@v matmul.
+        attn = F.softmax(scores.float(), dim=-1).to(scores.dtype)
         attn = self.dropout(attn)
 
         out = torch.matmul(attn, v)  # [B, H, N, d_head]

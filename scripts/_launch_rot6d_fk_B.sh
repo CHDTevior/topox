@@ -41,7 +41,7 @@
 # Usage (real, durable):
 #   CVD=0,1 setsid nohup bash scripts/_launch_rot6d_fk_B.sh > LOG 2>&1 </dev/null &
 set -u
-P=/scratch/ts1v23/workspace/noKslot_clean
+P="${P:-/scratch/ts1v23/workspace/noKslot_bf16vae}"
 cd "$P" || exit 1
 
 CVD="${CVD:-0,1}"
@@ -62,6 +62,7 @@ NNODES="${NNODES:-1}"
 NODE_RANK="${NODE_RANK:-0}"
 MASTER_ADDR="${MASTER_ADDR:-}"
 MASTER_PORT="${MASTER_PORT:-29500}"
+AMP_DTYPE="${AMP_DTYPE:-fp32}"   # bf16 = autocast VAE forward (cross-node bf16 train); default fp32 keeps legacy path byte-for-byte
 
 SMOKE_FLAG=""
 if [ "$SMOKE" = 1 ]; then
@@ -121,6 +122,7 @@ torchrun $RDZV_ARGS scripts/train_graph_vae.py \
   --n_dec_temporal_layers 2 --n_treeik_layers 3 \
   --max_coarse 128 --local_radius 8 --temporal_stride 4 \
   --max_frames 64 --max_joints 144 --use_name_embed \
+  --amp_dtype "$AMP_DTYPE" \
   --out "$OUT" --overwrite $SMOKE_FLAG
 rc=$?
 echo "[fkB] $(date '+%F %T %Z') torchrun EXITED rc=$rc"

@@ -237,6 +237,10 @@ def masked_kl_gaussian(
     if coarse_mask.shape != (B, C) or coarse_mask.dtype != torch.bool:
         raise ValueError(f"coarse_mask must be [B, C] bool, got {tuple(coarse_mask.shape)}")
 
+    # bf16-safe: compute KL in fp32 (exp/pow precision); on the fp32 path .float()
+    # is a no-op so behavior is byte-for-byte unchanged.
+    mu = mu.float()
+    logvar = logvar.float()
     # Zero mu/logvar at padded positions BEFORE arithmetic
     mask = frame_mask_lat.unsqueeze(-1) & coarse_mask.unsqueeze(1)  # [B, T_lat, C]
     mask_4d = mask.unsqueeze(-1).to(mu.dtype)  # [B, T_lat, C, 1]
@@ -498,9 +502,10 @@ def masked_contact_bce(
     if not torch.isfinite(pred_logit).all():
         raise ValueError("masked_contact_bce: pred_logit contains NaN or Inf")
     mask = _broadcast_pos_vel_mask(joint_mask, frame_mask)  # [B, T, J]
+    # bf16-safe: BCE-with-logits in fp32 (numerically sensitive); fp32 path no-op
     bce = torch.nn.functional.binary_cross_entropy_with_logits(
-        pred_logit, gt_contact.to(pred_logit.dtype), reduction="none"
-    )  # [B, T, J]
+        pred_logit.float(), gt_contact.float(), reduction="none"
+    )  # [B, T, J] fp32
     bce = bce * mask.to(bce.dtype)
     return bce.sum() / mask.sum().clamp(min=_EPS)
 
