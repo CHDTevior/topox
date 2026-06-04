@@ -203,7 +203,7 @@ class TreeGraphAttention(nn.Module):
         scores = scores + (gb + ab).unsqueeze(1)                  # +T bcast
         km = joint_mask.bool()[:, None, None, None, :]            # mask KEY
         scores = scores.masked_fill(~km, -1e9)
-        attn = F.softmax(scores, dim=-1)
+        attn = F.softmax(scores.float(), dim=-1).to(scores.dtype)  # bf16-safe: fp32 softmax (fp32 path no-op)
         out = torch.matmul(attn, v)                               # [B,T,H,J,dh]
         out = out.permute(0, 1, 3, 2, 4).reshape(B, T, J, D)
         out = self.o(out)

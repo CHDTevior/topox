@@ -64,7 +64,7 @@ class SlotToJointCrossAttention(nn.Module):
         assign_bias = assignment.unsqueeze(1).clamp(min=1e-8).log()  # [B, 1, J, K]
         scores = scores + self.assign_bias_scale * assign_bias
 
-        attn = F.softmax(scores, dim=-1)
+        attn = F.softmax(scores.float(), dim=-1).to(scores.dtype)  # bf16-safe: fp32 softmax (fp32 path no-op)
         attn = self.dropout(attn)
 
         out = torch.matmul(attn, v)  # [B, H, J, d_head]
@@ -246,7 +246,7 @@ class TemporalSelfAttention(nn.Module):
         mask = frame_mask.bool().unsqueeze(1).unsqueeze(2)   # [N, 1, 1, T]
         scores = scores.masked_fill(~mask, -1e9)
 
-        attn = F.softmax(scores, dim=-1)
+        attn = F.softmax(scores.float(), dim=-1).to(scores.dtype)  # bf16-safe: fp32 softmax (fp32 path no-op)
         attn = attn.nan_to_num(0.0)
         attn = self.dropout(attn)
 

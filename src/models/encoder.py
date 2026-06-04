@@ -84,7 +84,7 @@ class GraphAttentionBlock(nn.Module):
         mask = joint_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, J]
         scores = scores.masked_fill(~mask, -1e9)
 
-        attn = F.softmax(scores, dim=-1)
+        attn = F.softmax(scores.float(), dim=-1).to(scores.dtype)  # bf16-safe: fp32 softmax (fp32 path no-op)
         attn = attn.nan_to_num(0.0)  # safety: all-masked rows → 0 attention
         attn = self.dropout(attn)
 
@@ -204,7 +204,7 @@ class AnyTopGraphAttentionBlock(nn.Module):
         mask = joint_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, J]
         scores = scores.masked_fill(~mask, -1e9)
 
-        attn = F.softmax(scores, dim=-1)
+        attn = F.softmax(scores.float(), dim=-1).to(scores.dtype)  # bf16-safe: fp32 softmax (fp32 path no-op)
         attn = attn.nan_to_num(0.0)
         attn = self.dropout(attn)
 
