@@ -30,6 +30,11 @@ WARMUP_ITERS="${WARMUP_ITERS:-4000}"  # ignored on full resume (global_it alread
 PER_GPU_BATCH="${PER_GPU_BATCH:-10}"   # smoke-tested 2026-06-03: n11/d_ff1536 bs10 = 64.8GB/80 util100% (sweet spot)
 LR="${LR:-6.250e-04}"                  # = 5e-4 * global60/48 (Goyal); global = 10x6 = 60
 OUT="${OUT:-runs/m2_t2m_cleanL2_Bep79rot6dfk_d512C128_n11ff1536_h100x6_seed42}"
+AMP_DTYPE="${AMP_DTYPE:-fp32}"         # bf16 now bf16-safe (fp32-forced softmax)
+# M2 token-level text conditioning (default mean_additive = current behavior).
+TEXT_MODE="${TEXT_MODE:-mean_additive}"
+CAPTION_TOKEN_CACHE="${CAPTION_TOKEN_CACHE:-}"   # required when TEXT_MODE=token_cross_attn
+CAPTION_TOKEN_MAX_LEN="${CAPTION_TOKEN_MAX_LEN:-64}"
 
 # Single-instance lock: the launch's pgrep double-launch guard is disabled for
 # NNODES>1 (same-node pgrep false-matches a peer alloc), so prevent a double
@@ -40,7 +45,7 @@ flock -n 9 || { echo "[t2m-6card] ABORT: already running"; exit 0; }
 
 # Shared env every alloc's launch inherits. NNODES=3 triggers the static-rendezvous
 # branch in _launch_diffusion_t2m.sh; CVD=0,1 = each alloc's 2 local H100s.
-COMMON_ENV="NNODES=3 NPROC_PER_NODE=2 MASTER_ADDR=$RDZV_HOST MASTER_PORT=$RDZV_PORT CVD=0,1 PER_GPU_BATCH=$PER_GPU_BATCH LR=$LR OUT=$OUT SMOKE=$SMOKE INIT_CKPT=$INIT_CKPT RESUME_CKPT=$RESUME_CKPT WARMUP_ITERS=$WARMUP_ITERS"
+COMMON_ENV="NNODES=3 NPROC_PER_NODE=2 MASTER_ADDR=$RDZV_HOST MASTER_PORT=$RDZV_PORT CVD=0,1 PER_GPU_BATCH=$PER_GPU_BATCH LR=$LR OUT=$OUT SMOKE=$SMOKE INIT_CKPT=$INIT_CKPT RESUME_CKPT=$RESUME_CKPT WARMUP_ITERS=$WARMUP_ITERS AMP_DTYPE=$AMP_DTYPE TEXT_MODE=$TEXT_MODE CAPTION_TOKEN_CACHE=$CAPTION_TOKEN_CACHE CAPTION_TOKEN_MAX_LEN=$CAPTION_TOKEN_MAX_LEN"
 
 echo "[t2m-6card] $(date '+%F %T %Z') cross-alloc 6-card DDP: $JOB_A+$JOB_B+$JOB_C via $RDZV_HOST:$RDZV_PORT smoke=$SMOKE"
 echo "[t2m-6card] global=$(( PER_GPU_BATCH*6 )) (6xbs$PER_GPU_BATCH) lr=$LR out=$OUT"

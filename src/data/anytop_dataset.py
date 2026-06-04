@@ -517,6 +517,9 @@ class AnyTopDataset(Dataset):
         random_caption: bool = False,
         random_crop: bool | None = None,
         use_split_file: bool = True,
+        caption_token_cache: str | Path | None = None,
+        return_caption_tokens: bool = False,
+        caption_token_max_len: int = 64,
     ) -> None:
         self.data_root = Path(data_root)
         self.split = split
@@ -793,6 +796,87 @@ class AnyTopDataset(Dataset):
                   f"across {n_motions} motions (avg "
                   f"{n_caps_total/max(n_motions,1):.1f}/motion) from {cache_path}")
         self._caption_emb_dim = 768
+
+        # ---- Caption T5 TOKEN cache (M2 token_cross_attn; OPTIONAL sidecar) ----
+        # Parallel to the mean-pooled cache, gated by `return_caption_tokens`.
+        # When off, __getitem__ never touches this (mean_additive path unchanged).
+        # The token cache reuses the SAME .keys.json order as the mean cache, so
+        # token group `caption_token_rows_multi[mid][idx]` aligns 1:1 with
+        # `caption_embs_multi[mid][idx]` (same `idx` ⇒ same caption — idx-align law).
+        # Item C: the .tokens.npy is ~40GB (fp16); load it via mmap_mode='r' and
+        # slice per-item (NEVER materialize whole — 8 workers × 40GB = host OOM).
+        self.return_caption_tokens = bool(return_caption_tokens)
+        self.caption_token_max_len = int(caption_token_max_len)
+        self._token_emb_mmap: np.ndarray | None = None
+        self._token_mask_mmap: np.ndarray | None = None
+        # mid -> list[int] row indices into the token mmap, sorted by cap idx
+        self.caption_token_rows_multi: dict[str, list[int]] = {}
+        if self.return_caption_tokens:
+            if caption_token_cache is None:
+                raise ValueError(
+                    "return_caption_tokens=True requires caption_token_cache "
+                    "(<prefix>.tokens.npy + .token_mask.npy + .keys.json); run "
+                    "scripts/precompute_t5_caption_tokens.py first."
+                )
+            tok_prefix = Path(caption_token_cache)
+            tok_emb_path = tok_prefix.with_suffix(".tokens.npy")
+            tok_mask_path = tok_prefix.with_suffix(".token_mask.npy")
+            tok_keys_path = tok_prefix.with_suffix(".keys.json")
+            for p in (tok_emb_path, tok_mask_path, tok_keys_path):
+                if not p.exists():
+                    raise FileNotFoundError(
+                        f"caption token cache missing {p} (run "
+                        f"scripts/precompute_t5_caption_tokens.py)"
+                    )
+            # mmap (item C): keep file on disk, page in only the sliced row.
+            self._token_emb_mmap = np.load(tok_emb_path, mmap_mode="r")
+            self._token_mask_mmap = np.load(tok_mask_path, mmap_mode="r")
+            with open(tok_keys_path) as _tkf:
+                tok_keys = json.load(_tkf)
+            N_tok, L_tok = self._token_emb_mmap.shape[0], self._token_emb_mmap.shape[1]
+            if (len(tok_keys) != N_tok
+                    or self._token_mask_mmap.shape[0] != N_tok
+                    or self._token_mask_mmap.shape[1] != L_tok):
+                raise ValueError(
+                    f"token cache shape mismatch: keys={len(tok_keys)} "
+                    f"tokens={self._token_emb_mmap.shape} "
+                    f"mask={self._token_mask_mmap.shape}"
+                )
+            if L_tok != self.caption_token_max_len:
+                raise ValueError(
+                    f"token cache L={L_tok} != caption_token_max_len="
+                    f"{self.caption_token_max_len}; rebuild cache with matching "
+                    f"--max_length or pass the right caption_token_max_len."
+                )
+            if self._token_emb_mmap.shape[2] != self._caption_emb_dim:
+                raise ValueError(
+                    f"token cache dim {self._token_emb_mmap.shape[2]} != "
+                    f"{self._caption_emb_dim}"
+                )
+            # Group row indices by motion_id, sorted by cap idx — EXACTLY the same
+            # grouping the mean cache used (so [mid][idx] aligns across caches).
+            tok_groups: dict[str, list[tuple[int, int]]] = {}
+            for row, key in enumerate(tok_keys):
+                mid, idx = _split_caption_key(key)
+                tok_groups.setdefault(mid, []).append((idx, row))
+            for mid, lst in tok_groups.items():
+                lst.sort(key=lambda x: x[0])
+                self.caption_token_rows_multi[mid] = [r for _, r in lst]
+            # Consistency: every motion with mean embs must have matching token
+            # group length (same caption count) — fail loud on cache drift.
+            for mid, emb_list in self.caption_embs_multi.items():
+                rows = self.caption_token_rows_multi.get(mid)
+                if rows is None or len(rows) != len(emb_list):
+                    raise ValueError(
+                        f"token/mean cache caption-count mismatch for motion "
+                        f"{mid!r}: mean={len(emb_list)} "
+                        f"token={None if rows is None else len(rows)}. The token "
+                        f"cache must be built from the SAME keys.json."
+                    )
+            print(f"  [AnyTopDataset] loaded token cache "
+                  f"{self._token_emb_mmap.shape} (mmap) + mask "
+                  f"{self._token_mask_mmap.shape} across "
+                  f"{len(self.caption_token_rows_multi)} motions from {tok_prefix}")
         # random_caption: True (default) = per __getitem__ random.choice; False =
         # always idx 0 (primary). Train uses True (SALAD-style); val uses False
         # to keep val_denoise loss deterministic across epochs.
@@ -1060,6 +1144,11 @@ class AnyTopDataset(Dataset):
         # so logs / animate titles reflect what the model actually saw.
         caps_emb_list = self.caption_embs_multi.get(info["motion_id"])
         caps_str_list = self.captions_multi.get(info["motion_id"])
+        # Token cache (idx-align law): the SAME `idx` selected here drives the
+        # mean emb, the caption string, AND the token row — it must NOT be
+        # resampled. caption_token_emb [L,768] f32 + caption_token_mask [L] bool.
+        caption_token_emb = None
+        caption_token_mask = None
         if caps_emb_list is not None and len(caps_emb_list) > 0:
             if self.random_caption and len(caps_emb_list) > 1:
                 idx = random.randrange(len(caps_emb_list))
@@ -1071,12 +1160,35 @@ class AnyTopDataset(Dataset):
                 caption = caps_str_list[idx]
             else:
                 caption = self.captions.get(info["motion_id"], "")
+            if self.return_caption_tokens:
+                rows = self.caption_token_rows_multi.get(info["motion_id"])
+                if rows is None or idx >= len(rows):
+                    raise KeyError(
+                        f"token cache has no row for motion {info['motion_id']!r} "
+                        f"cap idx {idx} (rows={None if rows is None else len(rows)})"
+                    )
+                row = rows[idx]
+                # Slice the single row from the mmap then cast fp32 (item C).
+                caption_token_emb = np.asarray(
+                    self._token_emb_mmap[row], dtype=np.float32
+                ).copy()                                          # [L, 768]
+                caption_token_mask = np.asarray(
+                    self._token_mask_mmap[row], dtype=bool
+                ).copy()                                          # [L]
         else:
             caption_emb = np.zeros(self._caption_emb_dim, dtype=np.float32)
             has_text = False
             caption = self.captions.get(info["motion_id"], "")
+            if self.return_caption_tokens:
+                # No caption for this motion → all-False mask, zero tokens. The
+                # denoiser/CFG zeroes the cross-attn output for has_text=False, so
+                # these rows contribute nothing (item 5).
+                L = self.caption_token_max_len
+                caption_token_emb = np.zeros((L, self._caption_emb_dim),
+                                             dtype=np.float32)
+                caption_token_mask = np.zeros((L,), dtype=bool)
 
-        return {
+        item: dict = {
             # ---- GraphMotionBatch-compatible padded tensors ----
             "motion_features": torch.from_numpy(motion_6ch),               # [T, Jm, 6]
             "skeleton_features": torch.from_numpy(skel_feats_padded),      # [Jm, 9]
@@ -1124,6 +1236,12 @@ class AnyTopDataset(Dataset):
             "object_type": info["object_type"],                            # str (alias of skeleton_id)
             "caption": caption,                                            # str
         }
+        # M2 token_cross_attn: add token fields ONLY when enabled, so the
+        # mean_additive path's item dict is byte-identical to before.
+        if self.return_caption_tokens:
+            item["caption_token_emb"] = torch.from_numpy(caption_token_emb)   # [L,768] f32
+            item["caption_token_mask"] = torch.from_numpy(caption_token_mask) # [L] bool
+        return item
 
 
 def collate_fn(batch: list[dict]) -> dict:

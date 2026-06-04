@@ -42,6 +42,11 @@ D_FF="${D_FF:-1536}"                   # user 2026-06-02: < default 4*d_model=20
 INIT_CKPT="${INIT_CKPT:-}"
 RESUME_CKPT="${RESUME_CKPT:-}"
 CVD="${CVD:-0,1}"
+AMP_DTYPE="${AMP_DTYPE:-fp32}"          # bf16 now bf16-safe (fp32-forced softmax); default fp32
+# M2 token-level text conditioning (default mean_additive = current behavior).
+TEXT_MODE="${TEXT_MODE:-mean_additive}"
+CAPTION_TOKEN_CACHE="${CAPTION_TOKEN_CACHE:-}"   # required when TEXT_MODE=token_cross_attn
+CAPTION_TOKEN_MAX_LEN="${CAPTION_TOKEN_MAX_LEN:-64}"
 
 # VAE = B's rot6d_fk ep79 best (frozen). Review-confirmed: load_frozen_vae() LOAD_OK
 # (full Phase-2 loading path, strict rebuild+load, not just key count).
@@ -97,6 +102,7 @@ echo "[t2m] VAE=$VAE_CKPT (B rot6d_fk ep79)"
 echo "[t2m] cap_cache=$CAPCACHE anytop_root=$ANYTOP_ROOT"
 echo "[t2m] per_gpu=$PER_GPU_BATCH global=$GLOBAL(=${PER_GPU_BATCH}x${NNODES}x${NPROC_PER_NODE}) lr=$LR | smoke=$SMOKE epochs=$EPOCHS warmup=$WARMUP_ITERS"
 echo "[t2m] master=${MASTER_ADDR:-<standalone>}:$MASTER_PORT nccl_ifname=${NCCL_SOCKET_IFNAME:-<n/a>} out=$OUT"
+echo "[t2m] text_mode=$TEXT_MODE amp=$AMP_DTYPE token_cache=${CAPTION_TOKEN_CACHE:-<none>} L=$CAPTION_TOKEN_MAX_LEN"
 
 torchrun $RDZV_ARGS scripts/train_denoiser.py \
   --vae_ckpt "$VAE_CKPT" \
@@ -109,7 +115,9 @@ torchrun $RDZV_ARGS scripts/train_denoiser.py \
   ${RESUME_CKPT:+--resume "$RESUME_CKPT"} \
   --n_layers "$N_LAYERS" --d_ff "$D_FF" --dropout 0.1 \
   --num_train_timesteps 1000 --beta_start 0.00085 --beta_end 0.012 \
-  --beta_schedule scaled_linear --cond_drop_prob 0.1 --amp_dtype fp32 \
+  --beta_schedule scaled_linear --cond_drop_prob 0.1 --amp_dtype "$AMP_DTYPE" \
+  --text_mode "$TEXT_MODE" --caption_token_max_len "$CAPTION_TOKEN_MAX_LEN" \
+  ${CAPTION_TOKEN_CACHE:+--caption_token_cache "$CAPTION_TOKEN_CACHE"} \
   --val_every 5 --save_every 10 --periodic_save_every 100 \
   --seed 42 --out "$OUT" --overwrite $SMOKE_FLAG
 rc=$?

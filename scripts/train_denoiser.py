@@ -119,8 +119,12 @@ def masked_v_mse(v_pred: torch.Tensor, v_target: torch.Tensor,
     """
     # [B,T_lat,C,1] mask
     mask = (coarse_mask[:, None, :, None] & frame_mask[:, :, None, None])
-    mask_f = mask.to(v_pred.dtype)
-    diff_sq = (v_pred - v_target).pow(2) * mask_f
+    # fp32-safe loss (codex 019e94b8): under bf16, mask.to(bf16) rounds the
+    # denominator (mask_sum 83456 vs true 83200, +0.31% loss bias). Force fp32 for
+    # numerator + denominator. The fp32 path is byte-identical (.float() is a no-op
+    # on fp32 tensors), so the running fp32 mean diffusion's --resume is unaffected.
+    mask_f = mask.float()
+    diff_sq = (v_pred.float() - v_target.float()).pow(2) * mask_f
     # Denominator: total valid positions × feature dim
     denom = mask_f.sum() * v_pred.shape[-1]
     return diff_sq.sum() / denom.clamp(min=1.0)
@@ -223,15 +227,33 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--beta_start", type=float, default=0.00085)
     ap.add_argument("--beta_end", type=float, default=0.012)
     ap.add_argument("--beta_schedule", default="scaled_linear")
+    # M2 token-level text conditioning (optional). Default mean_additive keeps the
+    # current behavior + old-ckpt strict-load. token_cross_attn requires the token
+    # cache built by scripts/precompute_t5_caption_tokens.py.
+    ap.add_argument("--text_mode", choices=["mean_additive", "token_cross_attn"],
+                    default="mean_additive",
+                    help="mean_additive (default): mean-pooled T5 additive broadcast "
+                         "(byte-equiv to current; old ckpts strict-load). "
+                         "token_cross_attn: per-layer cross-attention over token-level "
+                         "T5 (needs --caption_token_cache).")
+    ap.add_argument("--caption_token_cache", default=None,
+                    help="prefix of the token cache (<prefix>.tokens.npy + "
+                         ".token_mask.npy + .keys.json). REQUIRED when "
+                         "--text_mode token_cross_attn. The cache MUST reuse the "
+                         "mean cache's keys.json order (idx-align law).")
+    ap.add_argument("--caption_token_max_len", type=int, default=64,
+                    help="L: token sequence length of the token cache (must match "
+                         "the cache's --max_length).")
     ap.add_argument("--cond_drop_prob", type=float, default=0.1,
                     help="CFG cond-drop probability per sample")
     ap.add_argument("--amp_dtype", choices=["fp32", "bf16"], default="fp32",
-                    help="fp32 (default). bf16 is BLOCKED by GraphAttentionBlock's "
-                         "fp32-only guard (attention.py:171 — softmax -1e9 sentinel + "
-                         "bias-additive); enabling bf16 needs a bf16-safe attention "
-                         "rework first (smoke 2026-06-03 confirmed the guard fires). "
-                         "When unblocked, bf16 wraps VAE-encode + denoiser fwd in "
-                         "autocast(bfloat16) ~1.5-2x (scheduler/loss stay fp32, no GradScaler).")
+                    help="fp32 (default). bf16 is now bf16-SAFE: GraphAttentionBlock, "
+                         "TemporalSelfAttention, and TextCrossAttention all force the "
+                         "softmax to fp32 (scores.float()→softmax→.to(dtype)), so the "
+                         "-1e9 sentinel + additive bias no longer overflow (bf16's "
+                         "8-bit exponent matches fp32 range). bf16 wraps VAE-encode + "
+                         "denoiser fwd in autocast(bfloat16) ~1.5-2x (scheduler/loss "
+                         "stay fp32, no GradScaler).")
     # Logging / checkpoint
     ap.add_argument("--val_every", type=int, default=5)
     ap.add_argument("--save_every", type=int, default=10)
@@ -343,11 +365,23 @@ def main() -> int:
         f"→ T_lat={T_lat_expected}")
 
     # ---- Dataset ----
+    # M2: token mode needs the offline token cache + return_caption_tokens on both
+    # train + val datasets (val uses primary caption idx 0 deterministically).
+    use_tokens = (args.text_mode == "token_cross_attn")
+    if use_tokens and args.caption_token_cache is None:
+        raise SystemExit(
+            "--text_mode token_cross_attn requires --caption_token_cache "
+            "(<prefix>.tokens.npy + .token_mask.npy + .keys.json from "
+            "scripts/precompute_t5_caption_tokens.py)."
+        )
     ds_kwargs = dict(
         num_frames=args.max_frames,
         max_joints=ta.get("max_joints", args.max_joints),
         caption_emb_cache=args.caption_emb_cache,
         val_frac=args.val_frac,
+        caption_token_cache=args.caption_token_cache,
+        return_caption_tokens=use_tokens,
+        caption_token_max_len=args.caption_token_max_len,
     )
     if args.anytop_root or ta.get("anytop_root"):
         ds_kwargs["data_root"] = args.anytop_root or ta["anytop_root"]
@@ -478,10 +512,11 @@ def main() -> int:
     denoiser = GraphSaladDenoiser(
         d_model=d_model, n_heads=n_heads, d_ff=d_ff,
         n_layers=args.n_layers, d_text=768, dropout=args.dropout,
+        text_mode=args.text_mode, text_token_dim=768,
     ).to(dev)
     n_params = sum(p.numel() for p in denoiser.parameters())
     log(f"\nDenoiser: n_layers={args.n_layers} d_model={d_model} d_ff={d_ff} "
-        f"params={n_params:,}")
+        f"text_mode={args.text_mode} params={n_params:,}")
 
     # ---- Full resume (--resume): restore MODEL here (before DDP wrap); optimizer
     # + epoch + best_val + global_it are restored further below. Seamless crash
@@ -494,6 +529,16 @@ def main() -> int:
             raise SystemExit(f"--resume {args.resume!r} does not exist")
         log(f"\nFULL RESUME from {args.resume}")
         resume_ck = torch.load(args.resume, map_location="cpu", weights_only=False)
+        # M2: the denoiser was built from CLI --text_mode; the ckpt arch must match
+        # (token vs mean state_dicts differ by 134 keys → strict-load would fail
+        # cryptically). Assert text_mode agreement FIRST for a clear error.
+        ck_text_mode = resume_ck.get("args", {}).get("text_mode", "mean_additive")
+        if ck_text_mode != args.text_mode:
+            raise SystemExit(
+                f"[RESUME FAIL] ckpt text_mode={ck_text_mode!r} != CLI "
+                f"--text_mode {args.text_mode!r}. Rebuild with the matching "
+                f"text_mode (token/mean arch differ)."
+            )
         missing, unexpected = denoiser.load_state_dict(resume_ck["model_state_dict"], strict=True)
         if missing or unexpected:
             raise SystemExit(
@@ -514,6 +559,13 @@ def main() -> int:
             raise SystemExit(f"--init_ckpt {args.init_ckpt!r} does not exist")
         log(f"\nWarm-start denoiser from {args.init_ckpt}")
         ck = torch.load(args.init_ckpt, map_location="cpu", weights_only=False)
+        # M2: warm-start arch must match CLI --text_mode (see resume note above).
+        ck_text_mode = ck.get("args", {}).get("text_mode", "mean_additive")
+        if ck_text_mode != args.text_mode:
+            raise SystemExit(
+                f"[INIT_CKPT FAIL] ckpt text_mode={ck_text_mode!r} != CLI "
+                f"--text_mode {args.text_mode!r}. Rebuild with matching text_mode."
+            )
         sd = ck.get("model_state_dict", ck)
         missing, unexpected = denoiser.load_state_dict(sd, strict=True)
         if missing or unexpected:
@@ -621,9 +673,20 @@ def main() -> int:
             ht_in = batch.has_text.to(dev) if batch.has_text.device != dev else batch.has_text
             drop_mask = torch.rand(B, device=dev) < args.cond_drop_prob
             has_text = ht_in & (~drop_mask)
-            # Caption emb: zero-gate when has_text=False (defense in depth;
-            # denoiser will also gate, but pre-gating here keeps the loss step deterministic)
-            text_emb = batch.caption_emb.to(dev) * has_text[:, None].to(batch.caption_emb.dtype)
+            if use_tokens:
+                # token mode: pass token hidden states [B,L,768] + raw token mask
+                # [B,L]. The denoiser builds key_padding_mask = ~(mask & has_text),
+                # so has_text=False rows are fully masked → cross-attn output 0
+                # (CFG-uncond). Mask drives the gate (plan §3.6); no zero-multiply
+                # of the embedding is needed (and would be wrong — softmax over
+                # all-(-1e9) handled by TextCrossAttention's zero-output path).
+                text_in = batch.caption_token_emb.to(dev)         # [B,L,768]
+                token_mask_in = batch.caption_token_mask.to(dev)  # [B,L] bool
+            else:
+                # mean mode: zero-gate when has_text=False (defense in depth; the
+                # denoiser also gates, but pre-gating keeps the step deterministic)
+                text_in = batch.caption_emb.to(dev) * has_text[:, None].to(batch.caption_emb.dtype)
+                token_mask_in = None
 
             # Diffusion: noise + add_noise + v_target
             noise = torch.randn_like(z0)
@@ -641,11 +704,12 @@ def main() -> int:
             # backward are fp32 — no GradScaler needed.
             with amp_ctx():
                 v_pred = denoiser(
-                    z_t=z_t, timesteps=timesteps, text=text_emb,
+                    z_t=z_t, timesteps=timesteps, text=text_in,
                     adjacency=pooled_adj, geodesic_dist=pooled_geo,
                     coarse_mask=coarse_mask, frame_mask=frame_mask,
                     pooled_skeleton_embeddings=pooled_skel,
                     has_text=has_text,
+                    text_token_mask=token_mask_in,
                     # Validate on the first iter only (cold-start preflight)
                     validate_inputs=(global_it == 0),
                 )
@@ -727,17 +791,23 @@ def main() -> int:
                         mask_f = mask.to(z0.dtype)
                         z_t = z_t * mask_f; v_target = v_target * mask_f
                         has_text = batch.has_text.to(dev) if batch.has_text.device != dev else batch.has_text
-                        text_emb = batch.caption_emb.to(dev) * has_text[:, None].to(batch.caption_emb.dtype)
+                        if use_tokens:
+                            text_in = batch.caption_token_emb.to(dev)
+                            token_mask_in = batch.caption_token_mask.to(dev)
+                        else:
+                            text_in = batch.caption_emb.to(dev) * has_text[:, None].to(batch.caption_emb.dtype)
+                            token_mask_in = None
                         # Codex P2 fix (2026-05-25): rank-0-only val uses raw
                         # module, not DDP wrapper, to avoid any future one-sided
                         # collective if denoiser ever grows DDP-tracked buffers.
                         with amp_ctx():
                             v_pred = raw_denoiser(
-                                z_t=z_t, timesteps=timesteps, text=text_emb,
+                                z_t=z_t, timesteps=timesteps, text=text_in,
                                 adjacency=pooled_adj, geodesic_dist=pooled_geo,
                                 coarse_mask=coarse_mask, frame_mask=frame_mask,
                                 pooled_skeleton_embeddings=pooled_skel,
                                 has_text=has_text, validate_inputs=False,
+                                text_token_mask=token_mask_in,
                             )
                         diff_sq = (v_pred.float() - v_target).pow(2) * mask_f
                         val_num += diff_sq.sum().item()

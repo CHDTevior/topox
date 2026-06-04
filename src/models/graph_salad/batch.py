@@ -136,6 +136,11 @@ class GraphMotionBatch:
     anytop_std: Optional[torch.Tensor] = None              # [B, J_max, 13] raw de-norm std
     caption_emb: Optional[torch.Tensor] = None             # [B, 768] T5 caption embedding
     has_text: Optional[torch.Tensor] = None                # [B] bool — caption present
+    # M2 token_cross_attn (optional): token-level T5 hidden states + validity mask.
+    # Present only when the dataset is built with return_caption_tokens=True; None
+    # on the mean_additive path.
+    caption_token_emb: Optional[torch.Tensor] = None       # [B, L, 768] T5 tokens
+    caption_token_mask: Optional[torch.Tensor] = None      # [B, L] bool — valid token
 
     @classmethod
     def from_collate_dict(cls, d: dict[str, Any]) -> "GraphMotionBatch":
@@ -565,6 +570,63 @@ class GraphMotionBatch:
                     f"!= motion_features device {ref_device}"
                 )
 
+        # --- 6b. Optional token-level text fields (M2 token_cross_attn) ---
+        # Validated separately from _OPTIONAL_TENSOR_SPEC because L is variable
+        # (the spec assumes a fixed tail shape). Mutual presence is required:
+        # token_emb without token_mask (or vice versa) is a schema bug (plan §3.3).
+        has_tok_emb = "caption_token_emb" in d
+        has_tok_mask = "caption_token_mask" in d
+        if has_tok_emb != has_tok_mask:
+            raise ValueError(
+                "GraphMotionBatch: 'caption_token_emb' and 'caption_token_mask' "
+                "must both be present or both absent (got "
+                f"emb={has_tok_emb}, mask={has_tok_mask})."
+            )
+        if has_tok_emb:
+            te = d["caption_token_emb"]
+            tm = d["caption_token_mask"]
+            if not isinstance(te, torch.Tensor):
+                raise ValueError(
+                    f"GraphMotionBatch: 'caption_token_emb' must be torch.Tensor, "
+                    f"got {type(te).__name__}"
+                )
+            if not isinstance(tm, torch.Tensor):
+                raise ValueError(
+                    f"GraphMotionBatch: 'caption_token_mask' must be torch.Tensor, "
+                    f"got {type(tm).__name__}"
+                )
+            if te.dim() != 3 or te.shape[0] != B or te.shape[2] != 768:
+                raise ValueError(
+                    f"GraphMotionBatch: 'caption_token_emb' must be [B={B}, L, 768], "
+                    f"got {tuple(te.shape)}"
+                )
+            L = te.shape[1]
+            if tm.shape != (B, L):
+                raise ValueError(
+                    f"GraphMotionBatch: 'caption_token_mask' must be [B={B}, L={L}] "
+                    f"(matching caption_token_emb), got {tuple(tm.shape)}"
+                )
+            if te.dtype != torch.float32:
+                raise ValueError(
+                    f"GraphMotionBatch: 'caption_token_emb' dtype must be float32, "
+                    f"got {te.dtype}"
+                )
+            if tm.dtype != torch.bool:
+                raise ValueError(
+                    f"GraphMotionBatch: 'caption_token_mask' dtype must be bool, "
+                    f"got {tm.dtype}"
+                )
+            if te.device != ref_device or tm.device != ref_device:
+                raise ValueError(
+                    f"GraphMotionBatch: token fields device "
+                    f"({te.device}/{tm.device}) != motion_features device "
+                    f"{ref_device}"
+                )
+            if not torch.isfinite(te).all():
+                raise ValueError(
+                    "GraphMotionBatch: 'caption_token_emb' contains NaN or Inf"
+                )
+
         return cls(
             motion_features=d["motion_features"],
             skeleton_features=d["skeleton_features"],
@@ -598,6 +660,8 @@ class GraphMotionBatch:
             anytop_std=d.get("anytop_std"),
             caption_emb=d.get("caption_emb"),
             has_text=d.get("has_text"),
+            caption_token_emb=d.get("caption_token_emb"),
+            caption_token_mask=d.get("caption_token_mask"),
         )
 
     @property
