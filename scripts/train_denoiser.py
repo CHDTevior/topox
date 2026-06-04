@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import sys
+import contextlib
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -35,6 +36,7 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, DistributedSampler
+from torch.distributed.elastic.multiprocessing.errors import record
 
 # Repo path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -223,6 +225,13 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--beta_schedule", default="scaled_linear")
     ap.add_argument("--cond_drop_prob", type=float, default=0.1,
                     help="CFG cond-drop probability per sample")
+    ap.add_argument("--amp_dtype", choices=["fp32", "bf16"], default="fp32",
+                    help="fp32 (default). bf16 is BLOCKED by GraphAttentionBlock's "
+                         "fp32-only guard (attention.py:171 — softmax -1e9 sentinel + "
+                         "bias-additive); enabling bf16 needs a bf16-safe attention "
+                         "rework first (smoke 2026-06-03 confirmed the guard fires). "
+                         "When unblocked, bf16 wraps VAE-encode + denoiser fwd in "
+                         "autocast(bfloat16) ~1.5-2x (scheduler/loss stay fp32, no GradScaler).")
     # Logging / checkpoint
     ap.add_argument("--val_every", type=int, default=5)
     ap.add_argument("--save_every", type=int, default=10)
@@ -240,6 +249,11 @@ def parse_args() -> argparse.Namespace:
                          "Use for continuation runs (e.g. ep1000 → ep3000). "
                          "Pass --warmup_iters 200 (or 0) since the model is "
                          "already past initial unstable regime.")
+    ap.add_argument("--resume", default=None,
+                    help="FULL resume: restore model + optimizer + epoch + best_val "
+                         "+ global_it from this ckpt (vs --init_ckpt which only loads "
+                         "model weights). Mutually exclusive with --init_ckpt. Seamless "
+                         "crash continuation; no re-warmup (global_it already past warmup).")
     # Misc
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", default="cuda")
@@ -263,6 +277,7 @@ def _ddp_setup() -> tuple[bool, int, int, int, bool]:
     return False, 0, 0, 1, True
 
 
+@record
 def main() -> int:
     args = parse_args()
     is_ddp, rank, local_rank, world_size, is_main = _ddp_setup()
@@ -468,6 +483,25 @@ def main() -> int:
     log(f"\nDenoiser: n_layers={args.n_layers} d_model={d_model} d_ff={d_ff} "
         f"params={n_params:,}")
 
+    # ---- Full resume (--resume): restore MODEL here (before DDP wrap); optimizer
+    # + epoch + best_val + global_it are restored further below. Seamless crash
+    # continuation — unlike --init_ckpt, Adam moments + epoch counter are kept. ----
+    resume_ck = None
+    if args.resume is not None:
+        if args.init_ckpt is not None:
+            raise SystemExit("--resume and --init_ckpt are mutually exclusive")
+        if not Path(args.resume).exists():
+            raise SystemExit(f"--resume {args.resume!r} does not exist")
+        log(f"\nFULL RESUME from {args.resume}")
+        resume_ck = torch.load(args.resume, map_location="cpu", weights_only=False)
+        missing, unexpected = denoiser.load_state_dict(resume_ck["model_state_dict"], strict=True)
+        if missing or unexpected:
+            raise SystemExit(
+                f"[RESUME FAIL] model missing={len(missing)} unexpected={len(unexpected)}"
+            )
+        log(f"  loaded model_state_dict strict=True (ckpt epoch={resume_ck.get('epoch')} "
+            f"val_denoise={resume_ck.get('val_denoise')})")
+
     # ---- Warm-start from --init_ckpt (continuation runs only) ----
     # Mirrors train_graph_vae.py's --init_ckpt pattern: only model weights are
     # restored; AdamW state + epoch counter + best_val + RNG all start fresh.
@@ -510,6 +544,15 @@ def main() -> int:
         denoiser.parameters(), lr=args.lr,
         betas=(0.9, 0.99), weight_decay=args.weight_decay,
     )
+    if resume_ck is not None:
+        opt.load_state_dict(resume_ck["optimizer_state_dict"])
+        # optimizer state tensors were loaded on CPU (map_location) → move to the
+        # training device, else AdamW.step() hits a cpu/cuda device mismatch.
+        for st in opt.state.values():
+            for k, v in st.items():
+                if torch.is_tensor(v):
+                    st[k] = v.to(dev)
+        log("  loaded optimizer_state_dict (Adam moments restored + moved to device)")
     sched = DDIMScheduler(
         num_train_timesteps=args.num_train_timesteps,
         beta_start=args.beta_start, beta_end=args.beta_end,
@@ -526,12 +569,29 @@ def main() -> int:
     metrics_fp = open(out_dir / "metrics.jsonl", "w") if is_main else None
     best_val = float("inf")
     global_it = 0
+    start_epoch = 0
+    if resume_ck is not None:
+        best_val = float(resume_ck.get("val_denoise", float("inf")))
+        start_epoch = int(resume_ck.get("epoch", -1)) + 1
+        # per-rank iter counter; start_epoch*steps >> warmup_iters so lr_for() returns
+        # the full lr (no spurious re-warmup on a mid-training resume).
+        global_it = start_epoch * len(dl_train)
+        log(f"  RESUME state: start_epoch={start_epoch} best_val={best_val:.4f} "
+            f"global_it≈{global_it} (>> warmup {args.warmup_iters} → full lr, no re-warmup)")
     epochs = 1 if args.smoke else args.epochs
+    # AMP: bf16 autocast around VAE-encode + denoiser fwd (scheduler math + loss
+    # stay fp32; bf16 needs no GradScaler). amp_ctx() yields the active context.
+    amp_enabled = (args.amp_dtype == "bf16")
+    amp_ctx = (
+        (lambda: torch.autocast(device_type="cuda", dtype=torch.bfloat16))
+        if amp_enabled else contextlib.nullcontext
+    )
+    log(f"\nAMP: amp_dtype={args.amp_dtype} (autocast {'ON bf16' if amp_enabled else 'OFF fp32'})")
     log(f"\nTraining for {epochs} epochs (smoke={args.smoke})")
     log(f"steps per epoch: {len(dl_train)}"
         + (f" (per-rank, world_size={world_size})" if is_ddp else ""))
 
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         if is_ddp:
             train_sampler.set_epoch(epoch)
         denoiser.train()
@@ -542,15 +602,18 @@ def main() -> int:
             raw = {k: v.to(dev) if torch.is_tensor(v) else v for k, v in raw.items()}
             batch = GraphMotionBatch.from_collate_dict(raw)
 
-            # Encode (frozen VAE) — sample=True to use the training z distribution
-            with torch.no_grad():
+            # Encode (frozen VAE) — sample=True to use the training z distribution.
+            # bf16 autocast for the frozen VAE forward; cast z/pooled back to fp32 so
+            # the scheduler diffusion math (add_noise/get_velocity) and the denoiser
+            # dtype contract stay fp32 (autocast re-casts matmuls to bf16 internally).
+            with torch.no_grad(), amp_ctx():
                 enc = vae.encode(batch, sample=True)
-            z0 = enc["z"]                                       # [B,T_lat,C,D]
-            pooled_adj = enc["pooled_adjacency"]
-            pooled_geo = enc["pooled_geodesic"]
+            z0 = enc["z"].float()                              # [B,T_lat,C,D]
+            pooled_adj = enc["pooled_adjacency"].float()
+            pooled_geo = enc["pooled_geodesic"].float()
             coarse_mask = enc["coarse_mask"]
             frame_mask = enc["frame_mask_lat"]
-            pooled_skel = enc["pooled_skeleton_embeddings"]
+            pooled_skel = enc["pooled_skeleton_embeddings"].float()
 
             B = z0.shape[0]
 
@@ -572,18 +635,21 @@ def main() -> int:
             z_t = z_t * mask_4d
             v_target = v_target * mask_4d
 
-            # Denoiser forward
-            v_pred = denoiser(
-                z_t=z_t, timesteps=timesteps, text=text_emb,
-                adjacency=pooled_adj, geodesic_dist=pooled_geo,
-                coarse_mask=coarse_mask, frame_mask=frame_mask,
-                pooled_skeleton_embeddings=pooled_skel,
-                has_text=has_text,
-                # Validate on the first iter only (cold-start preflight)
-                validate_inputs=(global_it == 0),
-            )
-
-            loss = masked_v_mse(v_pred, v_target, coarse_mask, frame_mask)
+            # Denoiser forward + loss under bf16 autocast (inputs stay fp32; autocast
+            # casts internal matmuls to bf16). v_pred is bf16; masked_v_mse's
+            # (v_pred - v_target) promotes to fp32 (v_target is fp32) so the loss +
+            # backward are fp32 — no GradScaler needed.
+            with amp_ctx():
+                v_pred = denoiser(
+                    z_t=z_t, timesteps=timesteps, text=text_emb,
+                    adjacency=pooled_adj, geodesic_dist=pooled_geo,
+                    coarse_mask=coarse_mask, frame_mask=frame_mask,
+                    pooled_skeleton_embeddings=pooled_skel,
+                    has_text=has_text,
+                    # Validate on the first iter only (cold-start preflight)
+                    validate_inputs=(global_it == 0),
+                )
+                loss = masked_v_mse(v_pred, v_target, coarse_mask, frame_mask)
 
             # P3 fail-fast (2026-05-23): a NaN/Inf loss means upstream maths
             # diverged (bad lr / bad scheduler / nan input). Crashing here
@@ -641,13 +707,14 @@ def main() -> int:
                     for raw in dl_val:
                         raw = {k: v.to(dev) if torch.is_tensor(v) else v for k, v in raw.items()}
                         batch = GraphMotionBatch.from_collate_dict(raw)
-                        enc = vae.encode(batch, sample=False)  # deterministic eval (z=mu)
-                        z0 = enc["z"]
-                        pooled_adj = enc["pooled_adjacency"]
-                        pooled_geo = enc["pooled_geodesic"]
+                        with amp_ctx():
+                            enc = vae.encode(batch, sample=False)  # deterministic eval (z=mu)
+                        z0 = enc["z"].float()
+                        pooled_adj = enc["pooled_adjacency"].float()
+                        pooled_geo = enc["pooled_geodesic"].float()
                         coarse_mask = enc["coarse_mask"]
                         frame_mask = enc["frame_mask_lat"]
-                        pooled_skel = enc["pooled_skeleton_embeddings"]
+                        pooled_skel = enc["pooled_skeleton_embeddings"].float()
                         B = z0.shape[0]
                         noise = torch.randn(z0.shape, generator=g_val, device=dev, dtype=z0.dtype)
                         timesteps = torch.randint(
@@ -664,14 +731,15 @@ def main() -> int:
                         # Codex P2 fix (2026-05-25): rank-0-only val uses raw
                         # module, not DDP wrapper, to avoid any future one-sided
                         # collective if denoiser ever grows DDP-tracked buffers.
-                        v_pred = raw_denoiser(
-                            z_t=z_t, timesteps=timesteps, text=text_emb,
-                            adjacency=pooled_adj, geodesic_dist=pooled_geo,
-                            coarse_mask=coarse_mask, frame_mask=frame_mask,
-                            pooled_skeleton_embeddings=pooled_skel,
-                            has_text=has_text, validate_inputs=False,
-                        )
-                        diff_sq = (v_pred - v_target).pow(2) * mask_f
+                        with amp_ctx():
+                            v_pred = raw_denoiser(
+                                z_t=z_t, timesteps=timesteps, text=text_emb,
+                                adjacency=pooled_adj, geodesic_dist=pooled_geo,
+                                coarse_mask=coarse_mask, frame_mask=frame_mask,
+                                pooled_skeleton_embeddings=pooled_skel,
+                                has_text=has_text, validate_inputs=False,
+                            )
+                        diff_sq = (v_pred.float() - v_target).pow(2) * mask_f
                         val_num += diff_sq.sum().item()
                         val_den += mask_f.sum().item() * v_pred.shape[-1]
                 val_loss = val_num / max(val_den, 1.0)
