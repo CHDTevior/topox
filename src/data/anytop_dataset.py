@@ -78,6 +78,31 @@ _DEFAULT_ANYTOP_ROOT = (
 _STD_FLOOR = 1e-6  # matches AnyTop's `std += 1e-6` stability constant
 
 
+def _read_split_file(path: Path) -> list[str]:
+    """Read a splits/{train,val}.txt list -- one .npy basename per line, skipping
+    blank lines and '#' comments. Order preserved."""
+    out: list[str] = []
+    with path.open("r") as fh:
+        for line in fh:
+            s = line.strip()
+            if s and not s.startswith("#"):
+                out.append(s)
+    return out
+
+
+def _duplicates(names: list[str]) -> list[str]:
+    """Return the distinct values that appear more than once in `names` (O(N))."""
+    seen: set[str] = set()
+    dup_seen: set[str] = set()
+    dups: list[str] = []
+    for n in names:
+        if n in seen and n not in dup_seen:
+            dup_seen.add(n)
+            dups.append(n)
+        seen.add(n)
+    return dups
+
+
 def _longest_prefix_match(fname: str, keys_sorted_desc: list[str]) -> Optional[str]:
     """Match a filename to its cond object_type by longest-prefix.
 
@@ -455,8 +480,11 @@ class AnyTopDataset(Dataset):
 
     Args:
         data_root: path to truebones_processed dir (default: AnyTop's processed dir).
-        split: 'train' | 'val' | 'all'. Splits are per-object stratified 80/20,
-            seed=42. 'all' returns every clip.
+        split: 'train' | 'val' | 'all'. For 'train'/'val', if BOTH
+            data_root/splits/{train,val}.txt exist and use_split_file is True,
+            the split is READ from those files; otherwise it falls back to a
+            per-object stratified holdout (md5-seeded, deterministic). 'all'
+            returns every clip.
         num_frames: temporal crop/pad target (default 64 — matches our config).
         max_joints: spatial pad target (default 143 — user spec; dataset max is 142).
         load_captions: if True, parse motion_texts_by_file.json and attach primary_caption.
@@ -466,6 +494,10 @@ class AnyTopDataset(Dataset):
             joints per AnyTop's remove_joints augmentation. NO-OP on val/all.
         augment_prob: per-sample probability of applying removal (default 0.3).
         removal_rate: fraction of eligible end-effectors to drop (default 0.5).
+        use_split_file: if True (default), 'train'/'val' are read from
+            data_root/splits/{train,val}.txt when both exist (else fall back to
+            the stratified algorithm). Set False to FORCE the algorithm — used by
+            scripts/_export_split_lists.py to (re)generate those files.
     """
 
     def __init__(
@@ -484,6 +516,7 @@ class AnyTopDataset(Dataset):
         caption_emb_cache: str | Path | None = None,
         random_caption: bool = False,
         random_crop: bool | None = None,
+        use_split_file: bool = True,
     ) -> None:
         self.data_root = Path(data_root)
         self.split = split
@@ -573,32 +606,86 @@ class AnyTopDataset(Dataset):
                 f"cond key (kept only matched: {len(all_samples)}/{len(all_samples)+skipped_unmatched})"
             )
 
-        # ---- Per-object stratified 80/20 split ----
+        # ---- Split: prefer splits/{train,val}.txt, else per-object stratified ----
+        # File mode (default): if BOTH data_root/splits/train.txt and val.txt exist
+        # (and use_split_file), read the split from them -- a materialized, hand-
+        # inspectable record of which clips train vs validate (generate/refresh via
+        # scripts/_export_split_lists.py). If either file is missing (or the caller
+        # forces use_split_file=False), fall back to the original per-object md5-
+        # seeded stratified holdout, so datasets with no splits/ dir behave as before.
         if split == "all":
             self.samples = all_samples
+        elif split not in ("train", "val"):
+            raise ValueError(f"split must be 'train'/'val'/'all', got {split!r}")
         else:
-            by_obj: dict[str, list[dict]] = defaultdict(list)
-            for s in all_samples:
-                by_obj[s["object_type"]].append(s)
-            train_set: list[dict] = []
-            val_set: list[dict] = []
-            for obj, lst in sorted(by_obj.items()):
-                # codex P1 #5: Python's hash() is PYTHONHASHSEED-salted -> non-
-                # deterministic across processes. Use a stable hashlib digest.
-                obj_seed_off = int(
-                    hashlib.md5(obj.encode("utf-8")).hexdigest()[:8], 16
-                ) % 1000
-                rng = random.Random(seed + obj_seed_off)
-                ids = sorted(lst, key=lambda x: x["motion_id"])
-                rng.shuffle(ids)
-                n = len(ids)
-                n_val = max(1, round(n * val_frac)) if n >= 2 else 0
-                n_val = min(n_val, n - 1) if n >= 2 else 0
-                val_set.extend(ids[:n_val])
-                train_set.extend(ids[n_val:])
-            self.samples = train_set if split == "train" else val_set
-            if split not in ("train", "val"):
-                raise ValueError(f"split must be 'train'/'val'/'all', got {split!r}")
+            splits_dir = self.data_root / "splits"
+            f_this = splits_dir / f"{split}.txt"
+            f_other = splits_dir / ("val.txt" if split == "train" else "train.txt")
+            if use_split_file and f_this.exists() and f_other.exists():
+                # ---- File mode: split files are the source of truth, so ANY
+                # inconsistency vs motions/ on disk is a HARD error (silent val
+                # leakage or train-data exclusion otherwise). Refresh the files
+                # via scripts/_export_split_lists.py after any data change.
+                by_name = {Path(s["path"]).name: s for s in all_samples}
+                want_this = _read_split_file(f_this)
+                want_other = _read_split_file(f_other)
+                if not want_this or not want_other:
+                    raise ValueError(
+                        f"empty split file: {f_this.name}={len(want_this)} "
+                        f"{f_other.name}={len(want_other)} entries. "
+                        f"Refresh _export_split_lists.py."
+                    )
+                dup_this, dup_other = _duplicates(want_this), _duplicates(want_other)
+                if dup_this or dup_other:
+                    raise ValueError(
+                        f"duplicate entries in split files: {f_this.name}={dup_this[:3]} "
+                        f"{f_other.name}={dup_other[:3]}. Refresh _export_split_lists.py."
+                    )
+                overlap = sorted(set(want_this) & set(want_other))
+                if overlap:
+                    raise ValueError(
+                        f"{len(overlap)} clip(s) in BOTH train.txt and val.txt (val "
+                        f"leakage); e.g. {overlap[:3]}. Refresh _export_split_lists.py."
+                    )
+                absent = [n for n in want_this + want_other if n not in by_name]
+                if absent:
+                    raise ValueError(
+                        f"{len(absent)} clip(s) in the split files not found on disk "
+                        f"(stale split file); e.g. {absent[:3]}. Refresh _export_split_lists.py."
+                    )
+                listed = set(want_this) | set(want_other)
+                uncovered = [n for n in by_name if n not in listed]
+                if uncovered:
+                    raise ValueError(
+                        f"{len(uncovered)} clip(s) on disk in NEITHER train.txt nor "
+                        f"val.txt (excluded from training); e.g. {uncovered[:3]}. "
+                        f"Refresh _export_split_lists.py."
+                    )
+                self.samples = [by_name[n] for n in want_this]
+                print(f"  [AnyTopDataset] split='{split}' read from {f_this} "
+                      f"({len(self.samples)} clips)")
+            else:
+                # ---- Fallback: per-object md5-seeded stratified holdout ----
+                by_obj: dict[str, list[dict]] = defaultdict(list)
+                for s in all_samples:
+                    by_obj[s["object_type"]].append(s)
+                train_set: list[dict] = []
+                val_set: list[dict] = []
+                for obj, lst in sorted(by_obj.items()):
+                    # codex P1 #5: Python's hash() is PYTHONHASHSEED-salted -> non-
+                    # deterministic across processes. Use a stable hashlib digest.
+                    obj_seed_off = int(
+                        hashlib.md5(obj.encode("utf-8")).hexdigest()[:8], 16
+                    ) % 1000
+                    rng = random.Random(seed + obj_seed_off)
+                    ids = sorted(lst, key=lambda x: x["motion_id"])
+                    rng.shuffle(ids)
+                    n = len(ids)
+                    n_val = max(1, round(n * val_frac)) if n >= 2 else 0
+                    n_val = min(n_val, n - 1) if n >= 2 else 0
+                    val_set.extend(ids[:n_val])
+                    train_set.extend(ids[n_val:])
+                self.samples = train_set if split == "train" else val_set
             self.samples.sort(key=lambda s: s["motion_id"])
 
         # ---- Captions (M1.7 Phase-2: multi-caption per motion, SALAD-style) ----
