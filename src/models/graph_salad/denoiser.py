@@ -215,17 +215,27 @@ class GraphSaladDenoiserLayer(nn.Module):
         d_t: int,
         dropout: float = 0.1,
         text_mode: str = "mean_additive",
+        spatial_mode: str = "graph",
     ) -> None:
         super().__init__()
         self.text_mode = text_mode
-        self.spatial = GraphAttentionBlock(d_model, n_heads, d_ff, dropout=dropout)
+        self.spatial_mode = spatial_mode
+        # spatial_mode="graph" (default): graph-aware spatial attn (adjacency+geodesic
+        # bias). "plain": no_graph_spatial ablation — plain slot self-attn (no topo
+        # bias), still node-masked; pooled_skeleton_embeddings additive (top-level
+        # input_proj) is unchanged, so the model still knows "what segment" each slot is.
+        self.spatial = GraphAttentionBlock(
+            d_model, n_heads, d_ff, dropout=dropout,
+            use_graph_bias=(spatial_mode == "graph"))
         self.temporal = TemporalSelfAttention(d_model, n_heads, dropout=dropout)
         self.film_after_spatial = DenseFiLM(d_t, d_model)
         self.film_after_temporal = DenseFiLM(d_t, d_model)
         self.film_after_text = DenseFiLM(d_t, d_model)
-        # Token cross-attn sub-block exists only in token mode (so mean-mode
-        # state_dict is byte-identical to old ckpts — strict-load preserved).
-        if text_mode == "token_cross_attn":
+        # Token cross-attn sub-block exists in token_cross_attn AND dual_text (so
+        # mean-mode state_dict is byte-identical to old ckpts — strict-load
+        # preserved). dual_text additionally uses the (always-present) global
+        # text_proj path, so its per-layer params == token mode's.
+        if text_mode in ("token_cross_attn", "dual_text"):
             self.text_cross_attn = TextCrossAttention(d_model, n_heads, dropout=dropout)
 
     def forward(
@@ -277,14 +287,17 @@ class GraphSaladDenoiserLayer(nn.Module):
         x = self.film_after_temporal(x, t_emb)
 
         # --- 5. Text conditioning (mode-dependent) ---
-        if self.text_mode == "token_cross_attn":
+        # dual_text runs BOTH sub-blocks (token cross-attn THEN global add) in the
+        # SAME per-layer slot — the spatial/temporal FiLM ordering is unchanged, so
+        # mean_additive / token_cross_attn behave byte-identically.
+        if self.text_mode in ("token_cross_attn", "dual_text"):
             # Motion tokens [B,T*C,D] cross-attend text tokens [B,L,D]. CFG-uncond
             # rows (all text keys masked) get zero output (TextCrossAttention).
             q = x.reshape(B, T_lat * C, D)
             ca = self.text_cross_attn(q, text_tokens, text_key_padding_mask)
             x = x + ca.reshape(B, T_lat, C, D)
-        else:
-            # mean_additive (default): broadcast-add projected mean text (gated).
+        if self.text_mode in ("mean_additive", "dual_text"):
+            # broadcast-add projected mean/global text (gated by has_text → CFG).
             text_gated = text_cond * has_text[:, None].to(text_cond.dtype)  # [B, D]
             x = x + text_gated[:, None, None, :]
 
@@ -321,12 +334,18 @@ class GraphSaladDenoiser(nn.Module):
         dropout: float = 0.1,
         text_mode: str = "mean_additive",
         text_token_dim: int = 768,
+        spatial_mode: str = "graph",
     ) -> None:
         super().__init__()
-        if text_mode not in ("mean_additive", "token_cross_attn"):
+        if text_mode not in ("mean_additive", "token_cross_attn", "dual_text"):
             raise ValueError(
-                f"text_mode must be 'mean_additive' or 'token_cross_attn', "
-                f"got {text_mode!r}"
+                f"text_mode must be 'mean_additive', 'token_cross_attn' or "
+                f"'dual_text', got {text_mode!r}"
+            )
+        if spatial_mode not in ("graph", "plain"):
+            raise ValueError(
+                f"spatial_mode must be 'graph' (graph-aware spatial attn) or "
+                f"'plain' (no_graph_spatial ablation), got {spatial_mode!r}"
             )
         if n_layers % 2 == 0:
             raise ValueError(
@@ -348,6 +367,7 @@ class GraphSaladDenoiser(nn.Module):
         self.d_t = d_t
         self.text_mode = text_mode
         self.text_token_dim = text_token_dim
+        self.spatial_mode = spatial_mode
 
         # --- Timestep embedding (shared across all layers' FiLMs) ---
         self.t_sin = SinusoidalTimestepEmbedding(d_t)
@@ -361,9 +381,10 @@ class GraphSaladDenoiser(nn.Module):
         # Per design §2.3: denoiser owns its own text_proj (NOT reusing VAE's).
         # mean_additive: projects the [B,768] mean-pooled caption.
         self.text_proj = nn.Linear(d_text, d_model)
-        # token_cross_attn: separate projection for token-level T5 [B,L,768]→[B,L,D]
-        # (exists only in token mode → mean-mode ckpts stay byte-identical).
-        if text_mode == "token_cross_attn":
+        # token_cross_attn / dual_text: separate projection for token-level T5
+        # [B,L,768]→[B,L,D] (exists only in these modes → mean-mode ckpts stay
+        # byte-identical). dual_text uses BOTH text_proj (global) and text_token_proj.
+        if text_mode in ("token_cross_attn", "dual_text"):
             self.text_token_proj = nn.Linear(text_token_dim, d_model)
 
         # --- Input projection: latent z + slot conditioning ---
@@ -376,7 +397,7 @@ class GraphSaladDenoiser(nn.Module):
         self.layers = nn.ModuleList(
             [
                 GraphSaladDenoiserLayer(d_model, n_heads, d_ff, d_t, dropout=dropout,
-                                        text_mode=text_mode)
+                                        text_mode=text_mode, spatial_mode=spatial_mode)
                 for _ in range(n_layers)
             ]
         )
@@ -409,8 +430,15 @@ class GraphSaladDenoiser(nn.Module):
         has_text: torch.Tensor | None = None,
         validate_inputs: bool = False,
         text_token_mask: torch.Tensor | None = None,
+        text_tokens: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Returns v_pred [B, T_lat, C, D].
+
+        text/text_tokens contract by text_mode:
+          - mean_additive:    text=[B,768] global; text_tokens=None.
+          - token_cross_attn: text=[B,L,768] tokens; text_tokens=None.
+          - dual_text:        text=[B,768] global AND text_tokens=[B,L,768] tokens
+                              (+ text_token_mask). Both streams gated by has_text.
 
         See module docstring for input/output contracts.
 
@@ -448,28 +476,11 @@ class GraphSaladDenoiser(nn.Module):
                 f"has_text must be [B={B}] bool, got {tuple(has_text.shape)} "
                 f"dtype {has_text.dtype}"
             )
-        if self.text_mode == "mean_additive":
-            if text.dim() != 2 or text.shape[0] != B or text.shape[1] != self.d_text:
-                raise ValueError(
-                    f"text must be [B={B}, d_text={self.d_text}] for mean_additive "
-                    f"(mean-pooled cache); got {tuple(text.shape)}."
-                )
-            if text_token_mask is not None:
-                raise ValueError(
-                    "text_token_mask must be None in mean_additive mode."
-                )
-        else:  # token_cross_attn
-            if (text.dim() != 3 or text.shape[0] != B
-                    or text.shape[2] != self.text_token_dim):
-                raise ValueError(
-                    f"text must be [B={B}, L, text_token_dim={self.text_token_dim}] "
-                    f"for token_cross_attn; got {tuple(text.shape)}."
-                )
-            L = text.shape[1]
+        def _check_token_mask(L: int) -> None:
             if (text_token_mask is None or text_token_mask.shape != (B, L)
                     or text_token_mask.dtype != torch.bool):
                 raise ValueError(
-                    f"token_cross_attn requires text_token_mask [B={B}, L={L}] bool, "
+                    f"{self.text_mode} requires text_token_mask [B={B}, L={L}] bool, "
                     f"got {None if text_token_mask is None else tuple(text_token_mask.shape)}"
                     f"{'' if text_token_mask is None else ' ' + str(text_token_mask.dtype)}"
                 )
@@ -478,6 +489,46 @@ class GraphSaladDenoiser(nn.Module):
                     f"text_token_mask.device {text_token_mask.device} != "
                     f"z_t.device {z_t.device}"
                 )
+        if self.text_mode == "mean_additive":
+            if text.dim() != 2 or text.shape[0] != B or text.shape[1] != self.d_text:
+                raise ValueError(
+                    f"text must be [B={B}, d_text={self.d_text}] for mean_additive "
+                    f"(mean-pooled cache); got {tuple(text.shape)}."
+                )
+            if text_token_mask is not None or text_tokens is not None:
+                raise ValueError(
+                    "mean_additive: text_token_mask AND text_tokens must both be None."
+                )
+        elif self.text_mode == "dual_text":
+            # global stream: text = mean-pooled [B,768] (like mean_additive)
+            if text.dim() != 2 or text.shape[0] != B or text.shape[1] != self.d_text:
+                raise ValueError(
+                    f"dual_text: text (global mean) must be [B={B}, d_text={self.d_text}]; "
+                    f"got {tuple(text.shape)}."
+                )
+            # token stream: text_tokens = token-level [B,L,768] (separate keyword arg)
+            if (text_tokens is None or text_tokens.dim() != 3
+                    or text_tokens.shape[0] != B
+                    or text_tokens.shape[2] != self.text_token_dim):
+                raise ValueError(
+                    f"dual_text: text_tokens must be [B={B}, L, "
+                    f"text_token_dim={self.text_token_dim}]; got "
+                    f"{None if text_tokens is None else tuple(text_tokens.shape)}."
+                )
+            _check_token_mask(text_tokens.shape[1])
+        else:  # token_cross_attn (single token stream via `text`)
+            if (text.dim() != 3 or text.shape[0] != B
+                    or text.shape[2] != self.text_token_dim):
+                raise ValueError(
+                    f"text must be [B={B}, L, text_token_dim={self.text_token_dim}] "
+                    f"for token_cross_attn; got {tuple(text.shape)}."
+                )
+            if text_tokens is not None:
+                raise ValueError(
+                    "token_cross_attn: tokens go via `text`; text_tokens must be None "
+                    "(text_tokens is the dual_text global+token split)."
+                )
+            _check_token_mask(text.shape[1])
         if timesteps.shape != (B,):
             raise ValueError(f"timesteps must be [B={B}], got {tuple(timesteps.shape)}")
         if coarse_mask.shape != (B, C) or coarse_mask.dtype != torch.bool:
@@ -529,6 +580,13 @@ class GraphSaladDenoiser(nn.Module):
                 raise ValueError(
                     f"GraphSaladDenoiser: {name}.dtype {t.dtype} != z_t.dtype {z_t.dtype}"
                 )
+        if text_tokens is not None and (text_tokens.device != ref_device
+                                        or text_tokens.dtype != z_t.dtype):
+            raise ValueError(
+                f"GraphSaladDenoiser: text_tokens device/dtype "
+                f"({text_tokens.device}/{text_tokens.dtype}) must match z_t "
+                f"({ref_device}/{z_t.dtype})."
+            )
 
         # --- Timestep embedding (shared by all FiLMs) ---
         t_emb = self.t_mlp(self.t_sin(timesteps))         # [B, D_t]
@@ -538,13 +596,23 @@ class GraphSaladDenoiser(nn.Module):
         # token_cross_attn: project tokens [B,L,768]→[B,L,D] + build the per-layer
         #   key_padding_mask (True = ignore): pad-token OR has_text=False. An
         #   all-masked (uncond) row is handled by TextCrossAttention (output→0).
+        # dual_text: BOTH — global text_cond (from `text`) + token tok_emb (from the
+        #   separate `text_tokens` arg). One shared key_padding_mask gates the token
+        #   stream; has_text gates the global stream → both CFG-drop together.
+        # NOTE: local projected tokens are `tok_emb` (NOT `text_tokens`) so the
+        # dual_text `text_tokens` forward ARG is not clobbered.
         text_cond = None
-        text_tokens = None
+        tok_emb = None
         text_key_padding_mask = None
         if self.text_mode == "mean_additive":
             text_cond = self.text_proj(text)              # [B, D]
-        else:
-            text_tokens = self.text_token_proj(text)      # [B, L, D]
+        elif self.text_mode == "dual_text":
+            text_cond = self.text_proj(text)              # global [B, D]
+            tok_emb = self.text_token_proj(text_tokens)   # tokens [B, L, D]
+            valid = text_token_mask & has_text[:, None]   # [B, L] bool
+            text_key_padding_mask = ~valid                # [B, L] True=mask
+        else:  # token_cross_attn (tokens via `text`)
+            tok_emb = self.text_token_proj(text)          # [B, L, D]
             # valid key = token present AND has_text=True. key_padding_mask is
             # the inverse (True ⇒ mask). has_text=False ⇒ whole row masked.
             valid = text_token_mask & has_text[:, None]   # [B, L] bool
@@ -570,7 +638,7 @@ class GraphSaladDenoiser(nn.Module):
                 x, t_emb, text_cond, has_text,
                 adjacency, geodesic_dist, coarse_mask, frame_mask,
                 validate_inputs=validate_inputs,
-                text_tokens=text_tokens,
+                text_tokens=tok_emb,
                 text_key_padding_mask=text_key_padding_mask,
             )
             enc_outputs.append(x)
@@ -580,7 +648,7 @@ class GraphSaladDenoiser(nn.Module):
             x, t_emb, text_cond, has_text,
             adjacency, geodesic_dist, coarse_mask, frame_mask,
             validate_inputs=validate_inputs,
-            text_tokens=text_tokens,
+            text_tokens=tok_emb,
             text_key_padding_mask=text_key_padding_mask,
         )
 
@@ -594,7 +662,7 @@ class GraphSaladDenoiser(nn.Module):
                 x, t_emb, text_cond, has_text,
                 adjacency, geodesic_dist, coarse_mask, frame_mask,
                 validate_inputs=validate_inputs,
-                text_tokens=text_tokens,
+                text_tokens=tok_emb,
                 text_key_padding_mask=text_key_padding_mask,
             )
 

@@ -78,6 +78,7 @@ class GraphAttentionBlock(nn.Module):
         n_heads: int,
         d_ff: int,
         dropout: float = 0.1,
+        use_graph_bias: bool = True,
     ) -> None:
         super().__init__()
         if d_model <= 0 or n_heads <= 0:
@@ -97,6 +98,7 @@ class GraphAttentionBlock(nn.Module):
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_head = d_model // n_heads
+        self.use_graph_bias = use_graph_bias
 
         # Q/K/V/O projections
         self.q_proj = nn.Linear(d_model, d_model)
@@ -104,10 +106,15 @@ class GraphAttentionBlock(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model)
         self.o_proj = nn.Linear(d_model, d_model)
 
-        # Edge bias projections (scalar → per-head)
-        # Matches encoder.py:41-42 formulation.
-        self.geodesic_bias = nn.Linear(1, n_heads, bias=False)
-        self.adjacency_bias = nn.Linear(1, n_heads, bias=False)
+        # Edge bias projections (scalar → per-head). Matches encoder.py:41-42.
+        # Only the graph-aware variant adds adjacency/geodesic bias to the scores.
+        # The no_graph_spatial ablation (use_graph_bias=False) is a plain slot
+        # self-attention: it drops these two tiny projections (~2*n_heads params/
+        # block, negligible vs d_model² Q/K/V/O+FFN) and skips the bias in _compute,
+        # but keeps node_mask + the rest of the block byte-identical (param-aligned).
+        if use_graph_bias:
+            self.geodesic_bias = nn.Linear(1, n_heads, bias=False)
+            self.adjacency_bias = nn.Linear(1, n_heads, bias=False)
 
         # Norms (pre-norm)
         self.norm1 = nn.LayerNorm(d_model)
@@ -350,12 +357,15 @@ class GraphAttentionBlock(nn.Module):
         # affects unmasked-but-disconnected pairs (rare; deferred to a later
         # learnable "unreachable" bucket per lit survey if it shows up in
         # generation eval). NaN/-Inf were rejected above.
-        geo = geodesic_dist.clone()
-        geo[torch.isinf(geo)] = 0.0
-        geo_bias = self.geodesic_bias(geo.unsqueeze(-1))         # [B, N, N, H]
-        adj_bias = self.adjacency_bias(adjacency.unsqueeze(-1))  # [B, N, N, H]
-        topo_bias = (geo_bias + adj_bias).permute(0, 3, 1, 2)    # [B, H, N, N]
-        scores = scores + topo_bias
+        # Graph-aware variant only; the no_graph_spatial ablation skips the topo
+        # bias entirely → plain slot self-attention (still node-masked below).
+        if self.use_graph_bias:
+            geo = geodesic_dist.clone()
+            geo[torch.isinf(geo)] = 0.0
+            geo_bias = self.geodesic_bias(geo.unsqueeze(-1))         # [B, N, N, H]
+            adj_bias = self.adjacency_bias(adjacency.unsqueeze(-1))  # [B, N, N, H]
+            topo_bias = (geo_bias + adj_bias).permute(0, 3, 1, 2)    # [B, H, N, N]
+            scores = scores + topo_bias
 
         # Mask invalid nodes (key side). Use large finite negative for softmax
         # numerical safety; matches encoder.py:84-85.

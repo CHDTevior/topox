@@ -520,6 +520,7 @@ class AnyTopDataset(Dataset):
         caption_token_cache: str | Path | None = None,
         return_caption_tokens: bool = False,
         caption_token_max_len: int = 64,
+        species_whitelist: list[str] | None = None,
     ) -> None:
         self.data_root = Path(data_root)
         self.split = split
@@ -690,6 +691,21 @@ class AnyTopDataset(Dataset):
                     train_set.extend(ids[n_val:])
                 self.samples = train_set if split == "train" else val_set
             self.samples.sort(key=lambda s: s["motion_id"])
+
+        # species_whitelist: restrict to a subset of object_types (e.g. a 20-species
+        # capacity probe). Applied AFTER the split build + file-mode coverage checks,
+        # so the full-data leakage/coverage invariants still hold for the underlying
+        # split; only the in-memory sample list is then narrowed to the whitelist.
+        if species_whitelist is not None:
+            wl = set(species_whitelist)
+            before = len(self.samples)
+            self.samples = [s for s in self.samples if s["object_type"] in wl]
+            if not self.samples:
+                raise ValueError(
+                    f"species_whitelist matched 0/{before} samples; check names vs "
+                    f"object_types, e.g. {sorted(wl)[:3]}")
+            print(f"  [AnyTopDataset] species_whitelist: {before} → "
+                  f"{len(self.samples)} samples ({len(wl)} species)")
 
         # ---- Captions (M1.7 Phase-2: multi-caption per motion, SALAD-style) ----
         # `self.captions` keeps the PRIMARY caption per motion (for display in
