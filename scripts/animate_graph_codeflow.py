@@ -29,9 +29,11 @@ matplotlib.use("Agg")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.animate import animate_t2m_input_pred, fk_rest_pose  # noqa: E402
+from scripts.animate import fk_rest_pose  # noqa: E402
+from scripts.animate_denoiser import make_t2m_large_gif  # noqa: E402
 from src.data.anytop_dataset import (  # noqa: E402
     AnyTopDataset, collate_fn as anytop_collate_fn, _STD_FLOOR,
+    _recover_world_positions,
 )
 from src.data.anytop_rot6d_fk import recover_from_bvh_rot_np  # noqa: E402
 from src.models.graph_salad.batch import GraphMotionBatch  # noqa: E402
@@ -79,6 +81,27 @@ def load_flow(ckpt_path: str, code_dim: int, dev: torch.device):
     return flow, ck
 
 
+def encode_ood_text(text: str, dev: torch.device):
+    """T5-encode an arbitrary string into (global[768], tokens[64,768], mask[64]),
+    matching the TRAINING caption cache convention exactly (t5-base, max_length=64;
+    global = mask-mean of last_hidden_state, tokens = padded [64,768] + [64] bool).
+    See precompute_t5_captions.py (global) + precompute_t5_caption_tokens.py (tokens)."""
+    import os
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    from transformers import T5EncoderModel, T5TokenizerFast
+    tok = T5TokenizerFast.from_pretrained("t5-base")
+    t5 = T5EncoderModel.from_pretrained("t5-base").to(dev).eval()
+    enc = tok(text, return_tensors="pt", padding="max_length", truncation=True,
+              max_length=64).to(dev)
+    with torch.no_grad():
+        hs = t5(input_ids=enc.input_ids,
+                attention_mask=enc.attention_mask).last_hidden_state[0]   # [64,768]
+    m = enc.attention_mask[0].bool()                                      # [64]
+    g = (hs * m.unsqueeze(-1).float()).sum(0) / m.sum().clamp_min(1)      # [768]
+    return g.float(), hs.float(), m
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--flow_ckpt", required=True)
@@ -88,6 +111,10 @@ def main() -> int:
     ap.add_argument("--species", default="PZ_Grey_Seal_Female,PZ_Caracal_Male,"
                     "PZ_West_African_Lion_Male,PZ_Red_Kangaroo_Female")
     ap.add_argument("--n_per", type=int, default=1)
+    ap.add_argument("--clip_names", default="",
+                    help="comma-sep clip basenames; if set, render EXACTLY these clips "
+                         "(one each) and IGNORE --species/--n_per. For same-named-clip "
+                         "cross-dataset (L5 vs merged) comparison.")
     ap.add_argument("--cfg_scale", type=float, default=4.0,
                     help="CFG scale (SWEEP starting point — not hardcoded 6.0)")
     ap.add_argument("--steps", type=int, default=50)
@@ -96,7 +123,19 @@ def main() -> int:
     ap.add_argument("--num_frames", type=int, default=None,
                     help="override the dataset num_frames used for rendering; None = "
                          "use ckpt max_frames. Set 300 to QA full-length clips")
+    ap.add_argument("--min_frames", type=int, default=0,
+                    help="skip dataset clips shorter than this many frames (0=off). "
+                         "Use to QA LONG motions only, e.g. --min_frames 250 picks "
+                         "clips whose GT motion is >=250 frames.")
     ap.add_argument("--stride", type=int, default=2)
+    ap.add_argument("--render_from", choices=["fk", "position"], default="fk",
+                    help="recover [T,J,3] for rendering via: 'fk' = rot6d(ch3:9)->FK on "
+                         "bone offsets (recover_from_bvh_rot_np, historical default); "
+                         "'position' = RIC(ch0:3) world-position route "
+                         "(_recover_world_positions) -> shows the model's predicted joint "
+                         "POSITIONS directly, bypassing FK. Switches PRED recovery only; "
+                         "GT is always the precomputed position route, so 'position' makes "
+                         "GT and PRED consistent.")
     ap.add_argument("--fps", type=int, default=8)
     ap.add_argument("--anytop_root", type=str, default=None)
     ap.add_argument("--caption_emb_cache", type=str,
@@ -104,6 +143,11 @@ def main() -> int:
     ap.add_argument("--caption_token_cache", type=str,
                     default="data/anytop_caption_t5_cleanL5_multi")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--ood_text", type=str, default=None,
+                    help="OOD/custom text: T5-encode this string and OVERRIDE the picked "
+                         "clip's caption (global+tokens+mask, has_text=True). The red GT "
+                         "panel is dropped (the clip's GT is for its ORIGINAL caption, not "
+                         "this text). For text-generalization experiments.")
     args = ap.parse_args()
 
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -138,21 +182,60 @@ def main() -> int:
         caption_token_cache=args.caption_token_cache,
         return_caption_tokens=True, random_caption=False)
 
+    # OOD/custom text: encode once (single string applied to all picked clips).
+    ood_fields = None
+    if args.ood_text:
+        ood_fields = encode_ood_text(args.ood_text, dev)
+        print(f"[OOD-TEXT] {args.ood_text!r} -> global{tuple(ood_fields[0].shape)} "
+              f"tokens{tuple(ood_fields[1].shape)} valid_tok={int(ood_fields[2].sum())}; "
+              f"GT panel DROPPED (clip GT is for original caption, not this text)")
+
     want = [s.strip() for s in args.species.split(",") if s.strip()]
     picked = {s: 0 for s in want}
+    want_clips = set(c.strip() for c in args.clip_names.split(",") if c.strip())
+    rendered_clips = set()
     summary = []
     with torch.no_grad():
         for i in range(len(ds)):
+            # Prefilter on ds.samples[i] (cheap metadata: path/object_type) BEFORE
+            # ds[i] (which loads+processes the npy). In clip-name mode this avoids
+            # loading every val clip, and a malformed unrelated sample can't crash
+            # before we reach the requested clips. sp == item["object_type"] by
+            # construction (anytop_dataset.py __getitem__ uses samples[idx]).
+            sample = ds.samples[i]
+            sp = sample["object_type"]
+            bn = Path(sample["path"]).name
+            if want_clips:
+                if bn not in want_clips or bn in rendered_clips:
+                    continue
+            elif sp not in picked or picked[sp] >= args.n_per:
+                continue
             item = ds[i]
-            sp = item["object_type"]
-            if sp not in picked or picked[sp] >= args.n_per:
+            # Long-motion QA: skip clips shorter than --min_frames (0=off), so
+            # the first-n-per-species picker lands on LONG clips, not short ones.
+            if int(item["num_frames"]) < args.min_frames:
                 continue
             raw = anytop_collate_fn([item])
             raw = {k: v.to(dev) if torch.is_tensor(v) else v for k, v in raw.items()}
             batch = GraphMotionBatch.from_collate_dict(raw)
 
+            # OOD-text override: replace ALL THREE text fields (graph_pscf uses both
+            # token cross-attn and global-add, both has_text-gated) + set has_text.
+            if ood_fields is not None:
+                g, tok_emb, tok_mask = ood_fields
+                batch.caption_emb = g.unsqueeze(0)             # [1,768]
+                batch.caption_token_emb = tok_emb.unsqueeze(0)  # [1,64,768]
+                batch.caption_token_mask = tok_mask.unsqueeze(0)  # [1,64]
+                batch.has_text = torch.tensor([True], device=dev)
+
+            # Per-sample generation length = the GT clip's TRUE length (user
+            # 2026-06-10: "gt是多少长度，你就应该生成多少长度"). --num_frames is
+            # only the dataset container / upper bound, not the generated length.
+            gt_T = min(num_frames, int(item["num_frames"]))
+            T_lat_i = min(T_lat, max(1, (gt_T + stride - 1) // stride))
+
             # Motion-independent graph metadata for the target skeleton.
-            meta = tokenizer.prepare_skeleton_only(batch, T_lat)
+            meta = tokenizer.prepare_skeleton_only(batch, T_lat_i)
             cond = {
                 "text_global": batch.caption_emb.float(),
                 "text_tokens": batch.caption_token_emb.float(),
@@ -166,7 +249,7 @@ def main() -> int:
             }
             B, C = meta["coarse_mask"].shape
             # ODE + CFG sample -> continuous z_hat -> residual snap -> decode.
-            z_hat = flow.sample(cond, meta["token_mask"], T_lat, C,
+            z_hat = flow.sample(cond, meta["token_mask"], T_lat_i, C,
                                 steps=args.steps, cfg_scale=args.cfg_scale,
                                 validate_inputs=True)
             proj = tokenizer.nearest_residual_ids(z_hat, meta["token_mask"])
@@ -182,43 +265,80 @@ def main() -> int:
             offsets = np.asarray(item["rest_offsets"])[:J]
 
             def to_world(pred_motion):
-                pn = pred_motion[0, :T_full, :J, :].float().cpu().numpy()
+                # truncate T_lat_i*stride (>= gt_T by ceil) down to the GT length
+                pn = pred_motion[0, :gt_T, :J, :].float().cpu().numpy()
                 pr = pn * (std[None] + _STD_FLOOR) + mean[None]
+                # --render_from: 'fk' = rot6d(ch3:9)->FK on bone offsets; 'position' =
+                # RIC(ch0:3) world route (model's predicted positions, no FK).
+                if args.render_from == "position":
+                    return _recover_world_positions(pr)               # [T,J,3]
                 return recover_from_bvh_rot_np(pr, parents, offsets)  # [T,J,3]
 
             snap_world = to_world(snap)
             cont_world = to_world(cont)
             static_pose = fk_rest_pose(offsets, parents)
-            prompt_text = item.get("caption") or ""
+            prompt_text = args.ood_text if ood_fields is not None else (item.get("caption") or "")
             p_spd = float(np.linalg.norm(np.diff(snap_world, axis=0), axis=-1).mean())
+            # GT source clip (denoiser-large convention): motion_features ch0:3,
+            # rendered RIGHTMOST in red. Same length as generation by design.
+            # Under OOD text the clip's GT is for the ORIGINAL caption (unrelated to the
+            # injected prompt) → drop the GT panel for honesty; speed_ratio also N/A.
+            # GT motion_features[...,:3] is ALREADY the position route: built at
+            # anytop_dataset.py:1016 as world_pos = _recover_world_positions(raw_13ch),
+            # then stored as the 6ch [world_pos(3), world_vel(3)]. So GT is position-route
+            # in BOTH modes; only PRED's recovery (to_world) switches fk<->position. In
+            # 'position' mode GT(position) and PRED(position) are therefore consistent;
+            # in 'fk' mode this is the historical GT(position)/PRED(fk) panel (unchanged).
+            gt_world = batch.motion_features[0, :gt_T, :J, :3].float().cpu().numpy()
+            g_spd = float(np.linalg.norm(np.diff(gt_world, axis=0), axis=-1).mean())
+            if gt_world.shape[0] != snap_world.shape[0]:  # fail loud, no silent misalign
+                raise SystemExit(f"[QA FAIL] GT/pred length mismatch: "
+                                 f"{gt_world.shape[0]} vs {snap_world.shape[0]}")
+            gt_for_render = None if ood_fields is not None else gt_world
 
-            k = picked[sp]
-            skel_label = (f"{sp} skeleton (J={J})\nT={T_full} cfg={args.cfg_scale} "
-                          f"steps={args.steps}\nproj_err={proj['projection_error'].item():.3f} "
-                          f"snap_speed={p_spd:.3f}")
-            # Single-gif T2M: static input skeleton + prompt + SNAPPED pred (the
-            # main generation path), with continuous decode as the 3rd "FK" panel
-            # slot repurposed to show continuous-vs-snapped (diagnostic upper bound).
-            gif = out_dir / f"{sp}_clip{k}_t2m.gif"
-            animate_t2m_input_pred(
-                snap_world, static_pose, parents, str(gif),
-                prompt_text=prompt_text, stride=args.stride, fps=args.fps,
-                skeleton_label=skel_label,
-                pred_fk=cont_world, pred_label="snapped decode",
-                pred_fk_label="continuous decode")
-            line = (f"{sp} clip{k}: J={J} T={T_full} prompt={prompt_text[:50]!r} "
+            # Large-figure T2M (user 2026-06-10): PIL renderer, GT stitched as the
+            # RIGHTMOST red panel → input | PRED snapped | PRED continuous | GT.
+            # gif label: clip-name mode -> basename (unique); species mode -> sp+clipK.
+            if want_clips:
+                label = bn[:-4] if bn.endswith(".npy") else bn
+                gif = out_dir / f"{label}_t2m.gif"
+            else:
+                k = picked[sp]
+                label = f"{sp} clip{k}"
+                gif = out_dir / f"{sp}_clip{k}_t2m.gif"
+            make_t2m_large_gif(
+                snap_world, cont_world, static_pose, parents, prompt_text,
+                str(gif), fps=args.fps, gt=gt_for_render,
+                pred_labels=("PRED snapped decode", "PRED continuous decode"))
+            ratio_str = ("N/A(OOD)" if ood_fields is not None
+                         else f"{p_spd / max(g_spd, 1e-9):.3f}")
+            line = (f"{label}: J={J} T={gt_T} prompt={prompt_text[:50]!r} "
                     f"proj_err={proj['projection_error'].item():.4f} "
-                    f"snap_speed={p_spd:.4f} cont_vs_snap_maxabs="
+                    f"snap_speed={p_spd:.4f} GT_speed={g_spd:.4f} "
+                    f"speed_ratio={ratio_str} cont_vs_snap_maxabs="
                     f"{(cont - snap).abs().max().item():.4f} -> {gif.name}")
             print(line)
             summary.append(line)
-            picked[sp] += 1
-            if all(picked[s] >= args.n_per for s in want):
-                break
+            if want_clips:
+                rendered_clips.add(bn)
+                if rendered_clips >= want_clips:
+                    break
+            else:
+                picked[sp] += 1
+                if all(picked[s] >= args.n_per for s in want):
+                    break
 
     (out_dir / "t2m_summary.txt").write_text("\n".join(summary) + "\n")
-    print(f"\nDONE {sum(picked.values())} gifs -> {out_dir}")
-    print("PER-SPECIES picked:", picked)
+    # In clip-name mode `picked` is never incremented (selection keyed on basename),
+    # so report rendered_clips and loudly name any requested clip not found in split.
+    if want_clips:
+        missing = sorted(want_clips - rendered_clips)
+        print(f"\nDONE {len(rendered_clips)} gifs -> {out_dir}")
+        if missing:
+            print("MISSING clip_names (not found in split):", missing)
+    else:
+        print(f"\nDONE {sum(picked.values())} gifs -> {out_dir}")
+        print("PER-SPECIES picked:", picked)
     return 0
 
 

@@ -43,9 +43,19 @@ INIT_CKPT="${INIT_CKPT:-}"
 RESUME_CKPT="${RESUME_CKPT:-}"
 CVD="${CVD:-0,1}"
 AMP_DTYPE="${AMP_DTYPE:-fp32}"          # bf16 now bf16-safe (fp32-forced softmax); default fp32
-# M2 token-level text conditioning (default mean_additive = current behavior).
-TEXT_MODE="${TEXT_MODE:-mean_additive}"
-CAPTION_TOKEN_CACHE="${CAPTION_TOKEN_CACHE:-}"   # required when TEXT_MODE=token_cross_attn
+LR_SCHEDULE="${LR_SCHEDULE:-constant}"  # constant (default, unchanged) | cosine (warmup→cosine→lr_min)
+LR_MIN="${LR_MIN:-0.0}"                 # cosine floor (only used when LR_SCHEDULE=cosine)
+SPECIES_WHITELIST="${SPECIES_WHITELIST:-}"  # comma-sep object_types (capacity probe); empty = full 473
+TRAIN_SPLIT="${TRAIN_SPLIT:-train}"     # train (default) | all (train on all whitelisted clips incl val)
+# M2 latent temporal dynamics loss (handoff 20260605); ALL 0 = byte-equivalent.
+W_LAT_DZ="${W_LAT_DZ:-0}"               # weight on latent velocity loss ||Δz0_hat-Δz0||²
+W_LAT_DDZ="${W_LAT_DDZ:-0}"            # weight on latent acceleration loss ||Δ²z0_hat-Δ²z0||²
+W_LAT_X0="${W_LAT_X0:-0}"              # weight on direct latent loss ||z0_hat-z0||² (keep 0 first run)
+LATENT_DYN_TARGET="${LATENT_DYN_TARGET:-sample}"  # sample (default) | mu
+SPATIAL_MODE="${SPATIAL_MODE:-graph}"             # graph (default) | plain (no_graph_spatial ablation)
+# M2 token-level text conditioning. dual_text = project default (2026-06-07).
+TEXT_MODE="${TEXT_MODE:-dual_text}"   # set TEXT_MODE=mean_additive to override
+CAPTION_TOKEN_CACHE="${CAPTION_TOKEN_CACHE:-data/anytop_caption_t5_cleanL2_multi}"   # token cache for dual_text/token_cross_attn
 CAPTION_TOKEN_MAX_LEN="${CAPTION_TOKEN_MAX_LEN:-64}"
 
 # VAE = B's rot6d_fk ep79 best (frozen). Review-confirmed: load_frozen_vae() LOAD_OK
@@ -98,11 +108,12 @@ else
 fi
 
 echo "[t2m] $(date '+%F %T %Z') host=$(hostname) CVD=$CVD nnodes=$NNODES nproc_per_node=$NPROC_PER_NODE node_rank=$NODE_RANK"
-echo "[t2m] VAE=$VAE_CKPT (B rot6d_fk ep79)"
+echo "[t2m] VAE=$VAE_CKPT (frozen)"
 echo "[t2m] cap_cache=$CAPCACHE anytop_root=$ANYTOP_ROOT"
-echo "[t2m] per_gpu=$PER_GPU_BATCH global=$GLOBAL(=${PER_GPU_BATCH}x${NNODES}x${NPROC_PER_NODE}) lr=$LR | smoke=$SMOKE epochs=$EPOCHS warmup=$WARMUP_ITERS"
+echo "[t2m] per_gpu=$PER_GPU_BATCH global=$GLOBAL(=${PER_GPU_BATCH}x${NNODES}x${NPROC_PER_NODE}) lr=$LR sched=$LR_SCHEDULE lr_min=$LR_MIN | smoke=$SMOKE epochs=$EPOCHS warmup=$WARMUP_ITERS"
 echo "[t2m] master=${MASTER_ADDR:-<standalone>}:$MASTER_PORT nccl_ifname=${NCCL_SOCKET_IFNAME:-<n/a>} out=$OUT"
 echo "[t2m] text_mode=$TEXT_MODE amp=$AMP_DTYPE token_cache=${CAPTION_TOKEN_CACHE:-<none>} L=$CAPTION_TOKEN_MAX_LEN"
+echo "[t2m] latdyn: w_lat_dz=$W_LAT_DZ w_lat_ddz=$W_LAT_DDZ w_lat_x0=$W_LAT_X0 target=$LATENT_DYN_TARGET | spatial_mode=$SPATIAL_MODE"
 
 torchrun $RDZV_ARGS scripts/train_denoiser.py \
   --vae_ckpt "$VAE_CKPT" \
@@ -110,7 +121,12 @@ torchrun $RDZV_ARGS scripts/train_denoiser.py \
   --anytop_root "$ANYTOP_ROOT" \
   --max_frames 260 --max_joints 144 \
   --batch_size "$PER_GPU_BATCH" --lr "$LR" --epochs "$EPOCHS" \
-  --warmup_iters "$WARMUP_ITERS" \
+  --warmup_iters "$WARMUP_ITERS" --lr_schedule "$LR_SCHEDULE" --lr_min "$LR_MIN" \
+  --train_split "$TRAIN_SPLIT" \
+  --w_lat_dz "$W_LAT_DZ" --w_lat_ddz "$W_LAT_DDZ" --w_lat_x0 "$W_LAT_X0" \
+  --latent_dyn_target "$LATENT_DYN_TARGET" \
+  --spatial_mode "$SPATIAL_MODE" \
+  ${SPECIES_WHITELIST:+--species_whitelist "$SPECIES_WHITELIST"} \
   ${INIT_CKPT:+--init_ckpt "$INIT_CKPT"} \
   ${RESUME_CKPT:+--resume "$RESUME_CKPT"} \
   --n_layers "$N_LAYERS" --d_ff "$D_FF" --dropout 0.1 \

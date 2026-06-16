@@ -235,16 +235,23 @@ def fk_rest_pose(rest_offsets, parents):
 
 
 def animate_t2m_input_pred(pred, static_pose, par, path, prompt_text,
-                            stride, fps, skeleton_label="input skeleton"):
+                            stride, fps, skeleton_label="input skeleton",
+                            pred_fk=None, pred_label="pred pose/RIC",
+                            pred_fk_label="pred rot6d-FK"):
     """T2M demo gif (per cross-project rule feedback_t2m_gif_layout):
     LEFT panel = static input skeleton (T-pose / rest pose, gray, no animation).
-    RIGHT panel = predicted motion animation (blue).
+    MIDDLE panel = predicted motion via pose/RIC recovery (blue, animated).
+    RIGHT panel (only if pred_fk given) = same motion via rot6d-FK recovery (green).
     TOP title = prompt text (wrapped, shown across all frames).
+
+    The two pred panels compare the pose route (ch0:3 RIC) vs the rot6d-FK route
+    (ch3:9 6D rotation → FK) of the SAME generated motion — they should match if
+    the generated 6D rotations and local positions are self-consistent.
 
     NO GT panel — T2M inference takes only skeleton + prompt as input.
 
     Args:
-        pred: [T, J, 3] predicted world positions per frame
+        pred: [T, J, 3] predicted world positions (pose/RIC route)
         static_pose: [J, 3] static skeleton pose (e.g. T-pose from rest_offsets)
         par: list[int] parents
         path: output gif path
@@ -252,20 +259,27 @@ def animate_t2m_input_pred(pred, static_pose, par, path, prompt_text,
         stride: frame subsample for gif
         fps: gif fps
         skeleton_label: text shown on the static skeleton panel
+        pred_fk: [T, J, 3] world positions via rot6d-FK route, or None
+                 (None → 2-panel legacy; given → 3-panel pose-vs-FK)
+        pred_label / pred_fk_label: titles for the two pred panels
     """
     import textwrap
     T = pred.shape[0]
     idx = list(range(0, T, max(stride, 1)))
     if idx[-1] != T - 1:
         idx.append(T - 1)
-    # Equal cubic axis limits — UNION of pred extent + static pose extent
-    # so both panels share the same scale and a frozen pred shows as ≈static.
-    union = np.concatenate([pred.reshape(-1, 3), static_pose.reshape(-1, 3)], axis=0)
+    n_panel = 2 if pred_fk is None else 3
+    # Equal cubic axis limits — UNION of all panels' extent so they share scale
+    # and a frozen pred shows as ≈static.
+    union_parts = [pred.reshape(-1, 3), static_pose.reshape(-1, 3)]
+    if pred_fk is not None:
+        union_parts.append(pred_fk.reshape(-1, 3))
+    union = np.concatenate(union_parts, axis=0)
     ctr = union.mean(0)
     rad = max(float(np.abs(union - ctr).max()), 1e-3) * 1.05
 
-    fig = plt.figure(figsize=(12, 6.5))
-    axes = [fig.add_subplot(1, 2, k + 1, projection='3d') for k in range(2)]
+    fig = plt.figure(figsize=(6 * n_panel, 6.5))
+    axes = [fig.add_subplot(1, n_panel, k + 1, projection='3d') for k in range(n_panel)]
 
     def draw(ax, P, name, col):
         ax.clear()
@@ -285,8 +299,10 @@ def animate_t2m_input_pred(pred, static_pose, par, path, prompt_text,
     wrapped = "\n".join(textwrap.wrap(prompt_text or "(no prompt)", width=80))
 
     def update(fi):
-        draw(axes[0], static_pose, skeleton_label, '#7f8c8d')   # gray, static
-        draw(axes[1], pred[fi], f'pred f{fi}', '#2980b9')       # blue, animated
+        draw(axes[0], static_pose, skeleton_label, '#7f8c8d')          # gray, static
+        draw(axes[1], pred[fi], f'{pred_label} f{fi}', '#2980b9')      # blue, pose
+        if pred_fk is not None:
+            draw(axes[2], pred_fk[fi], f'{pred_fk_label} f{fi}', '#27ae60')  # green, FK
         fig.suptitle(f'prompt: "{wrapped}"', fontsize=10, y=0.98)
         return axes
 

@@ -29,7 +29,20 @@ SMOKE="${SMOKE:-0}"
 # smoke-tune up. Goyal: global = PER_GPU_BATCH * 8, lr = 5e-4 * global / 48.
 PER_GPU_BATCH="${PER_GPU_BATCH:-8}"
 LR="${LR:-$(awk "BEGIN{printf \"%.3e\", 5e-4 * ($PER_GPU_BATCH*8) / 48}")}"
+LR_SCHEDULE="${LR_SCHEDULE:-constant}" # constant (default) | cosine (warmup→cosine→lr_min)
+LR_MIN="${LR_MIN:-0.0}"                # cosine floor (only used when LR_SCHEDULE=cosine)
+SPECIES_WHITELIST="${SPECIES_WHITELIST:-}"  # comma-sep object_types (capacity probe); empty=full 473
+TRAIN_SPLIT="${TRAIN_SPLIT:-train}"    # train (default) | all (train on all whitelisted clips incl val)
+# M2 latent temporal dynamics loss (handoff 20260605); ALL 0 = byte-equivalent.
+W_LAT_DZ="${W_LAT_DZ:-0}"
+W_LAT_DDZ="${W_LAT_DDZ:-0}"
+W_LAT_X0="${W_LAT_X0:-0}"
+LATENT_DYN_TARGET="${LATENT_DYN_TARGET:-sample}"
+SPATIAL_MODE="${SPATIAL_MODE:-graph}"  # graph (default) | plain (no_graph_spatial ablation)
+WARMUP_ITERS="${WARMUP_ITERS:-4000}"
+EPOCHS="${EPOCHS:-500}"
 OUT="${OUT:-runs/m2_token_cleanL2_bf16ep209_d512C128_n11ff1536_a100x8_seed42}"
+RESUME_CKPT="${RESUME_CKPT:-}"           # full crash/walltime resume (model+opt+epoch+global_it); inner passes --resume. cosine resume re-passes same lr_schedule/epochs.
 AMP_DTYPE="${AMP_DTYPE:-bf16}"
 TEXT_MODE="${TEXT_MODE:-token_cross_attn}"
 CAPTION_TOKEN_CACHE="${CAPTION_TOKEN_CACHE:-data/anytop_caption_t5_cleanL2_multi}"
@@ -50,11 +63,11 @@ flock -n 9 || { echo "[token-8card] ABORT: already running"; exit 0; }
 # same-node cross-alloc cgroup isolation and would route intra-node collectives
 # through slow host/NET). Matches the proven xnode VAE launcher. IB_HCA=mlx5_0
 # (ibdev2netdev: mlx5_0->ib0 Up on both nodes).
-COMMON_ENV="NNODES=2 NPROC_PER_NODE=4 MASTER_ADDR=$RDZV_HOST MASTER_PORT=$RDZV_PORT CVD=0,1,2,3 NCCL_P2P_DISABLE=0 NCCL_SHM_DISABLE=0 NCCL_IB_HCA=mlx5_0 PER_GPU_BATCH=$PER_GPU_BATCH LR=$LR OUT=$OUT SMOKE=$SMOKE AMP_DTYPE=$AMP_DTYPE TEXT_MODE=$TEXT_MODE CAPTION_TOKEN_CACHE=$CAPTION_TOKEN_CACHE CAPTION_TOKEN_MAX_LEN=$CAPTION_TOKEN_MAX_LEN VAE_CKPT=$VAE_CKPT"
+COMMON_ENV="NNODES=2 NPROC_PER_NODE=4 MASTER_ADDR=$RDZV_HOST MASTER_PORT=$RDZV_PORT CVD=0,1,2,3 NCCL_P2P_DISABLE=0 NCCL_SHM_DISABLE=0 NCCL_IB_HCA=mlx5_0 PER_GPU_BATCH=$PER_GPU_BATCH LR=$LR LR_SCHEDULE=$LR_SCHEDULE LR_MIN=$LR_MIN WARMUP_ITERS=$WARMUP_ITERS EPOCHS=$EPOCHS SPECIES_WHITELIST=$SPECIES_WHITELIST TRAIN_SPLIT=$TRAIN_SPLIT W_LAT_DZ=$W_LAT_DZ W_LAT_DDZ=$W_LAT_DDZ W_LAT_X0=$W_LAT_X0 LATENT_DYN_TARGET=$LATENT_DYN_TARGET SPATIAL_MODE=$SPATIAL_MODE OUT=$OUT RESUME_CKPT=$RESUME_CKPT SMOKE=$SMOKE AMP_DTYPE=$AMP_DTYPE TEXT_MODE=$TEXT_MODE CAPTION_TOKEN_CACHE=$CAPTION_TOKEN_CACHE CAPTION_TOKEN_MAX_LEN=$CAPTION_TOKEN_MAX_LEN VAE_CKPT=$VAE_CKPT"
 
 echo "[token-8card] $(date '+%F %T %Z') cross-node 8-card A100 DDP: $JOB_A(1004,r0)+$JOB_B(1001,r1) via $RDZV_HOST:$RDZV_PORT smoke=$SMOKE"
 echo "[token-8card] text_mode=$TEXT_MODE amp=$AMP_DTYPE vae=$VAE_CKPT token_cache=$CAPTION_TOKEN_CACHE L=$CAPTION_TOKEN_MAX_LEN"
-echo "[token-8card] global=$(( PER_GPU_BATCH*8 )) (8xbs$PER_GPU_BATCH) lr=$LR out=$OUT"
+echo "[token-8card] global=$(( PER_GPU_BATCH*8 )) (8xbs$PER_GPU_BATCH) lr=$LR sched=$LR_SCHEDULE/lr_min=$LR_MIN warmup=$WARMUP_ITERS epochs=$EPOCHS out=$OUT"
 
 # One torchrun group per alloc; static rendezvous joins them into 8 global ranks.
 # Explicit --gres/--cpus so each srun step gets its alloc's 4 GPUs + CPU for 4 ranks

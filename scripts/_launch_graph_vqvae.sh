@@ -45,6 +45,15 @@ SAVE_EVERY="${SAVE_EVERY:-10}"
 PERIODIC_SAVE_EVERY="${PERIODIC_SAVE_EVERY:-25}"
 SEED="${SEED:-42}"
 ANYTOP_ROOT="${ANYTOP_ROOT:-data/animo4d_anytop_clean_L5}"
+# Dataset-shape knobs (default = the L5 run's values, so existing callers unchanged).
+# The merged L4-safe+truebones run sets MAX_JOINTS=144 (Dragon J=142) + MAX_COARSE=96.
+MAX_JOINTS="${MAX_JOINTS:-64}"
+MAX_COARSE="${MAX_COARSE:-50}"
+MAX_FRAMES="${MAX_FRAMES:-64}"
+# Codebook size (per-quantizer codes). Default 512 = train_graph_vqvae.py's own
+# default, so existing callers (baseline n512 run, 6-card orchestrator) are
+# unchanged. The codebook-size ablation sets NUM_CODES=1024 / 2048.
+NUM_CODES="${NUM_CODES:-512}"
 RESUME_CKPT="${RESUME_CKPT:-}"          # FULL resume (model+optimizer+epoch+step)
 OUT="${OUT:?set OUT}"
 
@@ -86,10 +95,13 @@ fi
 echo "[vqvae] $(date '+%F %T %Z') host=$(hostname) CVD=$CVD nnodes=$NNODES nproc_per_node=$NPROC_PER_NODE node_rank=$NODE_RANK"
 echo "[vqvae] per_gpu=$BATCH_SIZE global=$GLOBAL(=${BATCH_SIZE}x${NNODES}x${NPROC_PER_NODE}) lr=$LR warmup_steps=$WARMUP_STEPS amp=$AMP_DTYPE epochs=$EPOCHS smoke=$SMOKE"
 echo "[vqvae] master=${MASTER_ADDR:-<standalone>}:$MASTER_PORT nccl_ifname=${NCCL_SOCKET_IFNAME:-<n/a>} anytop_root=$ANYTOP_ROOT out=$OUT"
+echo "[vqvae] max_joints=$MAX_JOINTS max_coarse=$MAX_COARSE max_frames=$MAX_FRAMES num_codes=$NUM_CODES"
 echo "[vqvae] resume=${RESUME_CKPT:-<none>}"
 
 "$TORCHRUN" $RDZV_ARGS scripts/train_graph_vqvae.py \
   --anytop_root "$ANYTOP_ROOT" \
+  --max_joints "$MAX_JOINTS" --max_coarse "$MAX_COARSE" --max_frames "$MAX_FRAMES" \
+  --num_codes "$NUM_CODES" \
   --batch_size "$BATCH_SIZE" --lr "$LR" --warmup_steps "$WARMUP_STEPS" --amp_dtype "$AMP_DTYPE" \
   --seed "$SEED" --num_workers "$NUM_WORKERS" \
   --log_every "$LOG_EVERY" --qa_every "$QA_EVERY" \

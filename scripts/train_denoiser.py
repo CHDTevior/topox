@@ -26,6 +26,7 @@ import json
 import os
 import sys
 import contextlib
+import math
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -46,6 +47,7 @@ from src.data.anytop_dataset import AnyTopDataset, collate_fn as anytop_collate_
 from src.models.graph_salad.batch import GraphMotionBatch
 from src.models.graph_salad.vae import GraphMotionVAE
 from src.models.graph_salad.denoiser import GraphSaladDenoiser
+from src.models.graph_salad.losses import compute_world_geometry_terms
 
 try:
     from diffusers import DDIMScheduler
@@ -131,6 +133,96 @@ def masked_v_mse(v_pred: torch.Tensor, v_target: torch.Tensor,
 
 
 # ---------------------------------------------------------------------------
+# M2 latent temporal dynamics loss (handoff/20260605_latent_temporal_dynamics_loss_experiment.md):
+# penalise the temporal derivatives of the v-implied clean latent z0_hat so the
+# sampled latent SEQUENCE moves through time like the real latent (the v-MSE only
+# supervises one-step velocity, not the cross-time z0 trajectory). All extra
+# losses are computed in fp32 with the SAME valid (coarse × frame) semantics as
+# masked_v_mse, and reduce to a no-op when all weights are 0.
+# ---------------------------------------------------------------------------
+
+def predict_z0_from_v(z_t: torch.Tensor, v_pred: torch.Tensor,
+                      timesteps: torch.Tensor, scheduler) -> torch.Tensor:
+    """v-prediction → implied clean latent: z0 = √ᾱ_t·z_t − √(1−ᾱ_t)·v."""
+    alphas = scheduler.alphas_cumprod.to(device=z_t.device, dtype=z_t.dtype)
+    a = alphas[timesteps].sqrt().view(-1, 1, 1, 1)
+    b = (1.0 - alphas[timesteps]).sqrt().view(-1, 1, 1, 1)
+    return a * z_t - b * v_pred
+
+
+def masked_latent_mse(pred: torch.Tensor, target: torch.Tensor,
+                      mask: torch.Tensor) -> torch.Tensor:
+    """fp32 masked MSE over valid positions × feature dim (mask is [...,1])."""
+    mask_f = mask.float()
+    diff_sq = (pred.float() - target.float()).pow(2) * mask_f
+    return diff_sq.sum() / (mask_f.sum() * pred.shape[-1]).clamp(min=1.0)
+
+
+def masked_latent_dz_mse(z0_hat: torch.Tensor, z0_target: torch.Tensor,
+                         coarse_mask: torch.Tensor, frame_mask: torch.Tensor) -> torch.Tensor:
+    """Latent velocity (first temporal difference) MSE; valid = both frames valid."""
+    dz_p = z0_hat[:, 1:] - z0_hat[:, :-1]
+    dz_t = z0_target[:, 1:] - z0_target[:, :-1]
+    m = (
+        coarse_mask[:, None, :, None]
+        & frame_mask[:, 1:, None, None]
+        & frame_mask[:, :-1, None, None]
+    )
+    return masked_latent_mse(dz_p, dz_t, m)
+
+
+def masked_latent_ddz_mse(z0_hat: torch.Tensor, z0_target: torch.Tensor,
+                          coarse_mask: torch.Tensor, frame_mask: torch.Tensor) -> torch.Tensor:
+    """Latent acceleration (second temporal difference) MSE; valid = all 3 frames valid."""
+    ddz_p = z0_hat[:, 2:] - 2.0 * z0_hat[:, 1:-1] + z0_hat[:, :-2]
+    ddz_t = z0_target[:, 2:] - 2.0 * z0_target[:, 1:-1] + z0_target[:, :-2]
+    m = (
+        coarse_mask[:, None, :, None]
+        & frame_mask[:, 2:, None, None]
+        & frame_mask[:, 1:-1, None, None]
+        & frame_mask[:, :-2, None, None]
+    )
+    return masked_latent_mse(ddz_p, ddz_t, m)
+
+
+def decoded_speed_loss(pred_motion: torch.Tensor, gt_motion: torch.Tensor,
+                       anytop_mean: torch.Tensor, anytop_std: torch.Tensor,
+                       joint_mask: torch.Tensor, frame_mask_rec: torch.Tensor,
+                       speed_floor: float = 1e-4, mode: str = "log_huber") -> torch.Tensor:
+    """Decoded-x0 WORLD-speed loss — the motion-energy term v-MSE is blind to.
+
+    Recovers world positions from decoded vs GT 13ch motion (SAME de-norm +
+    recovery as compute_world_geometry_terms) and compares per-frame speed
+    magnitude. log_huber (default) is symmetric on '2x too fast' / '0.5x too
+    slow'. Clamps BOTH pred and gt speed >= speed_floor before log (clamping only
+    gt lets log(speed_pred->0) explode gradients). Skips GT speed <= speed_floor
+    (near-static GT artifact). Returns a connected zero if no valid entries.
+    """
+    from src.models.graph_salad.losses import _denorm_13ch
+    from src.models.graph_salad.world_recovery import recover_world_positions_torch
+    pred_raw = _denorm_13ch(pred_motion.float(), anytop_mean, anytop_std)  # [B,T,J,13]
+    gt_raw = _denorm_13ch(gt_motion.float(), anytop_mean, anytop_std)
+    p_world = recover_world_positions_torch(pred_raw)  # [B,T,J,3] fp32 (casts internally)
+    g_world = recover_world_positions_torch(gt_raw)
+    sp_pred = (p_world[:, 1:] - p_world[:, :-1]).norm(dim=-1)  # [B,T-1,J]
+    sp_gt = (g_world[:, 1:] - g_world[:, :-1]).norm(dim=-1)
+    fm = frame_mask_rec.bool()
+    valid = (joint_mask[:, None, :] & fm[:, 1:, None] & fm[:, :-1, None]
+             & (sp_gt > speed_floor))                          # [B,T-1,J]
+    denom = valid.sum().clamp(min=1)
+    if mode == "raw_l1":
+        diff = (sp_pred - sp_gt).abs()
+    else:
+        lp = torch.log(sp_pred.clamp(min=speed_floor))
+        lg = torch.log(sp_gt.clamp(min=speed_floor))
+        if mode == "log_l1":
+            diff = (lp - lg).abs()
+        else:  # log_huber
+            diff = torch.nn.functional.huber_loss(lp, lg, reduction="none", delta=1.0)
+    return (diff * valid.to(diff.dtype)).sum() / denom
+
+
+# ---------------------------------------------------------------------------
 # Preflight: caption coverage on train + val
 # ---------------------------------------------------------------------------
 
@@ -210,12 +302,67 @@ def parse_args() -> argparse.Namespace:
                          "species — intentional, val measures denoise quality "
                          "on hardest skeletons. Mirrors train_graph_vae.py "
                          "--full_data_val_species (2026-05-24).")
+    ap.add_argument("--species_whitelist", type=str, default=None,
+                    help="comma-separated object_types; restrict BOTH train and val "
+                         "to this subset (e.g. a 20-species capacity probe). Applied "
+                         "after the normal per-species split, so train/val stay the "
+                         "same per-species holdout, just narrowed to these species.")
+    ap.add_argument("--train_split", default="train", choices=["train", "all"],
+                    help="which split ds_train uses (default-mode only). 'train' "
+                         "(default) = the per-species train holdout; 'all' = ALL "
+                         "clips of the (whitelisted) species incl. the val subset "
+                         "(pure-fitting / capacity probe: train on all, eval on val).")
     # Optim
     ap.add_argument("--epochs", type=int, default=500)
     ap.add_argument("--batch_size", type=int, default=16)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--weight_decay", type=float, default=1e-6)
     ap.add_argument("--warmup_iters", type=int, default=2000)
+    ap.add_argument("--lr_schedule", default="constant",
+                    choices=["constant", "cosine"],
+                    help="post-warmup LR schedule. 'constant' (default, unchanged): "
+                         "hold args.lr. 'cosine': decay args.lr -> lr_min over "
+                         "[warmup_iters, epochs*steps_per_epoch].")
+    ap.add_argument("--lr_min", type=float, default=0.0,
+                    help="cosine floor LR (only used when --lr_schedule cosine).")
+    # M2 latent temporal dynamics loss (handoff/20260605_latent_temporal_dynamics_loss_experiment.md):
+    # extra penalty on the implied clean latent z0_hat's temporal derivatives.
+    # ALL default 0.0 -> loss path byte-equivalent to the existing masked_v_mse
+    # (full-data runs unaffected; the only variable is the extra loss term).
+    ap.add_argument("--w_lat_dz", type=float, default=0.0,
+                    help="weight on latent velocity loss ||Δz0_hat - Δz0||² over "
+                         "latent time (0 = off, current behavior).")
+    ap.add_argument("--w_lat_ddz", type=float, default=0.0,
+                    help="weight on latent acceleration loss ||Δ²z0_hat - Δ²z0||² (0 = off).")
+    ap.add_argument("--w_lat_x0", type=float, default=0.0,
+                    help="weight on direct latent loss ||z0_hat - z0||² (0 = off; "
+                         "keep 0 in the first dynamics run per the handoff).")
+    ap.add_argument("--latent_dyn_target", default="sample", choices=["sample", "mu"],
+                    help="latent-dynamics loss target: 'sample' (z0 ~ posterior, "
+                         "matches the v-target; default) or 'mu' (posterior mean, "
+                         "less noisy fallback if sample makes the loss unstable).")
+    # M2.x decoded-x0 geometry/speed loss (handoff/20260607_decoded_x0_geometry_loss_plan.md):
+    # decode the implied clean latent z0_hat through the FROZEN VAE and supervise
+    # WORLD-space geometry/speed (where v-MSE's energy blindness lives). ALL default
+    # 0.0 -> decode is skipped, loss path byte-equivalent to masked_v_mse(+w_lat).
+    ap.add_argument("--w_dec_world", type=float, default=0.0,
+                    help="decoded-x0 world-geometry L1 weight (0 = off).")
+    ap.add_argument("--w_dec_traj", type=float, default=0.0,
+                    help="decoded-x0 root-trajectory L1 weight (0 = off).")
+    ap.add_argument("--w_dec_speed", type=float, default=0.0,
+                    help="decoded-x0 world-speed (log-Huber) weight — the main energy "
+                         "term (0 = off).")
+    ap.add_argument("--dec_geom_t_max", type=int, default=400,
+                    help="apply decoded geometry only where timestep < this (z0_hat is "
+                         "a reliable clean estimate at low noise).")
+    ap.add_argument("--dec_geom_every", type=int, default=1,
+                    help="compute decoded geometry every N train steps (memory/time knob).")
+    ap.add_argument("--dec_speed_floor", type=float, default=1e-4,
+                    help="skip GT speeds <= this (near-static); also clamps BOTH pred and "
+                         "gt speed >= floor before log (log(pred->0) explodes grads).")
+    ap.add_argument("--dec_speed_loss", choices=["log_huber", "log_l1", "raw_l1"],
+                    default="log_huber",
+                    help="decoded speed loss form (log_huber: symmetric on fast/slow).")
     ap.add_argument("--grad_clip", type=float, default=1.0)
     # Denoiser arch
     ap.add_argument("--n_layers", type=int, default=5)
@@ -230,12 +377,23 @@ def parse_args() -> argparse.Namespace:
     # M2 token-level text conditioning (optional). Default mean_additive keeps the
     # current behavior + old-ckpt strict-load. token_cross_attn requires the token
     # cache built by scripts/precompute_t5_caption_tokens.py.
-    ap.add_argument("--text_mode", choices=["mean_additive", "token_cross_attn"],
-                    default="mean_additive",
+    ap.add_argument("--text_mode",
+                    choices=["mean_additive", "token_cross_attn", "dual_text"],
+                    default="mean_additive",   # argparse default MUST stay mean_additive:
+                    # it is the fallback for old ckpts that didn't record text_mode
+                    # (resume/init strict-load). dual_text is the project default via
+                    # the launchers, not here (codex 019ea2d2).
                     help="mean_additive (default): mean-pooled T5 additive broadcast "
                          "(byte-equiv to current; old ckpts strict-load). "
                          "token_cross_attn: per-layer cross-attention over token-level "
-                         "T5 (needs --caption_token_cache).")
+                         "T5. dual_text: BOTH streams — global mean-add + token "
+                         "cross-attn (both CFG-gated by has_text). "
+                         "token_cross_attn/dual_text need --caption_token_cache.")
+    ap.add_argument("--spatial_mode", choices=["graph", "plain"], default="graph",
+                    help="backbone spatial attention. 'graph' (default): graph-aware "
+                         "(adjacency+geodesic bias); old ckpts strict-load. 'plain': "
+                         "no_graph_spatial ablation — plain slot self-attn (no topo "
+                         "bias), still node-masked + pooled_skeleton additive kept.")
     ap.add_argument("--caption_token_cache", default=None,
                     help="prefix of the token cache (<prefix>.tokens.npy + "
                          ".token_mask.npy + .keys.json). REQUIRED when "
@@ -367,13 +525,24 @@ def main() -> int:
     # ---- Dataset ----
     # M2: token mode needs the offline token cache + return_caption_tokens on both
     # train + val datasets (val uses primary caption idx 0 deterministically).
-    use_tokens = (args.text_mode == "token_cross_attn")
+    use_tokens = args.text_mode in ("token_cross_attn", "dual_text")
     if use_tokens and args.caption_token_cache is None:
         raise SystemExit(
-            "--text_mode token_cross_attn requires --caption_token_cache "
+            f"--text_mode {args.text_mode} requires --caption_token_cache "
             "(<prefix>.tokens.npy + .token_mask.npy + .keys.json from "
             "scripts/precompute_t5_caption_tokens.py)."
         )
+    # M2.x decoded-x0 guards (codex 019ea2d2): avoid modulo-by-zero / log(0).
+    if args.dec_geom_every < 1:
+        raise SystemExit(f"--dec_geom_every must be >= 1, got {args.dec_geom_every}")
+    if args.dec_speed_loss in ("log_huber", "log_l1") and args.dec_speed_floor <= 0:
+        raise SystemExit(
+            f"--dec_speed_floor must be > 0 for --dec_speed_loss {args.dec_speed_loss} "
+            f"(log of clamped speed), got {args.dec_speed_floor}")
+    species_whitelist = (
+        [s.strip() for s in args.species_whitelist.split(",") if s.strip()]
+        if args.species_whitelist else None
+    )
     ds_kwargs = dict(
         num_frames=args.max_frames,
         max_joints=ta.get("max_joints", args.max_joints),
@@ -382,6 +551,7 @@ def main() -> int:
         caption_token_cache=args.caption_token_cache,
         return_caption_tokens=use_tokens,
         caption_token_max_len=args.caption_token_max_len,
+        species_whitelist=species_whitelist,
     )
     if args.anytop_root or ta.get("anytop_root"):
         ds_kwargs["data_root"] = args.anytop_root or ta["anytop_root"]
@@ -429,7 +599,7 @@ def main() -> int:
         # random_crop=False for symmetry with full_data mode. random_caption=True
         # for train preserved (multi-cap diversity unchanged).
         ds_train = AnyTopDataset(
-            split="train", random_caption=True, random_crop=False, **ds_kwargs)
+            split=args.train_split, random_caption=True, random_crop=False, **ds_kwargs)
         ds_val = AnyTopDataset(
             split="val", random_caption=False, random_crop=False, **ds_kwargs)
         log(f"  ds_train={len(ds_train)} (random_caption=True, random_crop=False)"
@@ -513,10 +683,11 @@ def main() -> int:
         d_model=d_model, n_heads=n_heads, d_ff=d_ff,
         n_layers=args.n_layers, d_text=768, dropout=args.dropout,
         text_mode=args.text_mode, text_token_dim=768,
+        spatial_mode=args.spatial_mode,
     ).to(dev)
     n_params = sum(p.numel() for p in denoiser.parameters())
     log(f"\nDenoiser: n_layers={args.n_layers} d_model={d_model} d_ff={d_ff} "
-        f"text_mode={args.text_mode} params={n_params:,}")
+        f"text_mode={args.text_mode} spatial_mode={args.spatial_mode} params={n_params:,}")
 
     # ---- Full resume (--resume): restore MODEL here (before DDP wrap); optimizer
     # + epoch + best_val + global_it are restored further below. Seamless crash
@@ -538,6 +709,13 @@ def main() -> int:
                 f"[RESUME FAIL] ckpt text_mode={ck_text_mode!r} != CLI "
                 f"--text_mode {args.text_mode!r}. Rebuild with the matching "
                 f"text_mode (token/mean arch differ)."
+            )
+        ck_spatial_mode = resume_ck.get("args", {}).get("spatial_mode", "graph")
+        if ck_spatial_mode != args.spatial_mode:
+            raise SystemExit(
+                f"[RESUME FAIL] ckpt spatial_mode={ck_spatial_mode!r} != CLI "
+                f"--spatial_mode {args.spatial_mode!r}. graph/plain arch differ "
+                f"(plain drops adjacency/geodesic bias params)."
             )
         missing, unexpected = denoiser.load_state_dict(resume_ck["model_state_dict"], strict=True)
         if missing or unexpected:
@@ -565,6 +743,12 @@ def main() -> int:
             raise SystemExit(
                 f"[INIT_CKPT FAIL] ckpt text_mode={ck_text_mode!r} != CLI "
                 f"--text_mode {args.text_mode!r}. Rebuild with matching text_mode."
+            )
+        ck_spatial_mode = ck.get("args", {}).get("spatial_mode", "graph")
+        if ck_spatial_mode != args.spatial_mode:
+            raise SystemExit(
+                f"[INIT_CKPT FAIL] ckpt spatial_mode={ck_spatial_mode!r} != CLI "
+                f"--spatial_mode {args.spatial_mode!r}. graph/plain arch differ."
             )
         sd = ck.get("model_state_dict", ck)
         missing, unexpected = denoiser.load_state_dict(sd, strict=True)
@@ -613,9 +797,30 @@ def main() -> int:
         clip_sample=False,
     )
 
+    # Total per-rank optimizer steps over the whole run (cosine horizon). len(dl_train)
+    # is per-rank steps/epoch under the DistributedSampler (drop_last=True), and
+    # global_it is the per-rank counter, so both live in the same (per-rank) iter
+    # space. Honour --smoke (1 epoch) so a cosine smoke decays over its real
+    # one-epoch horizon (codex 019e95f0 #1). NOTE for cosine --resume: global_it is
+    # rebuilt from start_epoch*len(dl_train), so a manual resume MUST re-pass the
+    # SAME --lr_schedule/--lr_min/--epochs (+batch/world/data) or the phase shifts
+    # (codex #3). The orchestrator re-passes all of these via COMMON_ENV, so a
+    # relaunch through it is safe.
+    total_iters = (1 if args.smoke else args.epochs) * len(dl_train)
+
     def lr_for(it: int) -> float:
+        # Linear warmup (unchanged): ramp 0 -> args.lr over warmup_iters.
         if args.warmup_iters > 0 and it < args.warmup_iters:
             return args.lr * (it + 1) / args.warmup_iters
+        # Post-warmup: constant (default, byte-identical to before) or cosine decay.
+        if args.lr_schedule == "cosine":
+            # Endpoint-exact: the last ACTIVE step is it=total_iters-1 (lr_for runs
+            # before global_it increments), so denom uses total_iters-1 → progress=1
+            # → lr_min lands on the final step, not a virtual one (codex #2).
+            denom = max(1, total_iters - 1 - args.warmup_iters)
+            progress = min(1.0, max(0.0, (it - args.warmup_iters) / denom))
+            return args.lr_min + 0.5 * (args.lr - args.lr_min) * (
+                1.0 + math.cos(math.pi * progress))
         return args.lr
 
     metrics_fp = open(out_dir / "metrics.jsonl", "w") if is_main else None
@@ -642,6 +847,9 @@ def main() -> int:
     log(f"\nTraining for {epochs} epochs (smoke={args.smoke})")
     log(f"steps per epoch: {len(dl_train)}"
         + (f" (per-rank, world_size={world_size})" if is_ddp else ""))
+    log(f"LR schedule: {args.lr_schedule} (peak={args.lr:.3e} warmup={args.warmup_iters}"
+        + (f" → cosine → lr_min={args.lr_min:.3e} over total_iters={total_iters}"
+           if args.lr_schedule == "cosine" else " then constant") + ")")
 
     for epoch in range(start_epoch, epochs):
         if is_ddp:
@@ -649,6 +857,11 @@ def main() -> int:
         denoiser.train()
         t_ep = time.time()
         ep_losses = []
+        # M2 latent-dynamics loss: track components separately for logging.
+        lat_active = bool(args.w_lat_dz > 0 or args.w_lat_ddz > 0 or args.w_lat_x0 > 0)
+        dec_active = bool(args.w_dec_world > 0 or args.w_dec_traj > 0 or args.w_dec_speed > 0)
+        ep_v_mse, ep_lat_dz, ep_lat_ddz, ep_lat_x0 = [], [], [], []
+        ep_dec_world, ep_dec_traj, ep_dec_speed = [], [], []
         for batch_idx, raw in enumerate(dl_train):
             # device transfer
             raw = {k: v.to(dev) if torch.is_tensor(v) else v for k, v in raw.items()}
@@ -673,13 +886,21 @@ def main() -> int:
             ht_in = batch.has_text.to(dev) if batch.has_text.device != dev else batch.has_text
             drop_mask = torch.rand(B, device=dev) < args.cond_drop_prob
             has_text = ht_in & (~drop_mask)
-            if use_tokens:
-                # token mode: pass token hidden states [B,L,768] + raw token mask
-                # [B,L]. The denoiser builds key_padding_mask = ~(mask & has_text),
-                # so has_text=False rows are fully masked → cross-attn output 0
-                # (CFG-uncond). Mask drives the gate (plan §3.6); no zero-multiply
-                # of the embedding is needed (and would be wrong — softmax over
-                # all-(-1e9) handled by TextCrossAttention's zero-output path).
+            # Text inputs by mode. dual_text = BOTH streams, CFG-dropped together
+            # (global pre-gated by has_text; token gated via key_padding_mask).
+            text_tokens_in = None
+            if args.text_mode == "dual_text":
+                # global stream via `text` (pre-gated like mean mode) + token stream
+                # via `text_tokens` (masked-gated like token mode).
+                text_in = batch.caption_emb.to(dev) * has_text[:, None].to(batch.caption_emb.dtype)
+                text_tokens_in = batch.caption_token_emb.to(dev)  # [B,L,768]
+                token_mask_in = batch.caption_token_mask.to(dev)  # [B,L] bool
+            elif use_tokens:
+                # token mode: tokens via `text` [B,L,768] + raw token mask [B,L]. The
+                # denoiser builds key_padding_mask = ~(mask & has_text), so
+                # has_text=False rows are fully masked → cross-attn output 0
+                # (CFG-uncond). Mask drives the gate; no zero-multiply of the
+                # embedding (softmax over all-(-1e9) → TextCrossAttention zero path).
                 text_in = batch.caption_token_emb.to(dev)         # [B,L,768]
                 token_mask_in = batch.caption_token_mask.to(dev)  # [B,L] bool
             else:
@@ -710,10 +931,71 @@ def main() -> int:
                     pooled_skeleton_embeddings=pooled_skel,
                     has_text=has_text,
                     text_token_mask=token_mask_in,
+                    text_tokens=text_tokens_in,
                     # Validate on the first iter only (cold-start preflight)
                     validate_inputs=(global_it == 0),
                 )
-                loss = masked_v_mse(v_pred, v_target, coarse_mask, frame_mask)
+                loss_v = masked_v_mse(v_pred, v_target, coarse_mask, frame_mask)
+                loss = loss_v
+                # M2 latent temporal dynamics loss (handoff 20260605). Gated on
+                # weights>0 → zero-weight path is byte-identical (loss == loss_v).
+                loss_dz = loss_ddz = loss_x0 = None
+                if args.w_lat_dz > 0 or args.w_lat_ddz > 0 or args.w_lat_x0 > 0:
+                    z0_hat = predict_z0_from_v(z_t.float(), v_pred.float(), timesteps, sched)
+                    z0_dyn_target = (enc["mu"].float() * mask_4d
+                                     if args.latent_dyn_target == "mu" else z0)
+                    if args.w_lat_x0 > 0:
+                        loss_x0 = masked_latent_mse(z0_hat, z0_dyn_target, mask_4d.bool())
+                        loss = loss + args.w_lat_x0 * loss_x0
+                    if args.w_lat_dz > 0:
+                        loss_dz = masked_latent_dz_mse(z0_hat, z0_dyn_target, coarse_mask, frame_mask)
+                        loss = loss + args.w_lat_dz * loss_dz
+                    if args.w_lat_ddz > 0:
+                        loss_ddz = masked_latent_ddz_mse(z0_hat, z0_dyn_target, coarse_mask, frame_mask)
+                        loss = loss + args.w_lat_ddz * loss_ddz
+
+            # M2.x decoded-x0 geometry/speed loss (handoff 20260607_decoded_x0...).
+            # Decode the implied clean latent z0_hat through the FROZEN VAE in FP32
+            # (autocast disabled — decoder Jacobian + world recovery are precision-
+            # sensitive) and supervise world/traj/speed — v-MSE is blind to motion
+            # energy; this term sees it.
+            # Gated to low-noise timesteps (z0_hat reliable). Zero-weight path skips
+            # decode entirely -> byte-identical to the v-MSE/w_lat path.
+            loss_dec_world = loss_dec_traj = loss_dec_speed = None
+            if dec_active and (global_it % args.dec_geom_every == 0):
+                geom_sample_mask = timesteps < args.dec_geom_t_max   # [B] low-noise only
+                if bool(geom_sample_mask.any()):
+                    z0_hat_dec = predict_z0_from_v(z_t.float(), v_pred.float(), timesteps, sched)
+                    # fp32 decode: cast enc float tensors to fp32 (encode ran under bf16
+                    # autocast) so the frozen-VAE decode has no mixed-dtype path; VAE
+                    # params are fp32. enc tensors are no-grad constants (grad flows only
+                    # via z0_hat_dec). autocast disabled -> decoder Jacobian fp32.
+                    fake_enc = {k: (v.float() if torch.is_tensor(v) and v.is_floating_point()
+                                    else v) for k, v in enc.items()}
+                    fake_enc["z"] = z0_hat_dec      # fp32 (from v_pred.float()), carries grad
+                    with torch.autocast(device_type="cuda", enabled=False):
+                        dec_out = vae.decode(fake_enc, batch)         # frozen VAE, fp32
+                    pred_motion = dec_out["pred_motion"].float()      # fp32 loss math
+                    gt_motion = batch.anytop_x.permute(0, 3, 1, 2).float()
+                    fmask_dec = dec_out["frame_mask_recovered"].bool() & geom_sample_mask[:, None]
+                    if args.w_dec_world > 0 or args.w_dec_traj > 0:
+                        dec_terms = compute_world_geometry_terms(
+                            pred_motion=pred_motion, gt_motion=gt_motion,
+                            anytop_mean=batch.anytop_mean, anytop_std=batch.anytop_std,
+                            joint_mask=batch.joint_mask, frame_mask=fmask_dec,
+                        )
+                        if args.w_dec_world > 0:
+                            loss_dec_world = dec_terms["world"]
+                            loss = loss + args.w_dec_world * loss_dec_world
+                        if args.w_dec_traj > 0:
+                            loss_dec_traj = dec_terms["traj"]
+                            loss = loss + args.w_dec_traj * loss_dec_traj
+                    if args.w_dec_speed > 0:
+                        loss_dec_speed = decoded_speed_loss(
+                            pred_motion, gt_motion, batch.anytop_mean, batch.anytop_std,
+                            batch.joint_mask, fmask_dec, args.dec_speed_floor, args.dec_speed_loss,
+                        )
+                        loss = loss + args.w_dec_speed * loss_dec_speed
 
             # P3 fail-fast (2026-05-23): a NaN/Inf loss means upstream maths
             # diverged (bad lr / bad scheduler / nan input). Crashing here
@@ -743,11 +1025,44 @@ def main() -> int:
             opt.step()
 
             ep_losses.append(loss.item())
+            if lat_active or dec_active:
+                ep_v_mse.append(loss_v.item())
+            if lat_active:
+                if loss_dz is not None:
+                    ep_lat_dz.append(loss_dz.item())
+                if loss_ddz is not None:
+                    ep_lat_ddz.append(loss_ddz.item())
+                if loss_x0 is not None:
+                    ep_lat_x0.append(loss_x0.item())
+            if dec_active:
+                if loss_dec_world is not None:
+                    ep_dec_world.append(loss_dec_world.item())
+                if loss_dec_traj is not None:
+                    ep_dec_traj.append(loss_dec_traj.item())
+                if loss_dec_speed is not None:
+                    ep_dec_speed.append(loss_dec_speed.item())
             global_it += 1
 
         epoch_loss = float(np.mean(ep_losses))
         ep_dt = time.time() - t_ep
-        log(f"\n=== epoch {epoch} done in {ep_dt:.1f}s | train_loss={epoch_loss:.4f} "
+        # M2 latent-dynamics component means (0.0 when inactive / term off).
+        epoch_v_mse = float(np.mean(ep_v_mse)) if ep_v_mse else epoch_loss
+        epoch_lat_dz = float(np.mean(ep_lat_dz)) if ep_lat_dz else 0.0
+        epoch_lat_ddz = float(np.mean(ep_lat_ddz)) if ep_lat_ddz else 0.0
+        epoch_lat_x0 = float(np.mean(ep_lat_x0)) if ep_lat_x0 else 0.0
+        epoch_dec_world = float(np.mean(ep_dec_world)) if ep_dec_world else 0.0
+        epoch_dec_traj = float(np.mean(ep_dec_traj)) if ep_dec_traj else 0.0
+        epoch_dec_speed = float(np.mean(ep_dec_speed)) if ep_dec_speed else 0.0
+        comp_str = ""
+        if lat_active:
+            comp_str += (f" v_mse={epoch_v_mse:.4f} lat_dz={epoch_lat_dz:.4f} "
+                         f"lat_ddz={epoch_lat_ddz:.4f}")
+        if dec_active:
+            if not lat_active:
+                comp_str += f" v_mse={epoch_v_mse:.4f}"
+            comp_str += (f" dec_world={epoch_dec_world:.4f} dec_traj={epoch_dec_traj:.4f} "
+                         f"dec_speed={epoch_dec_speed:.4f}")
+        log(f"\n=== epoch {epoch} done in {ep_dt:.1f}s | train_loss={epoch_loss:.4f}{comp_str} "
             f"lr={cur_lr:.2e} n_iter={len(ep_losses)} ===")
 
         # Val — only rank 0 runs (full val set, no metric all-reduce needed).
@@ -767,6 +1082,9 @@ def main() -> int:
                 # of per-batch element-weighted means (codex P2-3).
                 val_num = 0.0
                 val_den = 0.0
+                # M2 latent-dynamics component logging (diagnostic only; the
+                # best-ckpt gate stays val_denoise). Batch-mean of per-batch means.
+                vdz_list, vddz_list, vx0_list = [], [], []
                 with torch.no_grad():
                     for raw in dl_val:
                         raw = {k: v.to(dev) if torch.is_tensor(v) else v for k, v in raw.items()}
@@ -791,7 +1109,12 @@ def main() -> int:
                         mask_f = mask.to(z0.dtype)
                         z_t = z_t * mask_f; v_target = v_target * mask_f
                         has_text = batch.has_text.to(dev) if batch.has_text.device != dev else batch.has_text
-                        if use_tokens:
+                        text_tokens_in = None
+                        if args.text_mode == "dual_text":
+                            text_in = batch.caption_emb.to(dev) * has_text[:, None].to(batch.caption_emb.dtype)
+                            text_tokens_in = batch.caption_token_emb.to(dev)
+                            token_mask_in = batch.caption_token_mask.to(dev)
+                        elif use_tokens:
                             text_in = batch.caption_token_emb.to(dev)
                             token_mask_in = batch.caption_token_mask.to(dev)
                         else:
@@ -808,11 +1131,26 @@ def main() -> int:
                                 pooled_skeleton_embeddings=pooled_skel,
                                 has_text=has_text, validate_inputs=False,
                                 text_token_mask=token_mask_in,
+                                text_tokens=text_tokens_in,
                             )
                         diff_sq = (v_pred.float() - v_target).pow(2) * mask_f
                         val_num += diff_sq.sum().item()
                         val_den += mask_f.sum().item() * v_pred.shape[-1]
+                        if lat_active:
+                            z0_hat = predict_z0_from_v(z_t.float(), v_pred.float(), timesteps, sched)
+                            z0_dyn_target = (enc["mu"].float() * mask_f
+                                             if args.latent_dyn_target == "mu" else z0)
+                            vdz_list.append(masked_latent_dz_mse(
+                                z0_hat, z0_dyn_target, coarse_mask, frame_mask).item())
+                            vddz_list.append(masked_latent_ddz_mse(
+                                z0_hat, z0_dyn_target, coarse_mask, frame_mask).item())
+                            if args.w_lat_x0 > 0:
+                                vx0_list.append(masked_latent_mse(
+                                    z0_hat, z0_dyn_target, mask_f.bool()).item())
                 val_loss = val_num / max(val_den, 1.0)
+                val_lat_dz = float(np.mean(vdz_list)) if vdz_list else 0.0
+                val_lat_ddz = float(np.mean(vddz_list)) if vddz_list else 0.0
+                val_lat_x0 = float(np.mean(vx0_list)) if vx0_list else 0.0
                 # Codex P2 (2026-05-23): fail-fast on non-finite val too.
                 if not (val_loss == val_loss and val_loss != float("inf")
                         and val_loss != float("-inf")):
@@ -820,13 +1158,38 @@ def main() -> int:
                         f"[FAIL] non-finite val_loss={val_loss!r} at epoch={epoch}. "
                         f"Inspect last train iter for upstream divergence."
                     )
-                log(f"[val ep{epoch}] dt={time.time()-t_v:.1f}s val_denoise={val_loss:.4f} "
+                val_comp_str = (f" val_lat_dz={val_lat_dz:.4f} val_lat_ddz={val_lat_ddz:.4f}"
+                                if lat_active else "")
+                log(f"[val ep{epoch}] dt={time.time()-t_v:.1f}s val_denoise={val_loss:.4f}{val_comp_str} "
                     f"n_valid_positions={int(val_den/v_pred.shape[-1])}")
 
-                metrics_fp.write(json.dumps({
+                metrics_row = {
                     "epoch": epoch, "train_loss": epoch_loss, "val_denoise": val_loss,
                     "lr": cur_lr, "epoch_dt_s": ep_dt, "global_it": global_it,
-                }) + "\n"); metrics_fp.flush()
+                }
+                if lat_active:
+                    metrics_row.update({
+                        "train_v_mse": epoch_v_mse,
+                        "train_lat_dz": epoch_lat_dz,
+                        "train_lat_ddz": epoch_lat_ddz,
+                        "train_total": epoch_loss,
+                        "val_lat_dz": val_lat_dz,
+                        "val_lat_ddz": val_lat_ddz,
+                    })
+                    if args.w_lat_x0 > 0:
+                        metrics_row["train_lat_x0"] = epoch_lat_x0
+                        metrics_row["val_lat_x0"] = val_lat_x0
+                if dec_active:
+                    metrics_row.update({
+                        "train_v_mse": epoch_v_mse,
+                        "train_dec_world": epoch_dec_world,
+                        "train_dec_traj": epoch_dec_traj,
+                        "train_dec_speed": epoch_dec_speed,
+                        "train_dec_total": (args.w_dec_world * epoch_dec_world
+                                            + args.w_dec_traj * epoch_dec_traj
+                                            + args.w_dec_speed * epoch_dec_speed),
+                    })
+                metrics_fp.write(json.dumps(metrics_row) + "\n"); metrics_fp.flush()
 
                 # Best ckpt — rank 0 only; unwrap DDP for clean state_dict
                 if val_loss < best_val:

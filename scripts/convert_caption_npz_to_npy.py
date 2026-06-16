@@ -13,6 +13,7 @@ Output:
 Read-only on the source npz. One-shot offline. Usage:
   python scripts/convert_caption_npz_to_npy.py
 """
+import argparse
 import json
 import time
 import zipfile
@@ -22,10 +23,17 @@ from numpy.lib.format import read_array
 
 # Sidecar naming MUST match the dataset auto-detect (codex decision): the loader
 # checks cache_path.with_suffix(".embs.npy") / ".keys.json". For
-# "...multi.npz", with_suffix(".embs.npy") -> "...multi.embs.npy".
-SRC = "data/anytop_caption_t5_cleanL2_multi.npz"
-DST_EMB = "data/anytop_caption_t5_cleanL2_multi.embs.npy"
-DST_KEY = "data/anytop_caption_t5_cleanL2_multi.keys.json"
+# "...multi.npz", with_suffix(".embs.npy") -> "...multi.embs.npy". --src defaults
+# to the original cleanL2 cache (backward compatible); the merged L4_safe+truebones
+# backbone passes --src data/anytop_caption_t5_mergedL4TB_multi.npz.
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--src", default="data/anytop_caption_t5_cleanL2_multi.npz",
+                 help="source per-key .npz caption cache")
+_args = _ap.parse_args()
+SRC = _args.src
+assert SRC.endswith(".npz"), f"--src must be a .npz, got {SRC}"
+DST_EMB = SRC[:-4] + ".embs.npy"   # with_suffix(.embs.npy)
+DST_KEY = SRC[:-4] + ".keys.json"  # with_suffix(.keys.json)
 
 t0 = time.time()
 keys = []

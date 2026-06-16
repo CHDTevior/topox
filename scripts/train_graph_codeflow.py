@@ -631,10 +631,16 @@ def main() -> int:
                         "git_sha": git_sha, "frozen_vqvae_ckpt": args.frozen_vqvae_ckpt,
                         "latent_mean": raw_flow.latent_mean.cpu(),
                         "latent_std": raw_flow.latent_std.cpu()}
-                torch.save(ckpt, out_dir / "last_model.pt")
+                # Atomic save: write to .tmp then os.replace so an alloc death mid-save
+                # never leaves a truncated last_model.pt that the watchdog would resume into.
+                _tmp = out_dir / "last_model.pt.tmp"
+                torch.save(ckpt, _tmp)
+                os.replace(_tmp, out_dir / "last_model.pt")
                 if val_flow < best_val:
                     best_val = val_flow
-                    torch.save(ckpt, out_dir / "best_model.pt")
+                    _tmpb = out_dir / "best_model.pt.tmp"
+                    torch.save(ckpt, _tmpb)
+                    os.replace(_tmpb, out_dir / "best_model.pt")
                     log(f"  [ckpt] new best val_flow={val_flow:.5f}")
             raw_flow.train()
         if is_ddp:

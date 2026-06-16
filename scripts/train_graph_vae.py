@@ -788,6 +788,15 @@ def main() -> int:
             for k, v in state.items():
                 if torch.is_tensor(v):
                     state[k] = v.to(dev)
+        # load_state_dict restores the CHECKPOINT's param-group lr, which silently
+        # overrides the --lr passed on the command line. When resuming at a DELIBERATELY
+        # different lr (e.g. scaling 4-card global192 lr=4e-4 up to 8-card global384
+        # lr=8e-4 on resume), force the CLI lr to win. There is no scheduler, so the
+        # single fixed lr is authoritative for the rest of the run (codex 019ea977).
+        for group in opt.param_groups:
+            group["lr"] = args.lr
+        log(f"  [resume] forced optimizer lr -> {args.lr} (CLI --lr overrides ckpt's "
+            f"stored param-group lr)")
         # best_val_* : prefer the historical bests persisted in the resume ckpt; if
         # the field is absent (legacy ckpt) fall back to the sibling best_model.pt /
         # best_recon_model.pt — those ARE the historical bests — else inf. Do NOT use

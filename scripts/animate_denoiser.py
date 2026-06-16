@@ -7,7 +7,8 @@ Pipeline per docs/phase2_diffusion_design.md §4-5:
        pooled_skeleton_embeddings / anchor_indices / hard_assignment / assignment / s_j
      - frame_mask_lat = batch.frame_mask.view(B, T_lat, stride).all(-1)
      - z_T = N(0, I) of shape [B, T_lat, C, D]
-     - DDIM sampling loop (default 50 steps) with CFG (cond_scale=7.5):
+     - DDIM sampling loop (default 50 steps) with CFG (default cond_scale=1.5;
+       ALWAYS pass --cond_scale explicitly when comparing renders):
          z2 = cat(z, z, dim=0); t2 = cat(t, t); has_text2 = cat(True, False);
          text2 = cat(text, text*0); other tensors all repeated to 2B
          v_2 = denoiser(z_2, ...)  → split into v_cond / v_uncond
@@ -65,11 +66,13 @@ def load_denoiser(ckpt_path: str, dev: torch.device) -> tuple[GraphSaladDenoiser
     # token ckpts carry 'token_cross_attn' in args). Wrong mode ⇒ arch mismatch ⇒
     # strict-load fails loud below.
     text_mode = da.get("text_mode", "mean_additive")
+    spatial_mode = da.get("spatial_mode", "graph")  # old ckpts (no key) → graph
     denoiser = GraphSaladDenoiser(
         d_model=d_model, n_heads=n_heads, d_ff=d_ff,
         n_layers=da.get("n_layers", 5),
         d_text=768, dropout=da.get("dropout", 0.1),
         text_mode=text_mode, text_token_dim=768,
+        spatial_mode=spatial_mode,
     ).to(dev)
     missing, unexpected = denoiser.load_state_dict(ck["model_state_dict"], strict=True)
     if missing or unexpected:
@@ -116,17 +119,20 @@ def ddim_sample(
     has_text_cond = batch.has_text.to(dev)              # [B] bool
     has_text_uncond = torch.zeros_like(has_text_cond, dtype=torch.bool)
     has_text2 = torch.cat([has_text_cond, has_text_uncond], dim=0)  # [2B]
-    # M2: mode-dependent text. token_cross_attn repeats tokens + token mask; the
-    # uncond half's has_text=False fully masks the text keys (cross-attn → 0).
-    token_mode = (getattr(denoiser, "text_mode", "mean_additive") == "token_cross_attn")
-    if token_mode:
-        ttok = batch.caption_token_emb.to(dev)          # [B, L, 768]
-        tmask = batch.caption_token_mask.to(dev)        # [B, L] bool
-        text2 = ttok.repeat(2, 1, 1)                    # [2B, L, 768]
-        token_mask2 = tmask.repeat(2, 1)               # [2B, L] (uncond gated by has_text)
-    else:
-        text_emb = batch.caption_emb.to(dev)            # [B, 768]
-        text2 = text_emb.repeat(2, 1)                  # [2B, 768]
+    # M2: mode-dependent text, repeated 2x for the CFG cond+uncond batch. The uncond
+    # half's has_text=False zeroes the global add AND fully masks the token keys
+    # (cross-attn → 0), so both streams CFG-drop together (dual_text).
+    text_mode = getattr(denoiser, "text_mode", "mean_additive")
+    text_tokens2 = None
+    if text_mode == "dual_text":
+        text2 = batch.caption_emb.to(dev).repeat(2, 1)                   # [2B, 768] global
+        text_tokens2 = batch.caption_token_emb.to(dev).repeat(2, 1, 1)  # [2B, L, 768] tokens
+        token_mask2 = batch.caption_token_mask.to(dev).repeat(2, 1)     # [2B, L]
+    elif text_mode == "token_cross_attn":
+        text2 = batch.caption_token_emb.to(dev).repeat(2, 1, 1)         # [2B, L, 768]
+        token_mask2 = batch.caption_token_mask.to(dev).repeat(2, 1)     # [2B, L]
+    else:  # mean_additive
+        text2 = batch.caption_emb.to(dev).repeat(2, 1)                  # [2B, 768]
         token_mask2 = None
 
     first = True
@@ -141,6 +147,7 @@ def ddim_sample(
             pooled_skeleton_embeddings=skel2,
             has_text=has_text2,
             text_token_mask=token_mask2,
+            text_tokens=text_tokens2,
             validate_inputs=first,  # cold-start validate on first iter
         )
         first = False
@@ -176,17 +183,26 @@ def make_fake_enc(z: torch.Tensor, skel: dict, frame_mask_lat: torch.Tensor) -> 
 
 
 def make_t2m_large_gif(pred_ric, pred_fk, static_pose, parents, prompt, out_path,
-                       max_frames=48, fps=12, cell=(900, 760), zoom=1.15, pad=0.06):
+                       max_frames=48, fps=12, cell=(900, 760), zoom=1.15, pad=0.06,
+                       gt=None,
+                       pred_labels=("PRED pose/RIC 0:3", "PRED rot6d-FK 3:9")):
     """Large-figure (PIL oblique, per-frame root-centered) T2M demo:
     input skeleton (static grey) | PRED pose/RIC (blue) | PRED rot6d-FK (green),
     with the prompt as a top header band. NO GT (T2M input = skeleton + prompt).
-    recover already done by caller via src funcs; this is geometry/drawing only."""
+    recover already done by caller via src funcs; this is geometry/drawing only.
+
+    Diagnostic (gt given, [T,J,3] world-space): the animated GT source motion is
+    stitched on as the RIGHTMOST panel → input | PRED_RIC | PRED_FK | GT, so
+    generated motion can be eyeballed against the real dataset clip. GT shares the
+    panels' common scale, so a fast/janky PRED reads visually against a smooth GT."""
     import scripts._pil_skeleton_render as pr
     T = pred_ric.shape[0]
     static_T = np.repeat(np.asarray(static_pose)[None], T, axis=0)   # [J,3] -> [T,J,3]
     arrs = [(static_T, "input skeleton (rest)", (90, 90, 90), True, True),
-            (pred_ric, "PRED pose/RIC 0:3", (35, 112, 180), False, False),
-            (pred_fk, "PRED rot6d-FK 3:9", (30, 150, 55), False, False)]
+            (pred_ric, pred_labels[0], (35, 112, 180), False, False),
+            (pred_fk, pred_labels[1], (30, 150, 55), False, False)]
+    if gt is not None:
+        arrs.append((np.asarray(gt), "GT source 0:3", (200, 60, 60), False, False))
     norm = []
     for a, title, color, axes, static in arrs:
         aa = a.astype(np.float64).copy(); aa[..., 1] -= aa[..., 1].min()
@@ -309,7 +325,7 @@ def main() -> int:
                     help="comma-separated species to render")
     ap.add_argument("--n_per", type=int, default=2)
     ap.add_argument("--n_ddim_steps", type=int, default=50)
-    ap.add_argument("--cond_scale", type=float, default=7.5)
+    ap.add_argument("--cond_scale", type=float, default=1.5)
     ap.add_argument("--stride", type=int, default=2)
     ap.add_argument("--fps", type=int, default=8)
     ap.add_argument("--seed", type=int, default=42)
@@ -318,6 +334,10 @@ def main() -> int:
                     help="big PIL figures (input|PRED_RIC|PRED_FK + prompt) via _pil_skeleton_render")
     ap.add_argument("--generic_prompt", action="store_true",
                     help="replace species name with 'an animal' (keep action), re-encode via T5-base")
+    ap.add_argument("--with_gt", action="store_true",
+                    help="diagnostic: prepend the GT source-motion panel "
+                         "(GT 0:3 | PRED_RIC | PRED_FK) so generated motion can be "
+                         "eyeballed against the real dataset clip. --large only.")
     args = ap.parse_args()
 
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -375,10 +395,10 @@ def main() -> int:
     # M2: token ckpts need the token cache + return_caption_tokens so the dataset
     # emits caption_token_emb/mask aligned to the same caption idx as caption_emb.
     da_text_mode = da.get("text_mode", "mean_additive")
-    use_tokens = (da_text_mode == "token_cross_attn")
+    use_tokens = da_text_mode in ("token_cross_attn", "dual_text")
     if use_tokens and not args.caption_token_cache:
         raise SystemExit(
-            "denoiser ckpt is token_cross_attn but --caption_token_cache not "
+            f"denoiser ckpt is {da_text_mode} but --caption_token_cache not "
             "given (need the token cache to sample dataset captions)."
         )
     ds_kwargs = dict(
@@ -399,7 +419,12 @@ def main() -> int:
     # AnyTopDataset zero-fills caption_emb + sets has_text=False on cache miss).
     n_missing = 0
     want_set = set(s.strip() for s in args.species.split(",") if s.strip())
-    for i in range(len(ds)):
+    # Only touch clips of the requested species. object_type lives in the dataset
+    # index (ds.samples[i]) and needs NO motion load, so a species-filtered render
+    # iterates ~dozens of clips instead of walking the whole split (train=77882).
+    match_indices = [i for i, s in enumerate(ds.samples)
+                     if s.get("object_type") in want_set]
+    for i in match_indices:
         it = ds[i]
         if it["object_type"] not in want_set:
             continue
@@ -429,10 +454,12 @@ def main() -> int:
     summary: list[str] = []
 
     print(f"\nSampling: DDIM {args.n_ddim_steps} steps, CFG cond_scale={args.cond_scale}")
-    for i in range(len(ds)):
+    for i in match_indices:  # species-filtered (see preflight); no full-split walk
         item = ds[i]
         sp = item["object_type"]
         if sp not in picked or picked[sp] >= args.n_per:
+            if all(picked[s] >= args.n_per for s in want):
+                break  # all requested species collected → stop (don't walk all of train)
             continue
         raw = anytop_collate_fn([item])
         raw = {k: v.to(dev) if torch.is_tensor(v) else v for k, v in raw.items()}
@@ -440,13 +467,13 @@ def main() -> int:
         gen_caption = None
         if args.generic_prompt:
             gen_caption = make_generic_caption(item.get("caption") or "", sp)
-            if use_tokens:
-                # token mode: encode token-level T5 (NOT mean-pool); override both
-                # caption_token_emb + mask (plan §3.7).
+            # dual_text re-encodes BOTH streams; token/mean re-encode only their own.
+            if da_text_mode in ("token_cross_attn", "dual_text"):
+                # encode token-level T5 (NOT mean-pool); override token emb + mask.
                 te, tm = _t5_encode_tokens(gen_caption, dev, args.caption_token_max_len)
                 batch.caption_token_emb = te                        # [1,L,768]
                 batch.caption_token_mask = tm                       # [1,L] bool
-            else:
+            if da_text_mode in ("mean_additive", "dual_text"):
                 batch.caption_emb = _t5_encode(gen_caption, dev)    # override [1,768]
             batch.has_text = torch.ones_like(batch.has_text)        # force conditioned
 
@@ -520,6 +547,7 @@ def main() -> int:
             make_t2m_large_gif(
                 pred_world, pred_world_fk, static_pose, parents, prompt_text,
                 str(actual_gif_path), fps=args.fps,
+                gt=(gt_world if args.with_gt else None),
             )
         else:
             animate_t2m_input_pred(
