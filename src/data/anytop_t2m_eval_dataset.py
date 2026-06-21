@@ -21,18 +21,19 @@ does two things on top:
       underlying `AnyTopDataset` sample index.
   (2) CAPTION VIEW: attach, for the chosen text `view` ("full" = cap0,
       "species_stripped" = the per-motion animal-level caption recorded by M0),
-      the precomputed T5 caption embedding [768] + caption_text +
-      canonical_action_key (= source_motion_id) + motion_id.
+      the RAW caption_text string (the primary DistilBERT input; the T5 [768]
+      cache is attached ONLY when caption_emb_cache is given, for the t5 ablation)
+      + canonical_action_key (= source_motion_id) + source + motion_id.
 
 Metadata-only invariant (§1c-7): `source_motion_id` / `object_type` are carried
 ONLY as grouping / metadata keys (canonical_action_key, and the underlying
 AnyTopDataset's `object_type`). They are NEVER placed in any text channel.
-The text channel the evaluator consumes is exclusively the T5 `caption_emb` of
-the selected view.
+The text channel the evaluator consumes is the raw `caption_text` string of the
+selected view (DistilBERT primary; the T5 `caption_emb` only for the t5 ablation).
 
-Underlying AnyTopDataset config (§1b sequence/joint caps + M1 spec):
-  num_frames=260, max_joints=144 (full L2 coverage; T_max=237, J_max=140 — eval
-  must see complete actions, so NO temporal cropping like the 64-frame VAE),
+Underlying AnyTopDataset config (VQ/CodeFlow revision):
+  num_frames=300, max_joints=144 (merged L4-safe+truebones: T_max=299, J_max=142 —
+  eval must see complete actions, so NO temporal cropping like the 64-frame VAE),
   split="train" for train_main, split="val" for the three val manifests
   (val_action_clean / val_action_overlap are SUBSETS of the val split, selected
   by manifest motion_id).
@@ -138,7 +139,7 @@ class _T5CaptionEmbeddingCache:
 
 
 class AnyTopT2MEvalDataset(Dataset):
-    """Manifest-driven subset of `AnyTopDataset` + a T5 caption view (thin wrapper).
+    """Manifest-driven subset of `AnyTopDataset` + a caption view (thin wrapper).
 
     Args:
         manifest_path: path to an M0 eval-split manifest JSON (one of
@@ -152,7 +153,7 @@ class AnyTopT2MEvalDataset(Dataset):
         view: "full" (caption index 0) or "species_stripped" (per-motion
             animal-level caption via the manifest's species_stripped_cap_idx).
         num_frames / max_joints: underlying AnyTopDataset crop/pad targets
-            (default 260 / 144 — full L2 coverage, no action truncation).
+            (default 300 / 144 — merged L4-safe+truebones coverage, no action truncation).
         drop_uncovered_species_stripped: in the species_stripped view, whether to
             DROP motions with has_species_stripped == False (default True — they
             have no animal-level caption, and the doc evaluates this sanity view
@@ -168,10 +169,10 @@ class AnyTopT2MEvalDataset(Dataset):
         self,
         manifest_path: str | Path,
         data_root: str | Path,
-        caption_emb_cache: str | Path,
+        caption_emb_cache: str | Path | None,
         split: str,
         view: str = "full",
-        num_frames: int = 260,
+        num_frames: int = 300,
         max_joints: int = 144,
         drop_uncovered_species_stripped: bool = True,
         **anytop_kwargs,
@@ -212,8 +213,15 @@ class AnyTopT2MEvalDataset(Dataset):
             **anytop_kwargs,
         )
 
-        # ---- T5 caption embedding cache (read-only sidecar). ----
-        self._t5 = _T5CaptionEmbeddingCache(caption_emb_cache)
+        # ---- T5 caption embedding cache (read-only sidecar). OPTIONAL: the
+        # primary evaluator text tower is raw-caption DistilBERT, which consumes
+        # `caption_text` (always attached below) and never needs the T5 cache.
+        # Pass caption_emb_cache=None for the DistilBERT path; pass a prefix only
+        # for the T5 fallback/ablation tower. ----
+        self._t5 = (
+            _T5CaptionEmbeddingCache(caption_emb_cache)
+            if caption_emb_cache is not None else None
+        )
 
         # ---- Map manifest motion_id -> underlying AnyTopDataset sample index. ----
         # Hard-fail on any duplicate so a manifest id can never resolve
@@ -260,7 +268,10 @@ class AnyTopT2MEvalDataset(Dataset):
                 continue
 
             t5_key, caption_text = self._resolve_caption_view(rec, cap_idx)
-            if caption_valid and t5_key not in self._t5:
+            # T5-key existence is only required for the T5 fallback/ablation tower
+            # (caption_emb_cache given). DistilBERT primary path (self._t5 is None)
+            # uses caption_text and never looks up the T5 cache.
+            if self._t5 is not None and caption_valid and t5_key not in self._t5:
                 missing_t5.append(t5_key)
                 continue
             self._plan.append(
@@ -337,17 +348,23 @@ class AnyTopT2MEvalDataset(Dataset):
         # (1) verbatim underlying AnyTopDataset sample — ALL preprocessing (A1).
         sample = self.base[base_idx]
 
-        # (2) attach the caption view + grouping keys. `caption_emb` is the T5
-        # embedding of the selected view's caption; a zero vector is used only
-        # for kept-but-uncovered species_stripped motions (caption_valid=False),
-        # which an upstream loop is expected to skip via the flag.
-        if caption_valid:
-            caption_emb = torch.from_numpy(self._t5.get(t5_key))
-        else:
-            caption_emb = torch.zeros(self._t5.emb_dim, dtype=torch.float32)
+        # (2) attach the caption view + grouping keys. The raw `caption_text`
+        # string is ALWAYS attached — it is what the primary DistilBERT text tower
+        # consumes. `caption_emb` (T5) is attached ONLY when the T5 cache is wired
+        # (fallback/ablation tower); a zero vector is used for kept-but-uncovered
+        # species_stripped motions (caption_valid=False).
+        if self._t5 is not None:
+            if caption_valid:
+                caption_emb = torch.from_numpy(self._t5.get(t5_key))
+            else:
+                caption_emb = torch.zeros(self._t5.emb_dim, dtype=torch.float32)
+            sample["caption_emb"] = caption_emb                   # [768] f32 (T5 path only)
 
-        sample["caption_emb"] = caption_emb                       # [768] f32
-        sample["caption_text"] = caption_text                     # str
+        sample["caption_text"] = caption_text                     # str (DistilBERT input)
+        # `source` (animo4d_L4_safe | truebones): metadata only — per-source
+        # reporting + (with motion_id/source_motion_id/caption_text) the
+        # false-negative mask. NEVER a text/motion tower input.
+        sample["source"] = str(rec.get("source", "unknown"))
         sample["caption_view"] = self.view                        # str
         sample["caption_valid"] = bool(caption_valid)             # bool
         # base AnyTopDataset built load_captions=False -> has_text=False; the

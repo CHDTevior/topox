@@ -1,0 +1,21 @@
+Review a NEW launcher script for correctness. Reply with explicit verdict: PASS or NEEDS-FIX + enumerated issues.
+
+## Context
+We train the AnyTop T2M evaluator (scripts/train_anytop_t2m_evaluator.py) on data/animo4d_anytop_clean_L4_safe_plus_humanml3d across THREE same-node (swarmh1002) swarm_h100 allocs with heterogeneous GPU counts: JOB_2GPU=976841 (gpu:2) -> global ranks 0,1; JOB_1A=977959 (gpu:1) -> rank 2; JOB_1B=977960 (gpu:1) -> rank 3. WORLD_SIZE=4. torchrun --nproc_per_node cannot express 2+1+1, so the new launcher scripts/_launch_anytop_t2m_eval_4rank_crossalloc.sh sets torch.distributed env vars by hand (one srun step per alloc; srun spawns $ngpu tasks; RANK = rank_base + SLURM_PROCID, LOCAL_RANK = SLURM_LOCALID). Same-node cross-cgroup => NCCL P2P/SHM OFF + force IB (ib0/mlx5_0, swarmh1002 ib0 IP 10.6.15.69). Prior proven same-node cross-alloc DDP used static rendezvous + NCCL P2P/SHM off + IB.
+
+## The trainer's DDP contract (already verified, do not re-derive)
+scripts/train_anytop_t2m_evaluator.py:62-78 setup_ddp(): reads WORLD_SIZE/RANK/LOCAL_RANK from env, calls dist.init_process_group(nccl, timeout=30min) (env:// default => reads MASTER_ADDR/MASTER_PORT), then torch.cuda.set_device(local_rank) + device=cuda:local_rank; DDP device_ids=[local_rank] (line 309). batch_size is PER-RANK (line 129). Single-process if WORLD_SIZE unset.
+
+## Files to read
+- scripts/_launch_anytop_t2m_eval_4rank_crossalloc.sh  (the launcher under review)
+- scripts/train_anytop_t2m_evaluator.py  (the trainer it launches; confirm the env contract above + that the passed args are valid)
+
+## Verdict must cover
+(a) RANK/LOCAL_RANK derivation: for JOB_2GPU run_group rank_base=0 ngpu=2 -> 2 tasks with SLURM_PROCID 0,1 => RANK 0,1 and LOCAL_RANK=SLURM_LOCALID 0,1; JOB_1A rank_base=2 ngpu=1 => RANK 2 LOCAL_RANK 0; JOB_1B rank_base=3 => RANK 3 LOCAL_RANK 0. Confirm this yields exactly ranks {0,1,2,3}, WORLD_SIZE=4, each rank a DISTINCT GPU (set_device(local_rank): the 2-GPU alloc's two tasks -> cuda:0,cuda:1; the 1-GPU allocs -> cuda:0). Any way two ranks collide on one GPU or a rank index is wrong/duplicated?
+(b) The shell quoting in run_group's `bash -c "export RANK=\$(( $3 + SLURM_PROCID )) LOCAL_RANK=\${SLURM_LOCALID:-0} ... exec PY ... $TRAIN_ARGS"`: does $3 (rank_base) expand at launcher-eval time while SLURM_PROCID/SLURM_LOCALID expand at task runtime (inside srun)? Are RANK/LOCAL_RANK exported into the trainer's environment correctly so setup_ddp() sees them? Any word-splitting / escaping bug?
+(c) NCCL same-node cross-cgroup: NCCL_P2P_DISABLE=1 NCCL_SHM_DISABLE=1 NCCL_SOCKET_IFNAME=ib0 NCCL_IB_DISABLE=0 NCCL_IB_HCA=mlx5_0 TORCH_NCCL_ASYNC_ERROR_HANDLING=1 — correct + complete for a 4-rank PG spanning 3 cgroups on ONE node over IB? (The 2 same-cgroup ranks lose NVLink P2P but stay correct — acceptable.) Will rank0 (on 976841) binding MASTER on 10.6.15.69:29551 be reachable by ranks 2,3 (same node, ib0)?
+(d) srun flags: `--jobid=$j --overlap --nodes=1 --ntasks=$ngpu --ntasks-per-node=$ngpu --gres=gpu:$ngpu --cpus-per-task=8 --no-kill`. On swarm_h100 allocs (NOT dual/quad_h200), will these create the steps without "Requested nodes are busy"? Does --ntasks=2 --gres=gpu:2 give the 2 tasks usable GPUs (each sees both -> set_device disambiguates, OR each sees one)? Any risk the 2 tasks on 976841 land on the same GPU?
+(e) Trainer args validity: --manifest/--val_manifest/--data_root/--text_tower distilbert/--motion_feat_dim 12/--coemb_dim 512/--batch_size 32(=>global128)/--lr 1e-4/--epochs 100/--seed 42/--bf16/--num_frames 300/--max_joints 144/--val_every 5/--val_max_batches 0/--val_batch_size 32/--out/--save_every 10/(--max_steps when SMOKE). All real args with correct values? Does --bf16 / --val_max_batches 0 (full val) behave as intended? batch_size is per-rank so global=128 — confirm.
+(f) Deadlock/hang risk: rank-0-only val gate + dist.barrier() (trainer line 388-395) with 30-min PG timeout — any interaction with this manual 4-rank launch (e.g. a rank not reaching the barrier, or an alloc whose walltime is shorter)? Any other footgun (e.g. the 3 run_group & background jobs + wait, exit-code handling)?
+
+Be concrete with line references. If PASS say so plainly; if NEEDS-FIX enumerate each fix.
