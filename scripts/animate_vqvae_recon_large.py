@@ -205,6 +205,12 @@ def main():
     ap.add_argument("--label", type=int, default=1, help="1=draw joint-index labels, 0=dots only")
     ap.add_argument("--font_size", type=int, default=13)
     ap.add_argument("--amp_dtype", choices=["fp32", "bf16"], default=None)
+    ap.add_argument("--render_from", choices=["fk", "position"], default="fk",
+                    help="'fk' = rot6d(ch3:9)->FK on bone offsets (recover_from_bvh_rot_np, "
+                         "historical default); 'position' = RIC(ch0:3) world-position route "
+                         "(_recover_world_positions) — SAME function the backbone gen QA uses, "
+                         "so 'position' makes recon QA consistent with backbone + avoids the "
+                         "human rot6d-FK self-check floor.")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
 
@@ -276,14 +282,18 @@ def main():
             parents = np.asarray([int(p) for p in item["parent_indices"][:J]], dtype=int)
             offsets = np.asarray(item["rest_offsets"])[:J]
 
-            # rot6d FK for BOTH (apples-to-apples) — IMPORTED from src, never copied.
-            pred_world = recover_from_bvh_rot_np(pred_raw, parents, offsets).astype(np.float64)
-            gt_world = recover_from_bvh_rot_np(gt_raw, parents, offsets).astype(np.float64)
-
-            # renderer-faithfulness self-check: GT-FK (rot6d) vs GT-RIC (pos channels)
-            gt_ric = _recover_world_positions(gt_raw).astype(np.float64)
+            # --render_from: 'fk' = rot6d(ch3:9)->FK on bone offsets (recover_from_bvh_rot_np);
+            # 'position' = RIC(ch0:3) world route (_recover_world_positions) for BOTH GT+recon,
+            # the SAME function the backbone gen QA uses (consistency + no human FK floor).
+            gt_ric = _recover_world_positions(gt_raw).astype(np.float64)        # RIC route (also self-check ref)
+            if args.render_from == "position":
+                pred_world = _recover_world_positions(pred_raw).astype(np.float64)
+                gt_world = gt_ric
+            else:
+                pred_world = recover_from_bvh_rot_np(pred_raw, parents, offsets).astype(np.float64)
+                gt_world = recover_from_bvh_rot_np(gt_raw, parents, offsets).astype(np.float64)
             gtbbox = np.linalg.norm(gt_ric.reshape(-1, 3).max(0) - gt_ric.reshape(-1, 3).min(0))
-            gt_selfcheck = float(np.linalg.norm(gt_world - gt_ric, axis=-1).mean())
+            gt_selfcheck = float(np.linalg.norm(gt_world - gt_ric, axis=-1).mean())  # ~0 in position mode
             recon_l2 = float(np.linalg.norm(pred_world - gt_world, axis=-1).mean())
 
             # ground-normalize each (y min -> 0) so both panels share the floor.
