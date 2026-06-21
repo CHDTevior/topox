@@ -34,6 +34,7 @@ import math
 import os
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -58,7 +59,10 @@ def _ddp_setup():
     rank = int(os.environ["RANK"])
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
-    dist.init_process_group(backend="nccl", device_id=torch.device("cuda", local_rank))
+    # 30-min PG timeout (default is 10): the rank-0-only val + online gen-eval block makes
+    # other ranks wait at the post-epoch dist.barrier(); a slow gen-eval must not trip NCCL.
+    dist.init_process_group(backend="nccl", device_id=torch.device("cuda", local_rank),
+                            timeout=timedelta(minutes=30))
     return True, rank, local_rank, world_size, rank == 0
 
 
@@ -298,6 +302,22 @@ def main() -> int:
                         "fixed default (project energy-overshoot history; recipe "
                         "says do not hardcode 6.0).")
     p.add_argument("--eval_steps", type=int, default=50)
+    # ---- ONLINE text->motion gen-eval (frozen evaluator; opt-in, rank-0, every N epochs) ----
+    p.add_argument("--gen_eval", action="store_true",
+                   help="enable periodic text->motion eval in a FROZEN evaluator's space "
+                        "(requires --evaluator_ckpt). rank-0 only, inside the do_val window.")
+    p.add_argument("--evaluator_ckpt", type=str, default=None,
+                   help="frozen AnyTopT2MEvaluator best_model.pt (12ch contact-free).")
+    p.add_argument("--gen_eval_manifest", type=str, default=None,
+                   help="eval val manifest; default <gen_eval_data_root>/eval_splits/val_all.json")
+    p.add_argument("--gen_eval_data_root", type=str, default=None,
+                   help="eval dataset root; default = the evaluator ckpt's data_root.")
+    p.add_argument("--gen_eval_every", type=int, default=50,
+                   help="run the online gen-eval every N epochs (sparse; generation is costly).")
+    p.add_argument("--gen_eval_n", type=int, default=256,
+                   help="strided subset size per gen-eval (small to bound cost; <1024 => FID skipped).")
+    p.add_argument("--gen_eval_steps", type=int, default=25,
+                   help="ODE steps for the online gen-eval (cheaper than --eval_steps).")
     # logging / ckpt
     p.add_argument("--log_every", type=int, default=50)
     p.add_argument("--qa_every", type=int, default=200,
@@ -538,6 +558,85 @@ def main() -> int:
     n_epochs = 2 if args.smoke else args.epochs
     smoke_cap = args.smoke_iters if args.smoke else None
 
+    # ---- ONLINE gen-eval setup: load the FROZEN evaluator + T5 + eval dataset ONCE,
+    # rank-0 only (opt-in via --gen_eval). Kept in gen_eval_ctx; None on other ranks /
+    # when disabled, so the per-epoch hook below is naturally skipped there. ----
+    gen_eval_ctx = None
+    if args.gen_eval and is_main:
+        # Whole setup is rank-0-only + guarded: a setup failure must DISABLE gen-eval and let
+        # rank-0 fall through to training (so it can't desync the other ranks at the first DDP
+        # collective). RNG save/restore wraps it because constructing the evaluator/T5 draws
+        # from the global RNG before load_state_dict overwrites it (keeps training RNG identical
+        # to a --gen_eval-off run).
+        _rng_cpu = torch.get_rng_state()
+        _rng_cuda = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        try:
+            if not args.evaluator_ckpt:
+                raise RuntimeError("--gen_eval requires --evaluator_ckpt")
+            from src.data.anytop_t2m_eval_dataset import AnyTopT2MEvalDataset
+            from src.models.graph_salad.t2m_evaluator import AnyTopT2MEvaluator
+            from src.eval.codeflow_gen_eval import run_gen_eval as _run_gen_eval
+            from transformers import T5EncoderModel, T5TokenizerFast
+
+            def _resolve(pth):                                   # /scratch vs /iridisfs/scratch -> same tree
+                try:
+                    return str(Path(pth).resolve())
+                except Exception:
+                    return str(pth)
+
+            _eck = torch.load(args.evaluator_ckpt, map_location="cpu")
+            _ea = _eck["args"]
+            _g = (lambda k, d: _ea.get(k, d)) if isinstance(_ea, dict) else (lambda k, d: getattr(_ea, k, d))
+            _ev_nf, _ev_mj = int(_g("num_frames", 300)), int(_g("max_joints", 144))
+            _ev_root = args.gen_eval_data_root or _g("data_root", None)
+            if not _ev_root:
+                raise RuntimeError("no data_root (pass --gen_eval_data_root or use an evaluator ckpt carrying data_root)")
+            _vq_root = ta.get("anytop_root") or ta.get("data_root")
+            if _vq_root and _resolve(_ev_root) != _resolve(_vq_root):
+                raise RuntimeError(f"evaluator data_root {_ev_root} != tokenizer root {_vq_root} (eval-space would be invalid)")
+            _manifest = args.gen_eval_manifest or str(Path(_ev_root) / "eval_splits" / "val_all.json")
+            _core = AnyTopT2MEvaluator(
+                coemb_dim=_g("coemb_dim", 512), text_tower=_g("text_tower", "distilbert"),
+                distilbert_path=_g("distilbert_path", "checkpoints/text_encoders/distilbert-base-uncased"),
+                text_max_length=_g("text_max_length", 64), n_heads=_g("n_heads", 8), d_ff=_g("d_ff", 2048),
+                n_graph_layers=_g("n_graph_layers", 6), n_temporal_layers=_g("n_temporal_layers", 4),
+                motion_feat_dim=_g("motion_feat_dim", 13), dropout=_g("dropout", 0.1),
+                learnable_temperature=not _g("fixed_temperature", False), temperature=_g("temperature", 0.07))
+            _miss, _unexp = _core.load_state_dict(_eck["model"], strict=False)
+            _bad = [k for k in _miss if not k.startswith("text_distilbert.text_model.")]
+            if _bad or _unexp:
+                raise RuntimeError(f"evaluator load mismatch: missing={_bad[:6]} unexpected={list(_unexp)[:6]}")
+            _core.to(dev).eval()
+            _t5tok = T5TokenizerFast.from_pretrained("t5-base")
+            _t5 = T5EncoderModel.from_pretrained("t5-base").to(dev).eval()
+
+            @torch.no_grad()
+            def _t5_encode_batch(texts):
+                enc = _t5tok(list(texts), return_tensors="pt", padding="max_length", truncation=True, max_length=64).to(dev)
+                hs = _t5(input_ids=enc.input_ids, attention_mask=enc.attention_mask).last_hidden_state
+                m = enc.attention_mask.bool()
+                gl = (hs * m.unsqueeze(-1).float()).sum(1) / m.sum(1, keepdim=True).clamp_min(1)
+                return gl.float(), hs.float(), m
+
+            _ds = AnyTopT2MEvalDataset(manifest_path=_manifest, data_root=_ev_root, caption_emb_cache=None,
+                                       split="val", view="full", num_frames=_ev_nf, max_joints=_ev_mj)
+            _nt = len(_ds)
+            _ntake = _nt if (args.gen_eval_n <= 0 or args.gen_eval_n >= _nt) else args.gen_eval_n
+            _idxs = list(range(_nt))[::max(1, _nt // _ntake)][:_ntake]
+            gen_eval_ctx = {"run": _run_gen_eval, "core": _core, "t5_encode_batch": _t5_encode_batch,
+                            "ds": _ds, "idxs": _idxs, "num_frames": _ev_nf, "stride": int(ta["temporal_stride"])}
+            log(f"[gen-eval] online armed: evaluator ep={_eck.get('epoch')} root={_ev_root} "
+                f"n={len(_idxs)}/{_nt} every {args.gen_eval_every}ep steps={args.gen_eval_steps} cfg={args.eval_cond_scale}")
+        except Exception as _e:
+            import traceback
+            gen_eval_ctx = None
+            log(f"[gen-eval] DISABLED — setup failed (training continues WITHOUT online eval): "
+                f"{_e}\n{traceback.format_exc()}")
+        finally:
+            torch.set_rng_state(_rng_cpu)
+            if _rng_cuda is not None:
+                torch.cuda.set_rng_state_all(_rng_cuda)
+
     for epoch in range(start_epoch, n_epochs):
         if is_ddp:
             train_sampler.set_epoch(epoch)
@@ -642,6 +741,29 @@ def main() -> int:
                     torch.save(ckpt, _tmpb)
                     os.replace(_tmpb, out_dir / "best_model.pt")
                     log(f"  [ckpt] new best val_flow={val_flow:.5f}")
+            raw_flow.train()
+        # ---- ONLINE gen-eval (rank-0 only via gen_eval_ctx; sparse; NEVER aborts training) ----
+        if gen_eval_ctx is not None and (epoch + 1) % args.gen_eval_every == 0:
+            raw_flow.eval()
+            try:
+                _rep = gen_eval_ctx["run"](
+                    flow=raw_flow, tokenizer=tokenizer, core=gen_eval_ctx["core"],
+                    t5_encode_batch=gen_eval_ctx["t5_encode_batch"], ds=gen_eval_ctx["ds"],
+                    idxs=gen_eval_ctx["idxs"], dev=dev, stride=gen_eval_ctx["stride"],
+                    pool=32, steps=args.gen_eval_steps, cfg_scale=args.eval_cond_scale,
+                    num_frames=gen_eval_ctx["num_frames"], gen_batch=32, seed=args.seed, log=log)
+                _o = _rep["overall"]; _rr = _o.get("rprec_text_to_gen") or {}
+                _msg = (f"  [gen-eval] ep{epoch} overall R@1={_rr.get(1)} R@2={_rr.get(2)} "
+                        f"R@3={_rr.get(3)} match={_o.get('matching_mean'):.3f}")
+                for _s, _m in _rep.get("per_subset", {}).items():
+                    _r2 = _m.get("rprec_text_to_gen") or {}
+                    _msg += f" | {_s} R@1={_r2.get(1)}(n={_m.get('n')})"
+                log(_msg)
+                with open(metrics_path, "a") as f:
+                    f.write(json.dumps({"epoch": epoch, "n_iter": n_iter, "gen_eval": _rep}) + "\n")
+            except Exception as _e:
+                import traceback
+                log(f"  [gen-eval] FAILED ep{epoch} (skipped, training continues): {_e}\n{traceback.format_exc()}")
             raw_flow.train()
         if is_ddp:
             dist.barrier()
