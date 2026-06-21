@@ -318,6 +318,9 @@ def main() -> int:
                    help="strided subset size per gen-eval (small to bound cost; <1024 => FID skipped).")
     p.add_argument("--gen_eval_steps", type=int, default=25,
                    help="ODE steps for the online gen-eval (cheaper than --eval_steps).")
+    p.add_argument("--gen_eval_batch", type=int, default=8,
+                   help="clips per batched flow.sample in the online gen-eval (proven-safe "
+                        "on H100/H200 alongside the resident backbone; raise only if memory allows).")
     # logging / ckpt
     p.add_argument("--log_every", type=int, default=50)
     p.add_argument("--qa_every", type=int, default=200,
@@ -751,7 +754,7 @@ def main() -> int:
                     t5_encode_batch=gen_eval_ctx["t5_encode_batch"], ds=gen_eval_ctx["ds"],
                     idxs=gen_eval_ctx["idxs"], dev=dev, stride=gen_eval_ctx["stride"],
                     pool=32, steps=args.gen_eval_steps, cfg_scale=args.eval_cond_scale,
-                    num_frames=gen_eval_ctx["num_frames"], gen_batch=32, seed=args.seed, log=log)
+                    num_frames=gen_eval_ctx["num_frames"], gen_batch=args.gen_eval_batch, seed=args.seed, log=log)
                 _o = _rep["overall"]; _rr = _o.get("rprec_text_to_gen") or {}
                 _msg = (f"  [gen-eval] ep{epoch} overall R@1={_rr.get(1)} R@2={_rr.get(2)} "
                         f"R@3={_rr.get(3)} match={_o.get('matching_mean'):.3f}")
