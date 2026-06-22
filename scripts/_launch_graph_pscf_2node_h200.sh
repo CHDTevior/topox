@@ -63,6 +63,13 @@ SEED="${SEED:-42}"
 EMPIRICAL_MAX="${EMPIRICAL_MAX:-0}"     # 0 = full-set empirical z_q norm (real run); cap for SMOKE
 RESUME_CKPT="${RESUME_CKPT:-}"
 OVERWRITE="${OVERWRITE:-1}"             # 0 for in-place resume into the run's OWN dir
+# Online text->motion gen-eval (opt-in): non-empty GEN_EVAL forwards the hook flags to
+# the inner launcher -> train_graph_codeflow.py. Off by default (existing behavior unchanged).
+GEN_EVAL="${GEN_EVAL:-}"
+EVALUATOR_CKPT="${EVALUATOR_CKPT:-}"
+GEN_EVAL_EVERY="${GEN_EVAL_EVERY:-50}"
+GEN_EVAL_N="${GEN_EVAL_N:-256}"
+GEN_EVAL_BATCH="${GEN_EVAL_BATCH:-8}"
 OUT="${OUT:?set OUT (use /tmp/gpscf_h200_smoke for smoke, runs/... for real)}"
 
 # In-place resume guard (train_graph_codeflow.py) requires the resume ckpt's parent
@@ -90,6 +97,7 @@ BATCH_SIZE=$BATCH_SIZE LR=$LR TOKEN_CACHE=$TOKEN_CACHE FROZEN_CKPT=$FROZEN_CKPT 
 EPOCHS=$EPOCHS WARMUP_STEPS=$WARMUP_STEPS DEPTH_DOUBLE=$DEPTH_DOUBLE DEPTH_SINGLE=$DEPTH_SINGLE \
 MAX_T_LAT=$MAX_T_LAT COND_DROP_PROB=$COND_DROP_PROB AMP_DTYPE=$AMP_DTYPE NUM_WORKERS=$NUM_WORKERS \
 LOG_EVERY=$LOG_EVERY QA_EVERY=$QA_EVERY SAVE_EVERY=$SAVE_EVERY SEED=$SEED \
+GEN_EVAL=$GEN_EVAL EVALUATOR_CKPT=$EVALUATOR_CKPT GEN_EVAL_EVERY=$GEN_EVAL_EVERY GEN_EVAL_N=$GEN_EVAL_N GEN_EVAL_BATCH=$GEN_EVAL_BATCH \
 EMPIRICAL_MAX=$EMPIRICAL_MAX RESUME_CKPT=$RESUME_CKPT OVERWRITE=$OVERWRITE OUT=$OUT SMOKE=$SMOKE"
 
 echo "[gpscf-h200] $(date '+%F %T %Z') cross-NODE 4-card H200 DDP: $JOB_A($MASTER_NODE,r0)+$JOB_B($WORKER_NODE,r1) via $RDZV_HOST:$RDZV_PORT smoke=$SMOKE"

@@ -49,10 +49,22 @@ EMPIRICAL_MAX="${EMPIRICAL_MAX:-0}"     # 0 = full train-set empirical z_q norm 
 RESUME_CKPT="${RESUME_CKPT:-}"          # FULL resume (model+optimizer+epoch+step)
 OUT="${OUT:?set OUT}"
 OVERWRITE="${OVERWRITE:-1}"
+# Online text->motion gen-eval (opt-in): non-empty GEN_EVAL enables the trainer's
+# frozen-evaluator hook. Off by default -> existing behavior byte-unchanged.
+GEN_EVAL="${GEN_EVAL:-}"
+EVALUATOR_CKPT="${EVALUATOR_CKPT:-}"
+GEN_EVAL_EVERY="${GEN_EVAL_EVERY:-50}"
+GEN_EVAL_N="${GEN_EVAL_N:-256}"
+GEN_EVAL_BATCH="${GEN_EVAL_BATCH:-8}"
 
 GLOBAL=$(( BATCH_SIZE * NNODES * NPROC_PER_NODE ))
 SMOKE_FLAG=""; [ "$SMOKE" = 1 ] && SMOKE_FLAG="--smoke"
 OVERWRITE_FLAG=""; [ "$OVERWRITE" = 1 ] && OVERWRITE_FLAG="--overwrite"
+GEN_EVAL_ARGS=""
+if [ -n "$GEN_EVAL" ]; then
+    [ -n "$EVALUATOR_CKPT" ] || { echo "[gpscf] FAIL: GEN_EVAL set but EVALUATOR_CKPT empty"; exit 2; }
+    GEN_EVAL_ARGS="--gen_eval --evaluator_ckpt $EVALUATOR_CKPT --gen_eval_every $GEN_EVAL_EVERY --gen_eval_n $GEN_EVAL_N --gen_eval_batch $GEN_EVAL_BATCH"
+fi
 mkdir -p "$OUT"
 export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
 export CUDA_VISIBLE_DEVICES="$CVD"
@@ -90,6 +102,7 @@ echo "[gpscf] resume=${RESUME_CKPT:-<none>}"
   --amp_dtype "$AMP_DTYPE" --seed "$SEED" --num_workers "$NUM_WORKERS" \
   --empirical_stats_max_clips "$EMPIRICAL_MAX" \
   --log_every "$LOG_EVERY" --qa_every "$QA_EVERY" --save_every "$SAVE_EVERY" \
+  $GEN_EVAL_ARGS \
   ${RESUME_CKPT:+--resume "$RESUME_CKPT"} \
   --out "$OUT" $OVERWRITE_FLAG $SMOKE_FLAG
 rc=$?
