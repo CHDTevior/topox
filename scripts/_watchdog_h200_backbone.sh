@@ -39,6 +39,11 @@ EVALUATOR_CKPT="${EVALUATOR_CKPT:-runs/anytop_t2m_evaluator_distilbert_coemb512_
 GEN_EVAL_EVERY="${GEN_EVAL_EVERY:-50}"
 GEN_EVAL_N="${GEN_EVAL_N:-256}"
 GEN_EVAL_BATCH="${GEN_EVAL_BATCH:-8}"
+# Late-phase human-upsampling curriculum, forwarded on resume. Default OFF (factor 1.0 /
+# start -1); flip ON by restarting THIS watchdog with HUMAN_UPSAMPLE_FACTOR=2
+# HUMAN_UPSAMPLE_START_EPOCH=300 once the design doc is approved.
+HUMAN_UPSAMPLE_FACTOR="${HUMAN_UPSAMPLE_FACTOR:-1.0}"
+HUMAN_UPSAMPLE_START_EPOCH="${HUMAN_UPSAMPLE_START_EPOCH:--1}"
 mkdir -p "$P/.aris/meta"
 
 # Fail-fast guard: never resume an L4safeHuman/n8192 run with mismatched cache/ckpt
@@ -169,7 +174,7 @@ resume() {
     # launch detached; the launcher writes its PID to .aris/meta/.gpscf_h200_orch.pid AFTER
     # acquiring flock. rm that pidfile first, launch, then 8s later confirm the PID is alive
     # AND is the launcher (PID-based, so it cannot false-match the ssh wrapper's own argv).
-    out=$(timeout 80 ssh "$mn" "cd $P && rm -f .aris/meta/.gpscf_h200_orch.pid && setsid nohup env JOB_A=$mj JOB_B=$wj MASTER_NODE=$mn WORKER_NODE=$wn RDZV_HOST=$mip NCCL_SOCKET_IFNAME=$mface NCCL_IB_HCA=$mhca BATCH_SIZE=$BATCH_SIZE LR=$LR FROZEN_CKPT=$FROZEN_CKPT TOKEN_CACHE=$TOKEN_CACHE GEN_EVAL=$GEN_EVAL EVALUATOR_CKPT=$EVALUATOR_CKPT GEN_EVAL_EVERY=$GEN_EVAL_EVERY GEN_EVAL_N=$GEN_EVAL_N GEN_EVAL_BATCH=$GEN_EVAL_BATCH RESUME_CKPT=last_model.pt OVERWRITE=0 OUT=$OUT_REL bash scripts/_launch_graph_pscf_2node_h200.sh > $OUT/orch_resume_wd.log 2>&1 </dev/null & sleep 8; pid=\$(cat .aris/meta/.gpscf_h200_orch.pid 2>/dev/null || true); { [ -n \"\$pid\" ] && ps -p \"\$pid\" -o args= 2>/dev/null | grep -qF '_launch_graph_pscf_2node_h200.sh'; } && echo STARTED || echo DIEDFAST" 2>/dev/null)
+    out=$(timeout 80 ssh "$mn" "cd $P && rm -f .aris/meta/.gpscf_h200_orch.pid && setsid nohup env JOB_A=$mj JOB_B=$wj MASTER_NODE=$mn WORKER_NODE=$wn RDZV_HOST=$mip NCCL_SOCKET_IFNAME=$mface NCCL_IB_HCA=$mhca BATCH_SIZE=$BATCH_SIZE LR=$LR FROZEN_CKPT=$FROZEN_CKPT TOKEN_CACHE=$TOKEN_CACHE GEN_EVAL=$GEN_EVAL EVALUATOR_CKPT=$EVALUATOR_CKPT GEN_EVAL_EVERY=$GEN_EVAL_EVERY GEN_EVAL_N=$GEN_EVAL_N GEN_EVAL_BATCH=$GEN_EVAL_BATCH HUMAN_UPSAMPLE_FACTOR=$HUMAN_UPSAMPLE_FACTOR HUMAN_UPSAMPLE_START_EPOCH=$HUMAN_UPSAMPLE_START_EPOCH RESUME_CKPT=last_model.pt OVERWRITE=0 OUT=$OUT_REL bash scripts/_launch_graph_pscf_2node_h200.sh > $OUT/orch_resume_wd.log 2>&1 </dev/null & sleep 8; pid=\$(cat .aris/meta/.gpscf_h200_orch.pid 2>/dev/null || true); { [ -n \"\$pid\" ] && ps -p \"\$pid\" -o args= 2>/dev/null | grep -qF '_launch_graph_pscf_2node_h200.sh'; } && echo STARTED || echo DIEDFAST" 2>/dev/null)
     if [ "$out" = STARTED ]; then
         log "RESUME launched OK on $mn (orchestrator PID alive after 8s); sleep 600 before next check"; return 0
     else

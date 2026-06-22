@@ -66,6 +66,63 @@ def _ddp_setup():
     return True, rank, local_rank, world_size, rank == 0
 
 
+class HumanCurriculumSampler(torch.utils.data.Sampler):
+    """DDP-aware train sampler with a LATE-PHASE human-upsampling curriculum.
+
+    - epoch < start_epoch (or factor<=1): behaves EXACTLY like a shuffled, drop_last
+      DistributedSampler — a per-epoch-seeded permutation, per-rank strided shard.
+    - epoch >= start_epoch: EACH RANK independently draws its own num_samples indices
+      by weighted sampling WITH REPLACEMENT (human/HML3D weight = factor, others = 1),
+      using a PER-RANK seed (seed + epoch*1009 + rank). Independent per-rank draws avoid
+      the systematic cross-rank duplication a shared-draw+stride would cause under
+      replacement (which would over-count popular human indices across ranks and inflate
+      the effective upweighting); the global per-step human share stays ~factor-upweighted.
+    Deterministic per (seed, epoch[, rank]); reseeded each set_epoch. __len__ is equal on
+    all ranks. With num_replicas=1/rank=0 it also serves the single-process (non-DDP) path.
+    """
+    def __init__(self, n, is_human, factor, start_epoch, num_replicas, rank, seed=42):
+        self.n = int(n)
+        self.is_human = torch.as_tensor(list(is_human), dtype=torch.bool)
+        self.factor = float(factor)
+        self.start_epoch = int(start_epoch)
+        self.num_replicas = max(1, int(num_replicas))
+        self.rank = int(rank)
+        self.seed = int(seed)
+        self.epoch = 0
+        self.num_samples = self.n // self.num_replicas          # drop_last
+        self.total_size = self.num_samples * self.num_replicas
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    def __len__(self):
+        return self.num_samples
+
+    def _active(self):
+        return self.factor > 1.0 and self.start_epoch >= 0 and self.epoch >= self.start_epoch
+
+    def __iter__(self):
+        if not self._active():
+            # OFF / pre-curriculum: IDENTICAL to DistributedSampler(shuffle=True, drop_last=True)
+            # — one permutation SHARED across ranks (seed+epoch, no rank), then per-rank disjoint
+            # strided shard. Ranks see disjoint indices (the no-duplicate invariant holds).
+            g = torch.Generator(); g.manual_seed(self.seed + self.epoch)
+            idx = torch.randperm(self.n, generator=g)[:self.total_size]
+            idx = idx[self.rank:self.total_size:self.num_replicas]
+        else:
+            # active: each rank draws its OWN num_samples from the human-upweighted distribution
+            # with a PER-RANK seed. NOT a shared draw + stride: with replacement, a shared draw would
+            # place popular (human) indices at positions that fall to multiple ranks, systematically
+            # duplicating them across ranks and inflating the effective upweighting beyond `factor`.
+            # Independent per-rank draws keep the global per-step human share ~factor-upweighted;
+            # random cross-rank repeats remain possible but are rare, not systematic. __len__ equal.
+            g = torch.Generator(); g.manual_seed(self.seed + self.epoch * 1009 + self.rank)
+            w = torch.ones(self.n, dtype=torch.float)
+            w[self.is_human] = self.factor
+            idx = torch.multinomial(w, self.num_samples, replacement=True, generator=g)
+        return iter(idx.tolist())
+
+
 def load_frozen_tokenizer(ckpt_path: str, dev: torch.device) -> GraphVQTokenizer:
     """Rebuild + freeze the Graph-VQVAE tokenizer (for the snapped-decode QA +
     empirical-norm decode path). eval() + requires_grad_(False)."""
@@ -292,6 +349,14 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--amp_dtype", choices=["fp32", "bf16"], default="bf16")
     p.add_argument("--num_workers", type=int, default=8)
+    p.add_argument("--human_upsample_factor", type=float, default=1.0,
+                   help="LATE-PHASE CURRICULUM: once epoch >= --human_upsample_start_epoch, upweight "
+                        "human (HML3D) clips by this factor in the train sampler. 1.0 (default) = OFF "
+                        "(byte-unchanged: plain DistributedSampler). factor=2 raises human per-batch "
+                        "share from the dataset's ~25%% base to ~40%%.")
+    p.add_argument("--human_upsample_start_epoch", type=int, default=-1,
+                   help="epoch at which human upsampling activates (-1 = never). Only relevant if "
+                        "--human_upsample_factor > 1.")
     p.add_argument("--empirical_stats_max_clips", type=int, default=0,
                    help="0 (default) = use ALL train clips for the empirical z_q "
                         "norm (LOCKED: full train-set stats). A positive value caps "
@@ -509,8 +574,19 @@ def main() -> int:
             dist.destroy_process_group()
         return 0
 
-    train_sampler = (DistributedSampler(ds_train, shuffle=True, drop_last=True)
-                     if is_ddp else None)
+    if args.human_upsample_factor > 1.0:
+        _is_human = [str(r.get("motion_id", "")).upper().startswith("HML") for r in ds_train.rows]
+        _nh, _nt = sum(_is_human), len(_is_human)
+        _tgt = args.human_upsample_factor * _nh / max(1, args.human_upsample_factor * _nh + (_nt - _nh))
+        log(f"[human-upsample] curriculum ON: factor={args.human_upsample_factor} "
+            f"start_epoch={args.human_upsample_start_epoch}; human={_nh}/{_nt} "
+            f"({100*_nh/max(1,_nt):.1f}%) -> ~{100*_tgt:.0f}% per batch once epoch>=start_epoch")
+        train_sampler = HumanCurriculumSampler(
+            len(ds_train), _is_human, args.human_upsample_factor, args.human_upsample_start_epoch,
+            num_replicas=(world_size if is_ddp else 1), rank=(rank if is_ddp else 0), seed=args.seed)
+    else:
+        train_sampler = (DistributedSampler(ds_train, shuffle=True, drop_last=True)
+                         if is_ddp else None)
     nw = max(0, args.num_workers)
     dl_train = DataLoader(
         ds_train, batch_size=args.batch_size, shuffle=(train_sampler is None),
@@ -641,8 +717,8 @@ def main() -> int:
                 torch.cuda.set_rng_state_all(_rng_cuda)
 
     for epoch in range(start_epoch, n_epochs):
-        if is_ddp:
-            train_sampler.set_epoch(epoch)
+        if train_sampler is not None and hasattr(train_sampler, "set_epoch"):
+            train_sampler.set_epoch(epoch)   # DistributedSampler + HumanCurriculumSampler both need this
         flow.train()
         t0 = time.time()
         run_sum, run_cnt = 0.0, 0

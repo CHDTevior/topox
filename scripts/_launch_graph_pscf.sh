@@ -56,6 +56,9 @@ EVALUATOR_CKPT="${EVALUATOR_CKPT:-}"
 GEN_EVAL_EVERY="${GEN_EVAL_EVERY:-50}"
 GEN_EVAL_N="${GEN_EVAL_N:-256}"
 GEN_EVAL_BATCH="${GEN_EVAL_BATCH:-8}"
+# Late-phase human-upsampling curriculum (opt-in): factor 1.0 / start -1 = OFF (unchanged).
+HUMAN_UPSAMPLE_FACTOR="${HUMAN_UPSAMPLE_FACTOR:-1.0}"
+HUMAN_UPSAMPLE_START_EPOCH="${HUMAN_UPSAMPLE_START_EPOCH:--1}"
 
 GLOBAL=$(( BATCH_SIZE * NNODES * NPROC_PER_NODE ))
 SMOKE_FLAG=""; [ "$SMOKE" = 1 ] && SMOKE_FLAG="--smoke"
@@ -109,6 +112,7 @@ echo "[gpscf] resume=${RESUME_CKPT:-<none>}"
   --amp_dtype "$AMP_DTYPE" --seed "$SEED" --num_workers "$NUM_WORKERS" \
   --empirical_stats_max_clips "$EMPIRICAL_MAX" \
   --log_every "$LOG_EVERY" --qa_every "$QA_EVERY" --save_every "$SAVE_EVERY" \
+  --human_upsample_factor "$HUMAN_UPSAMPLE_FACTOR" --human_upsample_start_epoch "$HUMAN_UPSAMPLE_START_EPOCH" \
   $GEN_EVAL_ARGS \
   ${RESUME_CKPT:+--resume "$RESUME_CKPT"} \
   --out "$OUT" $OVERWRITE_FLAG $SMOKE_FLAG
