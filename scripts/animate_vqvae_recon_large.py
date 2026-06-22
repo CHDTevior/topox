@@ -163,11 +163,12 @@ def render_panel(positions, parents, fi, transform, size, title, color, lw, jr,
     return image
 
 
-def make_frame_2panel(gt, recon, parents, fi, transform, cell, lw, jr, label, font):
+def make_frame_2panel(gt, recon, parents, fi, transform, cell, lw, jr, label, font,
+                      titles=("GT (truth)", "RECON (VQVAE)")):
     W, H = cell
     image = Image.new("RGB", (W * 2, H), "white")
-    series = [(gt, "GT (truth)", GT_COLOR, True),
-              (recon, "RECON (VQVAE)", RECON_COLOR, False)]
+    series = [(gt, titles[0], GT_COLOR, True),
+              (recon, titles[1], RECON_COLOR, False)]
     for k, (positions, title, color, axes) in enumerate(series):
         s = positions.copy()
         root = s[fi, 0].copy()           # per-panel root-centered (animal stays centered)
@@ -205,6 +206,10 @@ def main():
     ap.add_argument("--label", type=int, default=1, help="1=draw joint-index labels, 0=dots only")
     ap.add_argument("--font_size", type=int, default=13)
     ap.add_argument("--amp_dtype", choices=["fp32", "bf16"], default=None)
+    ap.add_argument("--gt_fk_vs_ric", action="store_true",
+                    help="DIAGNOSTIC (no VQVAE recon shown): render GT via rot6d->FK (left) vs GT via "
+                         "RIC-position (right) — visualizes the GT rot6d-FK faithfulness / gt_fk_mismatch "
+                         "floor. Forces render_from=fk for the GT-FK panel; right panel is GT-RIC.")
     ap.add_argument("--render_from", choices=["fk", "position"], default="fk",
                     help="'fk' = rot6d(ch3:9)->FK on bone offsets (recover_from_bvh_rot_np, "
                          "historical default); 'position' = RIC(ch0:3) world-position route "
@@ -286,14 +291,19 @@ def main():
             # 'position' = RIC(ch0:3) world route (_recover_world_positions) for BOTH GT+recon,
             # the SAME function the backbone gen QA uses (consistency + no human FK floor).
             gt_ric = _recover_world_positions(gt_raw).astype(np.float64)        # RIC route (also self-check ref)
-            if args.render_from == "position":
+            if args.gt_fk_vs_ric:
+                # DIAGNOSTIC: GT-FK (left) vs GT-RIC (right), independent of --render_from
+                # (force the FK route for the LEFT panel; recon is not shown).
+                gt_world = recover_from_bvh_rot_np(gt_raw, parents, offsets).astype(np.float64)
+                pred_world = gt_ric.copy()
+            elif args.render_from == "position":
                 pred_world = _recover_world_positions(pred_raw).astype(np.float64)
                 gt_world = gt_ric
             else:
                 pred_world = recover_from_bvh_rot_np(pred_raw, parents, offsets).astype(np.float64)
                 gt_world = recover_from_bvh_rot_np(gt_raw, parents, offsets).astype(np.float64)
             gtbbox = np.linalg.norm(gt_ric.reshape(-1, 3).max(0) - gt_ric.reshape(-1, 3).min(0))
-            gt_selfcheck = float(np.linalg.norm(gt_world - gt_ric, axis=-1).mean())  # ~0 in position mode
+            gt_selfcheck = float(np.linalg.norm(gt_world - gt_ric, axis=-1).mean())  # ~0 in position mode; =GT-FK-vs-RIC mismatch in gt_fk_vs_ric mode
             recon_l2 = float(np.linalg.norm(pred_world - gt_world, axis=-1).mean())
 
             # ground-normalize each (y min -> 0) so both panels share the floor.
@@ -310,15 +320,20 @@ def main():
                 ps += [c[k] for k in idxs]
             transform = compute_transform(ps, cell, args.pad, args.zoom)
 
+            _titles = (("GT rot6d->FK", "GT RIC-pos") if args.gt_fk_vs_ric
+                       else ("GT (truth)", "RECON (VQVAE)"))
             frames = [make_frame_2panel(gt_world, pred_world, parents, k, transform, cell,
-                                        args.line_width, args.joint_radius, bool(args.label), font)
+                                        args.line_width, args.joint_radius, bool(args.label), font,
+                                        titles=_titles)
                       for k in idxs]
-            out_path = out_dir / f"{sp}_clip{picked[sp]}_gtvsrecon_large.gif"
+            _suffix = "GTfk_vs_GTric" if args.gt_fk_vs_ric else "gtvsrecon"
+            out_path = out_dir / f"{sp}_clip{picked[sp]}_{_suffix}_large.gif"
             dur = int(round(1000.0 / max(args.fps, 1e-6)))
             frames[0].save(out_path, save_all=True, append_images=frames[1:],
                            duration=dur, loop=0, optimize=True)
-            line = (f"{sp} clip{picked[sp]}: J={J} T={T} recon_L2={recon_l2:.4f} "
-                    f"GT_selfcheck_L2={gt_selfcheck:.2e} -> {out_path.name} "
+            _metric = (f"GTfk_vs_GTric_L2={recon_l2:.4f}" if args.gt_fk_vs_ric
+                       else f"recon_L2={recon_l2:.4f} GT_selfcheck_L2={gt_selfcheck:.2e}")
+            line = (f"{sp} clip{picked[sp]}: J={J} T={T} {_metric} -> {out_path.name} "
                     f"({cell[0]*2}x{cell[1]}, {len(frames)}f)")
             print(line, flush=True)
             summary.append(line)
