@@ -66,6 +66,13 @@ if [ -n "$GEN_EVAL" ]; then
     GEN_EVAL_ARGS="--gen_eval --evaluator_ckpt $EVALUATOR_CKPT --gen_eval_every $GEN_EVAL_EVERY --gen_eval_n $GEN_EVAL_N --gen_eval_batch $GEN_EVAL_BATCH"
 fi
 mkdir -p "$OUT"
+# Compute nodes have NO internet: force HF/transformers offline so the online gen-eval's
+# DistilBERT(local path) + T5(local HF cache) load from disk instead of hitting HF Hub
+# (else "Cannot send a request, client closed" -> gen-eval silently DISABLED). Harmless
+# off-path (the backbone trainer itself loads no HF model). Covers manual + watchdog-resume.
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
 export CUDA_VISIBLE_DEVICES="$CVD"
 
