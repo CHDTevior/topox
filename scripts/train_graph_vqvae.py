@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.data.anytop_dataset import AnyTopDataset, collate_fn as anytop_collate_fn
+from src.data.human_curriculum_sampler import HumanCurriculumSampler
 from src.models.graph_salad.batch import GraphMotionBatch
 from src.models.vq_model import (
     GraphVQTokenizer,
@@ -328,6 +329,14 @@ def main() -> int:
                         "(val uses max(1, num_workers//2)). Default 12: swarmh1002 has "
                         "32 CPU / 2 ranks → 24/32 used; swarma1004 has 64 CPU. Raise on "
                         "higher-core nodes; lower if CPU-contended.")
+    p.add_argument("--human_upsample_factor", type=float, default=1.0,
+                   help="CURRICULUM: once epoch >= --human_upsample_start_epoch, upweight human "
+                        "(object_type HML*) clips by this factor in the train sampler. 1.0 (default) "
+                        "= OFF (byte-unchanged: plain DistributedSampler). factor=4.5 raises human "
+                        "per-batch share from the L4safeHuman ~24.8%% base to ~60%%.")
+    p.add_argument("--human_upsample_start_epoch", type=int, default=-1,
+                   help="epoch at which human upsampling activates (-1 = never). Only relevant if "
+                        "--human_upsample_factor > 1.")
     p.add_argument("--save_every", type=int, default=10)
     p.add_argument("--periodic_save_every", type=int, default=25,
                    help="Also save a PRESERVED snapshot named ep{N}_model.pt every "
@@ -452,8 +461,19 @@ def main() -> int:
     if len(ds_val) == 0:
         raise RuntimeError("[DATA FAIL] val empty.")
 
-    train_sampler = (DistributedSampler(ds_train, shuffle=True, drop_last=True)
-                     if is_ddp else None)
+    if args.human_upsample_factor > 1.0:
+        _is_human = [str(s.get("object_type", "")).upper().startswith("HML") for s in ds_train.samples]
+        _nh, _nt = sum(_is_human), len(_is_human)
+        _tgt = args.human_upsample_factor * _nh / max(1, args.human_upsample_factor * _nh + (_nt - _nh))
+        log(f"[human-upsample] curriculum ON: factor={args.human_upsample_factor} "
+            f"start_epoch={args.human_upsample_start_epoch}; human={_nh}/{_nt} "
+            f"({100*_nh/max(1,_nt):.1f}%) -> ~{100*_tgt:.0f}% per batch once epoch>=start_epoch")
+        train_sampler = HumanCurriculumSampler(
+            len(ds_train), _is_human, args.human_upsample_factor, args.human_upsample_start_epoch,
+            num_replicas=(world_size if is_ddp else 1), rank=(rank if is_ddp else 0), seed=args.seed)
+    else:
+        train_sampler = (DistributedSampler(ds_train, shuffle=True, drop_last=True)
+                         if is_ddp else None)
     # num_workers>0 is required for prefetch_factor / persistent_workers (PyTorch
     # raises otherwise). Default (12) always >0; the num_workers==0 path is only an
     # explicit-opt-out edge case, so gate both kwargs on it.
@@ -608,8 +628,8 @@ def main() -> int:
     # do NOT reset them here. start_epoch is 0 for a fresh run, ckpt.epoch+1 on resume.
 
     for epoch in range(start_epoch, n_epochs):
-        if is_ddp:
-            train_sampler.set_epoch(epoch)
+        if train_sampler is not None and hasattr(train_sampler, "set_epoch"):
+            train_sampler.set_epoch(epoch)   # DistributedSampler + HumanCurriculumSampler both need this
         model.train()
         t0 = time.time()
         # GPU-side detached running sums (per loss key) + step counter for the EXACT

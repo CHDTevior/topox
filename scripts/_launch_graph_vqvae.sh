@@ -54,6 +54,9 @@ MAX_FRAMES="${MAX_FRAMES:-64}"
 # default, so existing callers (baseline n512 run, 6-card orchestrator) are
 # unchanged. The codebook-size ablation sets NUM_CODES=1024 / 2048.
 NUM_CODES="${NUM_CODES:-512}"
+# Human-upsampling curriculum (opt-in): factor 1.0 / start -1 = OFF (unchanged).
+HUMAN_UPSAMPLE_FACTOR="${HUMAN_UPSAMPLE_FACTOR:-1.0}"
+HUMAN_UPSAMPLE_START_EPOCH="${HUMAN_UPSAMPLE_START_EPOCH:--1}"
 RESUME_CKPT="${RESUME_CKPT:-}"          # FULL resume (model+optimizer+epoch+step)
 OUT="${OUT:?set OUT}"
 
@@ -107,6 +110,7 @@ echo "[vqvae] resume=${RESUME_CKPT:-<none>}"
   --log_every "$LOG_EVERY" --qa_every "$QA_EVERY" \
   --save_every "$SAVE_EVERY" --periodic_save_every "$PERIODIC_SAVE_EVERY" \
   --epochs "$EPOCHS" \
+  --human_upsample_factor "$HUMAN_UPSAMPLE_FACTOR" --human_upsample_start_epoch "$HUMAN_UPSAMPLE_START_EPOCH" \
   ${RESUME_CKPT:+--resume "$RESUME_CKPT"} \
   --out "$OUT" $OVERWRITE_FLAG $SMOKE_FLAG
 rc=$?
