@@ -37,6 +37,15 @@ def parse_args():
     ap.add_argument("--val_manifest", required=True)
     ap.add_argument("--data_root", required=True)
     ap.add_argument("--n_samples", type=int, default=0, help="subset size (strided over the kept set for species spread); 0=full.")
+    ap.add_argument("--balanced", action="store_true",
+                    help="BALANCED subset: take --n_samples//2 animal (motion_id PZ_) + --n_samples//2 human "
+                         "(HML), strided WITHIN each class, so the per-subset R@k are computed on equal, "
+                         "larger samples (stable human R@k; fixes the natural-distribution n=69 human noise). "
+                         "Requires --n_samples>0; a class with fewer clips than n_samples//2 contributes all it has.")
+    ap.add_argument("--gt_baseline", action="store_true",
+                    help="GT BASELINE/CEILING: skip generation; gallery = GT motion embedding so the reported "
+                         "rprec_text_to_gen IS the text->GT R-precision (the upper bound a generator can reach). "
+                         "Fast (no ODE sampling). Pair with --balanced --n_samples for the equal animal/human ceiling.")
     ap.add_argument("--exclude_truebones", action="store_true",
                     help="restrict eval to animo4d (motion_id startswith PZ_); drop truebones — the "
                          "evaluator is weak on the scarce truebones (sanity R@1 0.48 vs animo4d 0.96) "
@@ -130,17 +139,32 @@ def main():
     if args.exclude_truebones:
         cand = [i for i in cand if str(ds._plan[i][1]["motion_id"]).startswith("PZ_")]
         print(f"[gen-eval] exclude_truebones: dropped {n_tb} non-PZ, kept {len(cand)} animo4d", flush=True)
-    n_take = len(cand) if (not args.n_samples or args.n_samples >= len(cand)) else args.n_samples
-    idxs = cand[::max(1, len(cand) // n_take)][:n_take]                 # strided for species spread
-    print(f"[gen-eval] val {n_total} (non-PZ={n_tb}); generating {len(idxs)} | "
+    def _stride(lst, k):
+        return lst if k >= len(lst) else lst[::max(1, len(lst) // k)][:k]   # even spread to ~k items
+    if args.balanced:
+        if not args.n_samples or args.n_samples <= 0:
+            raise SystemExit("[gen-eval] --balanced requires --n_samples>0 (split half animal / half human)")
+        per = args.n_samples // 2
+        animal_cand = [i for i in cand if str(ds._plan[i][1]["motion_id"]).startswith("PZ_")]
+        human_cand = [i for i in cand if str(ds._plan[i][1]["motion_id"]).startswith("HML")]
+        a_sel, h_sel = _stride(animal_cand, per), _stride(human_cand, per)
+        idxs = a_sel + h_sel
+        print(f"[gen-eval] BALANCED: {len(a_sel)} animal + {len(h_sel)} human "
+              f"(target {per}+{per}; avail {len(animal_cand)} animal/{len(human_cand)} human)", flush=True)
+    else:
+        n_take = len(cand) if (not args.n_samples or args.n_samples >= len(cand)) else args.n_samples
+        idxs = cand[::max(1, len(cand) // n_take)][:n_take]                 # strided for species spread
+    print(f"[gen-eval] val {n_total} (non-PZ={n_tb}); {'GT-baseline on' if args.gt_baseline else 'generating'} {len(idxs)} | "
           f"steps={args.steps} cfg={args.cfg_scale} nf={args.num_frames}", flush=True)
 
     report = run_gen_eval(
         flow=flow, tokenizer=tokenizer, core=core, t5_encode_batch=t5_encode_batch,
         ds=ds, idxs=idxs, dev=dev, stride=stride, pool=args.pool, steps=args.steps,
         cfg_scale=args.cfg_scale, num_frames=args.num_frames, gen_batch=args.gen_batch,
-        fid_min=args.fid_min, max_div_pairs=args.max_div_pairs, seed=args.seed)
-    report.update({"flow_ckpt": args.flow_ckpt, "flow_epoch": fck.get("epoch"), "eval_ckpt": args.eval_ckpt})
+        fid_min=args.fid_min, max_div_pairs=args.max_div_pairs, seed=args.seed,
+        gt_baseline=args.gt_baseline)
+    report.update({"flow_ckpt": args.flow_ckpt, "flow_epoch": fck.get("epoch"), "eval_ckpt": args.eval_ckpt,
+                   "gt_baseline": bool(args.gt_baseline), "balanced": bool(args.balanced)})
 
     def _rr(m):
         rr = m.get("rprec_text_to_gen")

@@ -107,7 +107,7 @@ def motion_id_bucket(mid: str) -> str:
 @torch.no_grad()
 def run_gen_eval(*, flow, tokenizer, core, t5_encode_batch, ds, idxs, dev, stride,
                  pool=32, steps=25, cfg_scale=4.0, num_frames=300, gen_batch=32,
-                 fid_min=1024, max_div_pairs=20000, seed=42, log=print):
+                 fid_min=1024, max_div_pairs=20000, seed=42, gt_baseline=False, log=print):
     """Generate text->motion for ds[idxs], decode continuous, embed with the frozen
     evaluator, return a report dict {n, overall, per_subset{animal/human/...}}.
 
@@ -132,6 +132,15 @@ def run_gen_eval(*, flow, tokenizer, core, t5_encode_batch, ds, idxs, dev, strid
             caps = [it.get("caption_text") or "" for it in items]
             coll = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in collate_fn(items).items()}
             batch = GraphMotionBatch.from_collate_dict(coll)                  # collate pads J/T over the batch
+            if gt_baseline:
+                # GT BASELINE (ceiling): no generation — gallery = GT motion embedding, so
+                # rprec_text_to_gen == text->GT R-precision (the upper bound the generator chases).
+                gte = core.encode_motion(batch).float().cpu()
+                GE.append(gte); GTE.append(gte); TE.append(core.encode_text(caps).float().cpu())
+                mids.extend(str(ds._plan[di][1]["motion_id"]) for di in bidx)
+                done += len(items)
+                log(f"[gen-eval] GT-baseline {done}/{len(idxs)} embedded (B={len(items)})")
+                continue
             gl, tok, msk = t5_encode_batch(caps)                             # [b,768],[b,L,768],[b,L]
             batch.caption_emb = gl; batch.caption_token_emb = tok; batch.caption_token_mask = msk
             batch.has_text = torch.ones(len(items), dtype=torch.bool, device=dev)  # all-True for CFG at eval
