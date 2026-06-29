@@ -41,9 +41,11 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.data.anytop_dataset import AnyTopDataset, collate_fn
+from src.data.anytop_dataset import AnyTopDataset, collate_fn, _STD_FLOOR
 from src.models.graph_salad.batch import GraphMotionBatch
 from src.models.graph_salad.t2m_evaluator import AnyTopT2MEvaluator
+from src.models.graph_salad.world_recovery import recover_world_positions_torch
+from src.models.graph_salad.rot6d_fk_recovery import recover_rot6d_fk_positions_torch
 
 
 def _import_load_vq_tokenizer():
@@ -87,6 +89,27 @@ def parse_args() -> argparse.Namespace:
                          "VQVAE bypassed) -> expect cosine~1.0, recon->GT R@1~1.0, FID~0, equal "
                          "diversity, norm-MSE 0. Validates the eval-space pipeline ceiling + calibrates "
                          "how far the real VQVAE recon is from perfect.")
+    ap.add_argument("--mpjpe", action="store_true",
+                    help="ALSO report MPJPE (mean per-joint position error) in metric/de-normalized "
+                         "units, split human(HML*) vs animal(PZ*). De-normalizes both GT & recon 13ch "
+                         "(raw=norm*(std+floor)+mean) then recovers world positions via the src torch "
+                         "recovery (same path as the QA renderer); masked Euclidean over the effective "
+                         "frame support ∩ valid joints. With --gt_as_recon this must be ~0 (self-check).")
+    ap.add_argument("--fk", action="store_true",
+                    help="With --mpjpe, ALSO report rot6d-FK MPJPE: recover joint positions by forward "
+                         "kinematics from the 6D rotation channels (ch3:9) along the skeleton "
+                         "(recover_rot6d_fk_positions_torch, parents+rest_offsets from the batch) instead "
+                         "of the RIC/position route. Reports rot6d-FK pose vs TRUE GT positions "
+                         "(rc_fk vs gt_w) PLUS the recon-independent FK-route floor (gt_fk vs gt_w). "
+                         "rot6d is the weakest channel. Self-check: --gt_as_recon -> position ~0 and "
+                         "fk == fk_floor (recon=GT makes rc_fk=gt_fk).")
+    ap.add_argument("--fk_sibling_avg", action="store_true",
+                    help="With --fk, ALSO compute rot6d-FK MPJPE using SIBLING-AVERAGED parent "
+                         "rotation (mean 6D over a parent's duplicated child slots) instead of the "
+                         "last-child slot the FK recovery normally uses, PLUS the sibling 6D "
+                         "dispersion (GT ~0 verifies the duplicate convention; recon>0 = model "
+                         "diverges siblings). Decisive test: if sibling-avg FK << last-child FK, the "
+                         "sibling-duplicate convention is the dominant human rot6d-FK error source.")
     ap.add_argument("--fid_min", type=int, default=1024, help="skip FID for a (sub)set smaller than this.")
     ap.add_argument("--max_div_pairs", type=int, default=20000, help="cap pairwise-diversity sample.")
     ap.add_argument("--seed", type=int, default=42)
@@ -179,6 +202,56 @@ def subset_metrics(emb_gt, emb_rec, pool, fid_min, max_div_pairs, gen):
 
 
 @torch.no_grad()
+def _sibling_avg_rot6d(raw, parent_indices, joint_mask):
+    """Copy of raw [B,T,J,13] where, for every parent with >1 child, the 6D rotation (ch3:9)
+    in ALL its child slots is set to the mean 6D over those siblings. AnyTop stores a parent's
+    rotation duplicated into each child slot; FK recovery uses ONLY the LAST child slot, so if
+    the model diverges the duplicates only one is used. Averaging makes siblings consistent."""
+    out = raw.clone()
+    B, T, J, _ = raw.shape
+    for b in range(B):
+        par = [int(p) for p in parent_indices[b]]
+        Jb = min(len(par), J, int(joint_mask[b].sum().item()))
+        kids = {}
+        for j in range(1, Jb):
+            p = par[j]
+            if 0 <= p < Jb:
+                kids.setdefault(p, []).append(j)
+        for p, ks in kids.items():
+            if len(ks) > 1:
+                avg = out[b][:, ks, 3:9].mean(dim=1)            # [T,6]
+                for k in ks:
+                    out[b, :, k, 3:9] = avg
+    return out
+
+
+def _sibling_dispersion(raw, parent_indices, joint_mask, frame_valid):
+    """Mean L2 deviation of each branching-parent child slot's 6D from its sibling-mean, over
+    VALID (clip,frame,branch-child) — frame_valid [B,T] bool restricts to eff frames (codex fix:
+    exclude padded/invalid-recovered frames). ~0 for GT (siblings duplicated); >0 if recon
+    diverges them. Returns (sum, count)."""
+    B, T, J, _ = raw.shape
+    s = 0.0; c = 0
+    for b in range(B):
+        fm = frame_valid[b].bool()                              # [T]
+        if int(fm.sum().item()) == 0:
+            continue
+        par = [int(p) for p in parent_indices[b]]
+        Jb = min(len(par), J, int(joint_mask[b].sum().item()))
+        kids = {}
+        for j in range(1, Jb):
+            p = par[j]
+            if 0 <= p < Jb:
+                kids.setdefault(p, []).append(j)
+        for p, ks in kids.items():
+            if len(ks) > 1:
+                d6 = raw[b][:, ks, 3:9]                          # [T,K,6]
+                dev = (d6 - d6.mean(dim=1, keepdim=True)).norm(dim=-1)  # [T,K]
+                dev = dev[fm]                                   # [Tvalid,K] valid frames only
+                s += float(dev.sum().item()); c += int(dev.numel())
+    return s, c
+
+
 def main() -> int:
     args = parse_args()
     if args.pool < 3:
@@ -262,6 +335,16 @@ def main() -> int:
     CH = {"pos": (0, 3), "rot6d": (3, 9), "vel": (9, 12), "contact": (12, 13)}  # AnyTop 13ch groups
     ch_sum = {k: 0.0 for k in CH}
     ch_cnt = {k: 0 for k in CH}
+    mpjpe_sum = {"animal": 0.0, "human": 0.0}   # de-norm world-pos L2 (sum over valid b,t,j)
+    mpjpe_cnt = {"animal": 0.0, "human": 0.0}   # #valid (b,t,j)
+    mpjpe_fk_sum = {"animal": 0.0, "human": 0.0}        # rot6d-FK pose vs TRUE GT pos: rc_fk vs gt_w (--fk)
+    mpjpe_fk_cnt = {"animal": 0.0, "human": 0.0}
+    mpjpe_fkfloor_sum = {"animal": 0.0, "human": 0.0}   # FK-route floor: gt_fk vs gt_w (--fk; recon-independent)
+    mpjpe_fkfloor_cnt = {"animal": 0.0, "human": 0.0}
+    mpjpe_fkavg_sum = {"animal": 0.0, "human": 0.0}     # sibling-AVERAGED FK vs gt_w (--fk_sibling_avg)
+    mpjpe_fkavg_cnt = {"animal": 0.0, "human": 0.0}
+    sibdisp = {"animal": [0.0, 0], "human": [0.0, 0]}      # recon sibling 6D dispersion [sum,cnt]
+    sibdisp_gt = {"animal": [0.0, 0], "human": [0.0, 0]}   # GT sibling dispersion (self-check ~0)
     for coll in loader:
         coll_dev = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in coll.items()}
         batch = GraphMotionBatch.from_collate_dict(coll_dev)
@@ -289,6 +372,57 @@ def main() -> int:
             eff_mask = batch.frame_mask & fmr                   # [B,T] apples-to-apples support
             recon_x = pred.permute(0, 2, 3, 1).contiguous()     # [B,T,J,13] -> [B,J,13,T]
 
+        if args.mpjpe:
+            # MPJPE: de-normalize GT & recon 13ch (raw = norm*(std+floor)+mean), recover joint world
+            # positions, masked per-joint Euclidean over eff frames ∩ valid joints, per subset.
+            # POSITION route (RIC->world, src torch recovery, = renderer's position path). With --fk,
+            # ALSO the rot6d-FK route (6D rotations -> forward kinematics along the skeleton).
+            # recon_x/anytop_x are [B,J,13,T] -> [B,T,J,13] for recovery.
+            gtn = batch.anytop_x.permute(0, 3, 1, 2).float()        # [B,T,J,13] normalized GT
+            rcn = recon_x.permute(0, 3, 1, 2).float()               # [B,T,J,13] normalized recon
+            mean = batch.anytop_mean[:, None].float()               # [B,1,J,13]
+            std = batch.anytop_std[:, None].float() + _STD_FLOOR    # [B,1,J,13]
+            gt_raw = gtn * std + mean                               # [B,T,J,13] de-norm
+            rc_raw = rcn * std + mean
+            vmask = (eff_mask[:, :, None] & batch.joint_mask[:, None, :].bool())  # [B,T,J] bool
+            gt_w = recover_world_positions_torch(gt_raw)            # [B,T,J,3] RIC/position route
+            rc_w = recover_world_positions_torch(rc_raw)
+            dpos = torch.where(vmask, (rc_w - gt_w).norm(dim=-1), torch.zeros(vmask.shape, device=vmask.device))
+            ps_sum = dpos.sum(dim=(1, 2)); ps_cnt = vmask.float().sum(dim=(1, 2))   # [B]
+            if args.fk:                                             # rot6d -> FK route
+                gt_fk = recover_rot6d_fk_positions_torch(gt_raw, batch.parent_indices, batch.rest_offsets, batch.joint_mask)
+                rc_fk = recover_rot6d_fk_positions_torch(rc_raw, batch.parent_indices, batch.rest_offsets, batch.joint_mask)
+                z = torch.zeros(vmask.shape, device=vmask.device)
+                dfk = torch.where(vmask, (rc_fk - gt_w).norm(dim=-1), z)    # recon FK pose vs TRUE GT pos
+                dfl = torch.where(vmask, (gt_fk - gt_w).norm(dim=-1), z)    # FK-route floor (GT FK vs GT pos)
+                fk_sum = dfk.sum(dim=(1, 2)); fl_sum = dfl.sum(dim=(1, 2))  # [B] (ps_cnt reused: same mask)
+                if args.fk_sibling_avg:                                     # sibling-averaged parent rotation
+                    rc_raw_sib = _sibling_avg_rot6d(rc_raw, batch.parent_indices, batch.joint_mask)
+                    rc_fk_avg = recover_rot6d_fk_positions_torch(rc_raw_sib, batch.parent_indices, batch.rest_offsets, batch.joint_mask)
+                    dfkavg = torch.where(vmask, (rc_fk_avg - gt_w).norm(dim=-1), z)
+                    fkavg_sum = dfkavg.sum(dim=(1, 2))                      # [B]
+            for bi, o in enumerate(coll["object_type"]):
+                os = str(o).upper()
+                if os.startswith("HML"):
+                    sub = "human"
+                elif os.startswith("PZ_"):
+                    sub = "animal"
+                else:
+                    continue   # don't fold unknown skeletons (e.g. truebones) into a subset
+                mpjpe_sum[sub] += float(ps_sum[bi].item())
+                mpjpe_cnt[sub] += float(ps_cnt[bi].item())
+                if args.fk:
+                    mpjpe_fk_sum[sub] += float(fk_sum[bi].item())
+                    mpjpe_fk_cnt[sub] += float(ps_cnt[bi].item())
+                    if args.fk_sibling_avg:
+                        mpjpe_fkavg_sum[sub] += float(fkavg_sum[bi].item())
+                        mpjpe_fkavg_cnt[sub] += float(ps_cnt[bi].item())
+                        _ds, _dc = _sibling_dispersion(rc_raw[bi:bi + 1], [batch.parent_indices[bi]], batch.joint_mask[bi:bi + 1], eff_mask[bi:bi + 1])
+                        sibdisp[sub][0] += _ds; sibdisp[sub][1] += _dc
+                        _gs, _gc = _sibling_dispersion(gt_raw[bi:bi + 1], [batch.parent_indices[bi]], batch.joint_mask[bi:bi + 1], eff_mask[bi:bi + 1])
+                        sibdisp_gt[sub][0] += _gs; sibdisp_gt[sub][1] += _gc
+                    mpjpe_fkfloor_sum[sub] += float(fl_sum[bi].item())
+                    mpjpe_fkfloor_cnt[sub] += float(ps_cnt[bi].item())
         eff_nf = eff_mask.sum(dim=1).to(batch.num_frames.dtype)  # keep GraphMotionBatch invariant
         gt_x_emb, rec_x_emb = batch.anytop_x, recon_x
         if args.zero_contact:                                    # zero contact ch12 in BOTH before embed (motion-only)
@@ -310,6 +444,8 @@ def main() -> int:
         for name, (a, b) in CH.items():                        # per-channel-group masked MSE
             ch_sum[name] += float((((recon_x[:, :, a:b, :] - gt_x[:, :, a:b, :]) ** 2) * valid).sum().item())
             ch_cnt[name] += nvalid * (b - a)
+        if args.fk_sibling_avg:                                # 3 FK passes + clones fragment the
+            torch.cuda.empty_cache()                           # allocator over many batches -> free per batch
     EG = torch.cat(EG, 0)
     ER = torch.cat(ER, 0)
     n = EG.shape[0]
@@ -318,6 +454,56 @@ def main() -> int:
     print(f"[recon-eval] embedded {n} clips; norm-space masked recon MSE = {recon_mse_norm:.5f} "
           f"(recon={'CONTINUOUS' if args.continuous_recon else ('GT' if args.gt_as_recon else 'QUANTIZED')})", flush=True)
     print(f"[recon-eval] per-channel norm MSE: " + " ".join(f"{k}={per_channel_mse[k]:.4f}" for k in CH), flush=True)
+
+    mpjpe = None
+    if args.mpjpe:
+        def _avg(s):
+            return (mpjpe_sum[s] / mpjpe_cnt[s]) if mpjpe_cnt[s] > 0 else None
+        tot_s = mpjpe_sum["animal"] + mpjpe_sum["human"]
+        tot_c = mpjpe_cnt["animal"] + mpjpe_cnt["human"]
+        mpjpe = {"animal": _avg("animal"), "human": _avg("human"),
+                 "overall": (tot_s / tot_c) if tot_c > 0 else None,
+                 "units": "ABSOLUTE world-position MPJPE, ROOT INCLUDED (not root-aligned); "
+                          "de-normalized AnyTop world units (per-skeleton mean/std restored)"}
+        def _f(x):
+            return f"{x:.5f}" if isinstance(x, float) else "n/a"
+        print(f"[recon-eval] MPJPE (ABSOLUTE world-pos, root-incl, de-norm units): animal={_f(mpjpe['animal'])} "
+              f"human={_f(mpjpe['human'])} overall={_f(mpjpe['overall'])} "
+              f"(n_valid animal={int(mpjpe_cnt['animal'])} human={int(mpjpe_cnt['human'])})", flush=True)
+        if args.fk:
+            def _avg2(sm, cn, s):
+                return (sm[s] / cn[s]) if cn[s] > 0 else None
+            def _ov(sm, cn):
+                ts, tc = sm["animal"] + sm["human"], cn["animal"] + cn["human"]
+                return (ts / tc) if tc > 0 else None
+            mpjpe["fk"] = {"animal": _avg2(mpjpe_fk_sum, mpjpe_fk_cnt, "animal"),
+                           "human": _avg2(mpjpe_fk_sum, mpjpe_fk_cnt, "human"),
+                           "overall": _ov(mpjpe_fk_sum, mpjpe_fk_cnt),
+                           "route": "recon rot6d->FK pose vs TRUE GT positions (rc_fk vs gt_w); "
+                                    "absolute world pos, root-incl, de-norm units; INCLUDES the fk_floor"}
+            mpjpe["fk_floor"] = {"animal": _avg2(mpjpe_fkfloor_sum, mpjpe_fkfloor_cnt, "animal"),
+                                 "human": _avg2(mpjpe_fkfloor_sum, mpjpe_fkfloor_cnt, "human"),
+                                 "overall": _ov(mpjpe_fkfloor_sum, mpjpe_fkfloor_cnt),
+                                 "route": "FK-route inherent floor: GT rot6d->FK vs GT positions (gt_fk vs gt_w), "
+                                          "recon-independent; subtract-in-quadrature-ish to gauge pure recon error"}
+            print(f"[recon-eval] MPJPE-FK (recon rot6d->FK vs GT pos): animal={_f(mpjpe['fk']['animal'])} "
+                  f"human={_f(mpjpe['fk']['human'])} overall={_f(mpjpe['fk']['overall'])}", flush=True)
+            print(f"[recon-eval] FK-floor (GT rot6d->FK vs GT pos, recon-indep): animal={_f(mpjpe['fk_floor']['animal'])} "
+                  f"human={_f(mpjpe['fk_floor']['human'])} overall={_f(mpjpe['fk_floor']['overall'])}", flush=True)
+            if args.fk_sibling_avg:
+                def _dsp(d, s):
+                    return (d[s][0] / d[s][1]) if d[s][1] > 0 else None
+                mpjpe["fk_sibling_avg"] = {"animal": _avg2(mpjpe_fkavg_sum, mpjpe_fkavg_cnt, "animal"),
+                                           "human": _avg2(mpjpe_fkavg_sum, mpjpe_fkavg_cnt, "human"),
+                                           "overall": _ov(mpjpe_fkavg_sum, mpjpe_fkavg_cnt),
+                                           "route": "recon rot6d->FK with SIBLING-AVERAGED parent rotation vs gt_w"}
+                mpjpe["sibling_dispersion"] = {"recon_animal": _dsp(sibdisp, "animal"), "recon_human": _dsp(sibdisp, "human"),
+                                               "gt_animal": _dsp(sibdisp_gt, "animal"), "gt_human": _dsp(sibdisp_gt, "human"),
+                                               "note": "mean L2 of branching-parent child-slot 6D from sibling-mean; GT~0 verifies duplicate convention, recon>0 = model diverges siblings"}
+                print(f"[recon-eval] MPJPE-FK-SIBAVG (sibling-averaged parent rot): animal={_f(mpjpe['fk_sibling_avg']['animal'])} "
+                      f"human={_f(mpjpe['fk_sibling_avg']['human'])} overall={_f(mpjpe['fk_sibling_avg']['overall'])}", flush=True)
+                print(f"[recon-eval] sibling 6D dispersion: recon(animal={_f(_dsp(sibdisp,'animal'))} human={_f(_dsp(sibdisp,'human'))}) "
+                      f"GT(animal={_f(_dsp(sibdisp_gt,'animal'))} human={_f(_dsp(sibdisp_gt,'human'))}) [GT~0 expected]", flush=True)
 
     # ---- subset split: animo4d (PZ_*) vs truebones (everything else) ----
     src = ["animo4d" if str(o).startswith("PZ_") else "truebones" for o in objs]
@@ -328,7 +514,8 @@ def main() -> int:
               "eval_num_frames": nf, "vqvae_max_frames": ta.get("max_frames"),
               "num_codes": ta.get("num_codes"), "num_quantizers": ta.get("num_quantizers"),
               "recon_mode": ("continuous" if args.continuous_recon else ("gt" if args.gt_as_recon else "quantized")),
-              "per_channel_mse": per_channel_mse}
+              "per_channel_mse": per_channel_mse,
+              "mpjpe_worldpos": mpjpe}
 
     def _rr(m):  # robust "R@1/2/3" string (recon_to_gt_rprec may be None when n<pool)
         rr = m.get("recon_to_gt_rprec")

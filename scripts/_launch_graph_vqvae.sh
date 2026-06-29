@@ -55,8 +55,17 @@ MAX_FRAMES="${MAX_FRAMES:-64}"
 # unchanged. The codebook-size ablation sets NUM_CODES=1024 / 2048.
 NUM_CODES="${NUM_CODES:-512}"
 # Human-upsampling curriculum (opt-in): factor 1.0 / start -1 = OFF (unchanged).
+# Two-phase (opt-in): phase2_factor 1.0 / phase2_start -1 = no phase-2 (single-phase).
 HUMAN_UPSAMPLE_FACTOR="${HUMAN_UPSAMPLE_FACTOR:-1.0}"
 HUMAN_UPSAMPLE_START_EPOCH="${HUMAN_UPSAMPLE_START_EPOCH:--1}"
+HUMAN_UPSAMPLE_PHASE2_FACTOR="${HUMAN_UPSAMPLE_PHASE2_FACTOR:-1.0}"
+HUMAN_UPSAMPLE_PHASE2_START_EPOCH="${HUMAN_UPSAMPLE_PHASE2_START_EPOCH:--1}"
+# Loss-weight knobs (train_graph_vqvae.py defaults: w_fk=1.0, w_rot=1.0). Forwarded so the
+# FK-leverage ablation can set them (e.g. W_FK=0 = fk loss OFF, W_FK=5 = FK-emphasis). Default
+# 1.0/1.0 == train's own defaults == current behavior (baseline runs unaffected).
+W_FK="${W_FK:-1.0}"
+W_ROT="${W_ROT:-1.0}"
+W_FK_SMOOTH="${W_FK_SMOOTH:-0.0}"       # temporal-smoothness on rot6d-FK accel (0=OFF, gated)
 RESUME_CKPT="${RESUME_CKPT:-}"          # FULL resume (model+optimizer+epoch+step)
 OUT="${OUT:?set OUT}"
 
@@ -99,6 +108,7 @@ echo "[vqvae] $(date '+%F %T %Z') host=$(hostname) CVD=$CVD nnodes=$NNODES nproc
 echo "[vqvae] per_gpu=$BATCH_SIZE global=$GLOBAL(=${BATCH_SIZE}x${NNODES}x${NPROC_PER_NODE}) lr=$LR warmup_steps=$WARMUP_STEPS amp=$AMP_DTYPE epochs=$EPOCHS smoke=$SMOKE"
 echo "[vqvae] master=${MASTER_ADDR:-<standalone>}:$MASTER_PORT nccl_ifname=${NCCL_SOCKET_IFNAME:-<n/a>} anytop_root=$ANYTOP_ROOT out=$OUT"
 echo "[vqvae] max_joints=$MAX_JOINTS max_coarse=$MAX_COARSE max_frames=$MAX_FRAMES num_codes=$NUM_CODES"
+echo "[vqvae] loss-weights: w_fk=$W_FK w_rot=$W_ROT w_fk_smooth=$W_FK_SMOOTH (train defaults 1.0/1.0/0.0)"
 echo "[vqvae] resume=${RESUME_CKPT:-<none>}"
 
 "$TORCHRUN" $RDZV_ARGS scripts/train_graph_vqvae.py \
@@ -111,6 +121,8 @@ echo "[vqvae] resume=${RESUME_CKPT:-<none>}"
   --save_every "$SAVE_EVERY" --periodic_save_every "$PERIODIC_SAVE_EVERY" \
   --epochs "$EPOCHS" \
   --human_upsample_factor "$HUMAN_UPSAMPLE_FACTOR" --human_upsample_start_epoch "$HUMAN_UPSAMPLE_START_EPOCH" \
+  --human_upsample_phase2_factor "$HUMAN_UPSAMPLE_PHASE2_FACTOR" --human_upsample_phase2_start_epoch "$HUMAN_UPSAMPLE_PHASE2_START_EPOCH" \
+  --w_fk "$W_FK" --w_rot "$W_ROT" --w_fk_smooth "$W_FK_SMOOTH" \
   ${RESUME_CKPT:+--resume "$RESUME_CKPT"} \
   --out "$OUT" $OVERWRITE_FLAG $SMOKE_FLAG
 rc=$?

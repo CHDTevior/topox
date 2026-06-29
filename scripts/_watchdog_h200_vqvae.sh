@@ -24,6 +24,20 @@ MAX_FRAMES="${MAX_FRAMES:-64}"
 NUM_CODES="${NUM_CODES:-8192}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 LR="${LR:-6.65e-5}"
+# Human-upsampling curriculum — env-overridable AND forwarded on resume (see resume()).
+# A hardcoded omission here is exactly the silent-failure this watchdog must avoid: if these
+# are not forwarded, a resume relaunches with the 2node launcher's 1.0/-1 defaults and the
+# trainer falls back to a plain DistributedSampler — curriculum in the first half, none after.
+HUMAN_UPSAMPLE_FACTOR="${HUMAN_UPSAMPLE_FACTOR:-1.0}"
+HUMAN_UPSAMPLE_START_EPOCH="${HUMAN_UPSAMPLE_START_EPOCH:--1}"
+HUMAN_UPSAMPLE_PHASE2_FACTOR="${HUMAN_UPSAMPLE_PHASE2_FACTOR:-1.0}"
+HUMAN_UPSAMPLE_PHASE2_START_EPOCH="${HUMAN_UPSAMPLE_PHASE2_START_EPOCH:--1}"
+# Loss-weight knobs (FK-leverage ablation): same silent-failure risk — if W_FK/W_ROT are not
+# forwarded on resume, a w_fk-ablation run (e.g. W_FK=0 or W_FK=5) silently reverts to the
+# launcher's 1.0/1.0 defaults mid-run, corrupting the experiment. Forward them explicitly.
+W_FK="${W_FK:-1.0}"
+W_ROT="${W_ROT:-1.0}"
+W_FK_SMOOTH="${W_FK_SMOOTH:-0.0}"   # temporal-smoothness on rot6d-FK accel; forwarded on resume
 OUT="$P/$OUT_REL"
 # Fail-fast config guard: an L4safeHuman run MUST use the humanml3d root + MAX_COARSE=72.
 # Refuse to start (hence refuse to ever resume) on mismatch, so a stale old-default env can
@@ -33,6 +47,32 @@ if [[ "$OUT_REL" == *L4safeHuman* ]]; then
     echo "[wd-vq] ABORT: L4safeHuman run but ANYTOP_ROOT='$ANYTOP_ROOT' / MAX_COARSE='$MAX_COARSE' mismatch (need humanml3d root + 72)" >&2
     exit 1
   fi
+fi
+# Fail-loud curriculum guard. A curriculum run is identified by OUT_REL containing 'curric'
+# OR any phase factor > 1. Refuse to start (hence refuse to ever resume) if the curriculum
+# would SILENTLY no-op: a factor>1 paired with start_epoch<0 (the sampler's _current_factor
+# never triggers -> plain DistributedSampler), or an OUT named 'curric' but both factors<=1
+# (the env was not forwarded). This is THE failure mode reviewed: curriculum first-half then
+# silent no-curriculum after a watchdog resume.
+_f1_on=$(awk "BEGIN{print ($HUMAN_UPSAMPLE_FACTOR>1.0)?1:0}")
+_f2_on=$(awk "BEGIN{print ($HUMAN_UPSAMPLE_PHASE2_FACTOR>1.0)?1:0}")
+if [[ "$OUT_REL" == *curric* ]] || [ "$_f1_on" = 1 ] || [ "$_f2_on" = 1 ]; then
+  if [ "$_f1_on" = 1 ] && [ "${HUMAN_UPSAMPLE_START_EPOCH:--1}" -lt 0 ]; then
+    echo "[wd-vq] ABORT: curriculum run but HUMAN_UPSAMPLE_FACTOR=$HUMAN_UPSAMPLE_FACTOR>1 with START_EPOCH=$HUMAN_UPSAMPLE_START_EPOCH<0 (sampler would silently no-op)" >&2; exit 1
+  fi
+  if [ "$_f2_on" = 1 ] && [ "${HUMAN_UPSAMPLE_PHASE2_START_EPOCH:--1}" -lt 0 ]; then
+    echo "[wd-vq] ABORT: curriculum run but HUMAN_UPSAMPLE_PHASE2_FACTOR=$HUMAN_UPSAMPLE_PHASE2_FACTOR>1 with PHASE2_START_EPOCH=$HUMAN_UPSAMPLE_PHASE2_START_EPOCH<0 (phase2 would silently no-op)" >&2; exit 1
+  fi
+  if [[ "$OUT_REL" == *curric* ]] && [ "$_f1_on" = 0 ] && [ "$_f2_on" = 0 ]; then
+    echo "[wd-vq] ABORT: OUT_REL='$OUT_REL' names a curriculum run but both factors<=1 (curriculum env not set -> would resume WITHOUT curriculum)" >&2; exit 1
+  fi
+fi
+# Fail-loud smooth guard (mirrors the curriculum guard): an OUT named 'smooth' MUST carry
+# W_FK_SMOOTH>0, else the temporal-smoothness term is silently off (env not forwarded) and the
+# experiment would resume as a plain run — the exact silent-revert class this watchdog prevents.
+_sm_on=$(awk "BEGIN{print ($W_FK_SMOOTH>0)?1:0}")
+if [[ "$OUT_REL" == *smooth* ]] && [ "$_sm_on" = 0 ]; then
+  echo "[wd-vq] ABORT: OUT_REL='$OUT_REL' names a smooth run but W_FK_SMOOTH=$W_FK_SMOOTH (<=0) -> would resume WITHOUT the temporal-smoothness loss" >&2; exit 1
 fi
 LOG="$P/.aris/meta/watchdog_h200_vqvae.log"
 CHECK_SEC="${CHECK_SEC:-300}"        # poll every 5 min
@@ -47,6 +87,8 @@ ts() { date -u +%FT%TZ; }
 log() { echo "[wd-vq $(ts)] $*" >> "$LOG"; }
 
 log "START vqvae watchdog (CHECK_SEC=$CHECK_SEC, out=$OUT_REL, dynamic H200 node discovery) pid=$$ host=$(hostname)"
+log "curriculum forwarded on resume: factor=$HUMAN_UPSAMPLE_FACTOR start=$HUMAN_UPSAMPLE_START_EPOCH phase2_factor=$HUMAN_UPSAMPLE_PHASE2_FACTOR phase2_start=$HUMAN_UPSAMPLE_PHASE2_START_EPOCH"
+log "loss-weights forwarded on resume: w_fk=$W_FK w_rot=$W_ROT w_fk_smooth=$W_FK_SMOOTH (train defaults 1.0/1.0/0.0)"
 
 # Safety self-guard: MUST be the ONLY H200 watchdog. The backbone watchdog uses a
 # DIFFERENT lock, so it would still discover + relaunch PSCF onto the same dual+quad
@@ -163,7 +205,7 @@ resume() {
     if ! alloc_gpus_idle "$mn" "$mj" || ! alloc_gpus_idle "$wn" "$wj"; then
         log "RESUME-WAIT: my allocated GPUs not free after cleanup (master=$mn worker=$wn); retry"; return 1
     fi
-    out=$(timeout 80 ssh "$mn" "cd $P && rm -f .aris/meta/.vqvae_h200_orch.pid && setsid nohup env JOB_A=$mj JOB_B=$wj MASTER_NODE=$mn WORKER_NODE=$wn RDZV_HOST=$mip NCCL_SOCKET_IFNAME=$mface NCCL_IB_HCA=$mhca ANYTOP_ROOT=$ANYTOP_ROOT MAX_COARSE=$MAX_COARSE MAX_JOINTS=$MAX_JOINTS MAX_FRAMES=$MAX_FRAMES BATCH_SIZE=$BATCH_SIZE LR=$LR NUM_CODES=$NUM_CODES RESUME_CKPT=last_model.pt OVERWRITE=0 OUT=$OUT_REL bash scripts/_launch_graph_vqvae_2node_h200.sh > $OUT/orch_resume_wd.log 2>&1 </dev/null & sleep 8; pid=\$(cat .aris/meta/.vqvae_h200_orch.pid 2>/dev/null || true); { [ -n \"\$pid\" ] && ps -p \"\$pid\" -o args= 2>/dev/null | grep -qF '_launch_graph_vqvae_2node_h200.sh'; } && echo STARTED || echo DIEDFAST" 2>/dev/null)
+    out=$(timeout 80 ssh "$mn" "cd $P && rm -f .aris/meta/.vqvae_h200_orch.pid && setsid nohup env JOB_A=$mj JOB_B=$wj MASTER_NODE=$mn WORKER_NODE=$wn RDZV_HOST=$mip NCCL_SOCKET_IFNAME=$mface NCCL_IB_HCA=$mhca ANYTOP_ROOT=$ANYTOP_ROOT MAX_COARSE=$MAX_COARSE MAX_JOINTS=$MAX_JOINTS MAX_FRAMES=$MAX_FRAMES BATCH_SIZE=$BATCH_SIZE LR=$LR NUM_CODES=$NUM_CODES HUMAN_UPSAMPLE_FACTOR=$HUMAN_UPSAMPLE_FACTOR HUMAN_UPSAMPLE_START_EPOCH=$HUMAN_UPSAMPLE_START_EPOCH HUMAN_UPSAMPLE_PHASE2_FACTOR=$HUMAN_UPSAMPLE_PHASE2_FACTOR HUMAN_UPSAMPLE_PHASE2_START_EPOCH=$HUMAN_UPSAMPLE_PHASE2_START_EPOCH W_FK=$W_FK W_ROT=$W_ROT W_FK_SMOOTH=$W_FK_SMOOTH RESUME_CKPT=last_model.pt OVERWRITE=0 OUT=$OUT_REL bash scripts/_launch_graph_vqvae_2node_h200.sh > $OUT/orch_resume_wd.log 2>&1 </dev/null & sleep 8; pid=\$(cat .aris/meta/.vqvae_h200_orch.pid 2>/dev/null || true); { [ -n \"\$pid\" ] && ps -p \"\$pid\" -o args= 2>/dev/null | grep -qF '_launch_graph_vqvae_2node_h200.sh'; } && echo STARTED || echo DIEDFAST" 2>/dev/null)
     if [ "$out" = STARTED ]; then
         log "RESUME launched OK on $mn (orchestrator PID alive after 8s); sleep 600 before next check"; return 0
     else

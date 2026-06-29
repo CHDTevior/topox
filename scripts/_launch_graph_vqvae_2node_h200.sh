@@ -55,6 +55,18 @@ QA_EVERY="${QA_EVERY:-100}"
 SAVE_EVERY="${SAVE_EVERY:-10}"          # last_model.pt every 10 ep (watchdog resumes from it on drop)
 PERIODIC_SAVE_EVERY="${PERIODIC_SAVE_EVERY:-25}"
 SEED="${SEED:-42}"
+# Human-upsampling curriculum (opt-in, forwarded to the inner launcher). All-default = OFF.
+# Two-phase example (L4safeHuman from-scratch): FACTOR=3.0 START_EPOCH=0 (~50% ep0-49) ->
+# PHASE2_FACTOR=4.5 PHASE2_START_EPOCH=50 (~60% ep50+).
+HUMAN_UPSAMPLE_FACTOR="${HUMAN_UPSAMPLE_FACTOR:-1.0}"
+HUMAN_UPSAMPLE_START_EPOCH="${HUMAN_UPSAMPLE_START_EPOCH:--1}"
+HUMAN_UPSAMPLE_PHASE2_FACTOR="${HUMAN_UPSAMPLE_PHASE2_FACTOR:-1.0}"
+HUMAN_UPSAMPLE_PHASE2_START_EPOCH="${HUMAN_UPSAMPLE_PHASE2_START_EPOCH:--1}"
+# Loss-weight knobs for the FK-leverage ablation (W_FK=0 = fk loss OFF, W_FK=5 = FK-emphasis).
+# Default 1.0/1.0 == train defaults == current behavior. Forwarded into COMMON_ENV below.
+W_FK="${W_FK:-1.0}"
+W_ROT="${W_ROT:-1.0}"
+W_FK_SMOOTH="${W_FK_SMOOTH:-0.0}"       # temporal-smoothness on rot6d-FK accel (0=OFF, gated)
 ANYTOP_ROOT="${ANYTOP_ROOT:-data/animo4d_anytop_clean_L4_safe_plus_truebones}"
 MAX_JOINTS="${MAX_JOINTS:-144}"
 MAX_COARSE="${MAX_COARSE:-96}"
@@ -86,11 +98,16 @@ NCCL_P2P_DISABLE=0 NCCL_SHM_DISABLE=0 NCCL_SOCKET_IFNAME=$NCCL_IFACE NCCL_IB_DIS
 BATCH_SIZE=$BATCH_SIZE LR=$LR NUM_CODES=$NUM_CODES WARMUP_STEPS=$WARMUP_STEPS AMP_DTYPE=$AMP_DTYPE \
 EPOCHS=$EPOCHS NUM_WORKERS=$NUM_WORKERS LOG_EVERY=$LOG_EVERY QA_EVERY=$QA_EVERY SAVE_EVERY=$SAVE_EVERY \
 PERIODIC_SAVE_EVERY=$PERIODIC_SAVE_EVERY SEED=$SEED ANYTOP_ROOT=$ANYTOP_ROOT \
+HUMAN_UPSAMPLE_FACTOR=$HUMAN_UPSAMPLE_FACTOR HUMAN_UPSAMPLE_START_EPOCH=$HUMAN_UPSAMPLE_START_EPOCH \
+HUMAN_UPSAMPLE_PHASE2_FACTOR=$HUMAN_UPSAMPLE_PHASE2_FACTOR HUMAN_UPSAMPLE_PHASE2_START_EPOCH=$HUMAN_UPSAMPLE_PHASE2_START_EPOCH \
+W_FK=$W_FK W_ROT=$W_ROT W_FK_SMOOTH=$W_FK_SMOOTH \
 MAX_JOINTS=$MAX_JOINTS MAX_COARSE=$MAX_COARSE MAX_FRAMES=$MAX_FRAMES RESUME_CKPT=$RESUME_CKPT OVERWRITE=$OVERWRITE OUT=$OUT SMOKE=$SMOKE"
 
 echo "[vqvae-h200] $(date '+%F %T %Z') cross-NODE 4-card H200 DDP: $JOB_A($MASTER_NODE,r0)+$JOB_B($WORKER_NODE,r1) via $RDZV_HOST:$RDZV_PORT smoke=$SMOKE"
 echo "[vqvae-h200] global=$GLOBAL (4xbs$BATCH_SIZE) lr=$LR num_codes=$NUM_CODES warmup=$WARMUP_STEPS epochs=$EPOCHS overwrite=$OVERWRITE out=$OUT"
 echo "[vqvae-h200] anytop_root=$ANYTOP_ROOT max_joints=$MAX_JOINTS max_coarse=$MAX_COARSE max_frames=$MAX_FRAMES resume=${RESUME_CKPT:-<none>} (NCCL $NCCL_IFACE/$NCCL_HCA, intra-node P2P/SHM ON)"
+echo "[vqvae-h200] human-upsample: phase1 factor=$HUMAN_UPSAMPLE_FACTOR start=$HUMAN_UPSAMPLE_START_EPOCH | phase2 factor=$HUMAN_UPSAMPLE_PHASE2_FACTOR start=$HUMAN_UPSAMPLE_PHASE2_START_EPOCH (all-default=OFF)"
+echo "[vqvae-h200] loss-weights: w_fk=$W_FK w_rot=$W_ROT w_fk_smooth=$W_FK_SMOOTH (train defaults 1.0/1.0/0.0; FK ablation + temporal-smoothness knobs)"
 
 # One torchrun group per node; static rendezvous joins them into WORLD_SIZE=4.
 run_alloc() {

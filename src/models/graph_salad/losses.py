@@ -686,6 +686,21 @@ def _masked_l1_xyz(pred_pos, gt_pos, joint_mask, frame_mask):
     return diff.sum() / mask.sum().clamp(min=_EPS)
 
 
+def _masked_accel_l1(pred_pos, gt_pos, joint_mask, frame_mask):
+    """Masked L1 of the SECOND temporal difference (acceleration) of [B,T,J,3] positions:
+    accel(X)[t] = X[t+1] - 2X[t] + X[t-1]. Matches accel(pred) to accel(gt) over (joint,frame)
+    where t-1,t,t+1 are ALL valid — penalizes EXCESS high-frequency jitter WITHOUT flattening
+    real motion (target is GT's own acceleration, not 0). Returns 0 if no valid 3-frame window
+    (e.g. T<3 or short smoke clips). Used by the fk_smooth term."""
+    a_pred = pred_pos[:, 2:] - 2 * pred_pos[:, 1:-1] + pred_pos[:, :-2]   # [B,T-2,J,3]
+    a_gt = gt_pos[:, 2:] - 2 * gt_pos[:, 1:-1] + gt_pos[:, :-2]
+    fm = frame_mask[:, :-2].bool() & frame_mask[:, 1:-1].bool() & frame_mask[:, 2:].bool()  # [B,T-2]
+    mask = fm[:, :, None] & joint_mask[:, None, :].bool()                 # [B,T-2,J]
+    mf = mask.to(pred_pos.dtype)
+    diff = (a_pred - a_gt).abs().sum(dim=-1) * mf
+    return diff.sum() / mask.sum().clamp(min=_EPS)
+
+
 def compute_world_rot6d_fk_terms(
     *,
     pred_motion: torch.Tensor,      # [B,T,J,13] normalized
@@ -696,6 +711,7 @@ def compute_world_rot6d_fk_terms(
     rest_offsets: torch.Tensor,     # [B,J,3]
     joint_mask: torch.Tensor,       # [B,J] bool
     frame_mask: torch.Tensor,       # [B,T] bool — use frame_mask_recovered
+    compute_fk_smooth: bool = False,  # gated: only compute+return fk_smooth when weighted >0
 ) -> dict[str, torch.Tensor]:
     """Combined world/RIC + true rot6d-FK geometry terms
     (loss_mode="anytop13_world_rot6d_fk", plan 2026-06-01).
@@ -744,4 +760,10 @@ def compute_world_rot6d_fk_terms(
     root_diff = (P_pred_ric[:, :, 0, :] - P_gt_ric[:, :, 0, :]).abs().sum(dim=-1)
     traj = (root_diff * fm).sum() / frame_mask.sum().clamp(min=_EPS)
 
-    return {"world": world, "fk": fk, "traj": traj, "gt_fk_mismatch": gt_fk_mismatch}
+    out = {"world": world, "fk": fk, "traj": traj, "gt_fk_mismatch": gt_fk_mismatch}
+    if compute_fk_smooth:
+        # temporal-smoothness: match recon-FK acceleration to GT (RIC) acceleration. Targets the
+        # human rot6d-FK high-frequency jitter (recon-FK accel ~15x GT) that per-frame MPJPE/L1
+        # is blind to. Gated so a non-smooth run computes NOTHING extra (byte-equivalent).
+        out["fk_smooth"] = _masked_accel_l1(P_pred_fk, P_gt_ric, joint_mask, frame_mask)
+    return out

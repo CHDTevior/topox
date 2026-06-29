@@ -116,11 +116,14 @@ def compute_vq_loss_13ch(
         anytop_mean=anytop_mean, anytop_std=anytop_std,
         parent_indices=parent_indices, rest_offsets=rest_offsets,
         joint_mask=joint_mask, frame_mask=frame_mask,
+        compute_fk_smooth=(weights.get("fk_smooth", 0.0) > 0),  # gated: no extra graph when OFF
     )
     losses["world"] = terms["world"]
     losses["fk"] = terms["fk"]
     losses["traj"] = terms["traj"]
     losses["gt_fk_mismatch"] = terms["gt_fk_mismatch"]  # diagnostic only
+    if "fk_smooth" in terms:                              # only surfaced when weighted >0
+        losses["fk_smooth"] = terms["fk_smooth"]
 
     # ---- commit (F4: weight applied ONCE; amendment 3: GLOBAL normalization) ----
     # commit_sq_sum is the per-rank, gradient-carrying Σ over THIS rank's valid

@@ -309,6 +309,10 @@ def main() -> int:
     p.add_argument("--w_contact", type=float, default=0.1)
     p.add_argument("--w_world", type=float, default=0.25)
     p.add_argument("--w_fk", type=float, default=1.0)
+    p.add_argument("--w_fk_smooth", type=float, default=0.0,
+                   help="temporal-smoothness loss weight: matches recon rot6d-FK acceleration to "
+                        "GT acceleration (fixes human FK high-freq jitter). Default 0.0 = OFF "
+                        "(gated: term not even computed) = backward-compatible.")
     p.add_argument("--w_traj", type=float, default=0.10)
     p.add_argument("--w_commit", type=float, default=0.02)
     # train
@@ -337,6 +341,15 @@ def main() -> int:
     p.add_argument("--human_upsample_start_epoch", type=int, default=-1,
                    help="epoch at which human upsampling activates (-1 = never). Only relevant if "
                         "--human_upsample_factor > 1.")
+    p.add_argument("--human_upsample_phase2_factor", type=float, default=1.0,
+                   help="TWO-PHASE CURRICULUM: once epoch >= --human_upsample_phase2_start_epoch, "
+                        "switch the human upweight to THIS factor (overrides the phase-1 factor). "
+                        "1.0 (default) = no phase-2 (single-phase, byte-unchanged). E.g. phase-1 "
+                        "factor=3.0 (~50%% human) for ep0-49 then phase2_factor=4.5 (~60%%) from ep50.")
+    p.add_argument("--human_upsample_phase2_start_epoch", type=int, default=-1,
+                   help="epoch at which phase-2 human upsampling activates (-1 = no phase-2). Should "
+                        "be > --human_upsample_start_epoch. Only relevant if "
+                        "--human_upsample_phase2_factor > 1.")
     p.add_argument("--save_every", type=int, default=10)
     p.add_argument("--periodic_save_every", type=int, default=25,
                    help="Also save a PRESERVED snapshot named ep{N}_model.pt every "
@@ -461,16 +474,28 @@ def main() -> int:
     if len(ds_val) == 0:
         raise RuntimeError("[DATA FAIL] val empty.")
 
-    if args.human_upsample_factor > 1.0:
+    if args.human_upsample_factor > 1.0 or args.human_upsample_phase2_factor > 1.0:
         _is_human = [str(s.get("object_type", "")).upper().startswith("HML") for s in ds_train.samples]
         _nh, _nt = sum(_is_human), len(_is_human)
-        _tgt = args.human_upsample_factor * _nh / max(1, args.human_upsample_factor * _nh + (_nt - _nh))
-        log(f"[human-upsample] curriculum ON: factor={args.human_upsample_factor} "
-            f"start_epoch={args.human_upsample_start_epoch}; human={_nh}/{_nt} "
-            f"({100*_nh/max(1,_nt):.1f}%) -> ~{100*_tgt:.0f}% per batch once epoch>=start_epoch")
+        def _share(f):  # human per-batch share at upweight factor f
+            return f * _nh / max(1, f * _nh + (_nt - _nh))
+        if args.human_upsample_phase2_factor > 1.0:
+            _t1 = _share(args.human_upsample_factor) if args.human_upsample_factor > 1.0 else _nh / max(1, _nt)
+            _t2 = _share(args.human_upsample_phase2_factor)
+            log(f"[human-upsample] TWO-PHASE curriculum ON: phase1 factor={args.human_upsample_factor} "
+                f"start={args.human_upsample_start_epoch} (~{100*_t1:.0f}%) -> phase2 "
+                f"factor={args.human_upsample_phase2_factor} start={args.human_upsample_phase2_start_epoch} "
+                f"(~{100*_t2:.0f}%); human={_nh}/{_nt} ({100*_nh/max(1,_nt):.1f}% base)")
+        else:
+            _tgt = _share(args.human_upsample_factor)
+            log(f"[human-upsample] curriculum ON: factor={args.human_upsample_factor} "
+                f"start_epoch={args.human_upsample_start_epoch}; human={_nh}/{_nt} "
+                f"({100*_nh/max(1,_nt):.1f}%) -> ~{100*_tgt:.0f}% per batch once epoch>=start_epoch")
         train_sampler = HumanCurriculumSampler(
             len(ds_train), _is_human, args.human_upsample_factor, args.human_upsample_start_epoch,
-            num_replicas=(world_size if is_ddp else 1), rank=(rank if is_ddp else 0), seed=args.seed)
+            num_replicas=(world_size if is_ddp else 1), rank=(rank if is_ddp else 0), seed=args.seed,
+            phase2_factor=args.human_upsample_phase2_factor,
+            phase2_start_epoch=args.human_upsample_phase2_start_epoch)
     else:
         train_sampler = (DistributedSampler(ds_train, shuffle=True, drop_last=True)
                          if is_ddp else None)
@@ -565,6 +590,7 @@ def main() -> int:
         "pos": args.w_pos, "rot": args.w_rot, "vel": args.w_vel,
         "contact": args.w_contact, "world": args.w_world, "fk": args.w_fk,
         "traj": args.w_traj, "commit": args.w_commit,
+        "fk_smooth": args.w_fk_smooth,   # 0.0 = OFF (gated in loss); >0 = temporal-smoothness
     }
     log(f"loss_weights: {loss_weights}")
     expected_C = args.max_coarse
@@ -831,8 +857,15 @@ def main() -> int:
                         val_losses[k].append(v.item())
             val_total = float(np.mean(val_losses["total"]))
             val_recon = float(np.mean(val_losses["pos"])) + float(np.mean(val_losses["rot"]))
-            log(f"  [val] total={val_total:.4f} pos={np.mean(val_losses['pos']):.4f} "
-                f"rot={np.mean(val_losses['rot']):.4f} commit={np.mean(val_losses['commit']):.5f}")
+            # smooth experiment needs fk_smooth/fk/world/vel visible mid-run to judge what's
+            # being pushed; fk_smooth only present when the gated term is active (w_fk_smooth>0).
+            _vparts = (f"  [val] total={val_total:.4f} pos={np.mean(val_losses['pos']):.4f} "
+                       f"rot={np.mean(val_losses['rot']):.4f} vel={np.mean(val_losses['vel']):.4f} "
+                       f"world={np.mean(val_losses['world']):.4f} fk={np.mean(val_losses['fk']):.4f} "
+                       f"commit={np.mean(val_losses['commit']):.5f}")
+            if "fk_smooth" in val_losses:
+                _vparts += f" fk_smooth={np.mean(val_losses['fk_smooth']):.4f}"
+            log(_vparts)
             # checkpoint (rank-0 only, is_main already guards this block)
             if not args.smoke:
                 # best_val_total = the HISTORICAL best (incl. this epoch). Persisted so
