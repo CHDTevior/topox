@@ -111,6 +111,11 @@ def main():
                          "training amp_dtype (the model was trained under bf16 "
                          "autocast, so bf16 reproduces the trained behavior)")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--export_npy_dir", type=str, default=None,
+                    help="If set, ALSO save each clip's de-normalized VQVAE recon and the "
+                         "matching de-normalized GT as <sp>_clip<k>_recon13.npy / _gt13.npy "
+                         "(float32 [T, J, 13]) into this dir. Purely additive diagnostic; "
+                         "does not change the recon, RNG, or the rendered gif.")
     args = ap.parse_args()
 
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -210,6 +215,11 @@ def main():
             recon_l2 = float(np.linalg.norm(pred_world - gt_world, axis=-1).mean())
 
             k = picked[sp]
+            if args.export_npy_dir:
+                _ed = Path(args.export_npy_dir); _ed.mkdir(parents=True, exist_ok=True)
+                np.save(_ed / f"{sp}_clip{k}_recon13.npy", pred_raw.astype(np.float32))
+                np.save(_ed / f"{sp}_clip{k}_gt13.npy", gt_raw.astype(np.float32))
+                print(f"  [export] recon+gt {pred_raw.shape} -> {_ed}/{sp}_clip{k}_*.npy")
             g_spd = float(np.linalg.norm(np.diff(gt_world, axis=0), axis=-1).mean())
             p_spd = float(np.linalg.norm(np.diff(pred_world, axis=0), axis=-1).mean())
             ratio = p_spd / max(g_spd, 1e-9)

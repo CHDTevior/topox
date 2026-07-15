@@ -143,6 +143,12 @@ def main() -> int:
     ap.add_argument("--caption_token_cache", type=str,
                     default="data/anytop_caption_t5_cleanL5_multi")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--export_npy_dir", type=str, default=None,
+                    help="If set, ALSO save each clip's de-normalized snapped decode as "
+                         "<label>_motion_13ch.npy (float32 [gt_T, J, 13], per-parent rot6d "
+                         "in ch3:9) into this dir — the exact raw AnyTop-13 format the "
+                         "Planet Zoo skinning pipeline consumes. Purely additive; does not "
+                         "change generation, RNG, or the rendered gif.")
     ap.add_argument("--ood_text", type=str, default=None,
                     help="OOD/custom text: T5-encode this string and OVERRIDE the picked "
                          "clip's caption (global+tokens+mask, has_text=True). The red GT "
@@ -264,17 +270,20 @@ def main() -> int:
             parents = [int(p) for p in item["parent_indices"][:J]]
             offsets = np.asarray(item["rest_offsets"])[:J]
 
-            def to_world(pred_motion):
+            def to_world(pred_motion, _pr_out=None):
                 # truncate T_lat_i*stride (>= gt_T by ceil) down to the GT length
                 pn = pred_motion[0, :gt_T, :J, :].float().cpu().numpy()
                 pr = pn * (std[None] + _STD_FLOOR) + mean[None]
+                if _pr_out is not None:            # capture the de-normalized [T,J,13] raw
+                    _pr_out.append(pr)             # (for --export_npy_dir; no effect otherwise)
                 # --render_from: 'fk' = rot6d(ch3:9)->FK on bone offsets; 'position' =
                 # RIC(ch0:3) world route (model's predicted positions, no FK).
                 if args.render_from == "position":
                     return _recover_world_positions(pr)               # [T,J,3]
                 return recover_from_bvh_rot_np(pr, parents, offsets)  # [T,J,3]
 
-            snap_world = to_world(snap)
+            _snap_pr = [] if args.export_npy_dir else None
+            snap_world = to_world(snap, _snap_pr)
             cont_world = to_world(cont)
             static_pose = fk_rest_pose(offsets, parents)
             prompt_text = args.ood_text if ood_fields is not None else (item.get("caption") or "")
@@ -306,6 +315,26 @@ def main() -> int:
                 k = picked[sp]
                 label = f"{sp} clip{k}"
                 gif = out_dir / f"{sp}_clip{k}_t2m.gif"
+            if args.export_npy_dir:
+                exp_dir = Path(args.export_npy_dir); exp_dir.mkdir(parents=True, exist_ok=True)
+                safe = label.replace(" ", "_")
+                # The dataset serves motion in the NORMALIZED/FK joint order
+                # (cond["new_to_old_perm"]; anytop_dataset.py reorders raw_motion[:, perm, :]);
+                # but the raw cond.npy AND the minipack skeleton the PZ skinning pipeline uses are
+                # in the ORIGINAL joint order. Export in the ORIGINAL order (undo the permutation)
+                # so the .npy lines up with cond/minipack and skins correctly — feeding the
+                # normalized-order rot6d to the original-order skeleton silently mismatches joints
+                # (a leg flips up). Only the exported .npy is reordered; the rendered gif still uses
+                # the in-loop normalized-order FK (item offsets), so it is unchanged.
+                perm = np.asarray(ds.cond[sp]["new_to_old_perm"], dtype=int)
+                if perm.shape != (J,) or not np.array_equal(np.sort(perm), np.arange(J)):
+                    raise RuntimeError(f"invalid joint permutation for {sp}: J={J}, perm.shape={perm.shape}")
+                if perm[0] != 0:                             # skinning reads root channels from slot 0
+                    raise RuntimeError(f"{sp}: original-order root is not joint 0 (perm[0]={perm[0]})")
+                inv = np.argsort(perm)                       # new(FK)-order -> original(cond) order
+                exp_path = exp_dir / f"{safe}_motion_13ch.npy"
+                np.save(exp_path, _snap_pr[0][:, inv, :].astype(np.float32))
+                print(f"  [export] {_snap_pr[0].shape} float32 (original cond joint order) -> {exp_path}")
             make_t2m_large_gif(
                 snap_world, cont_world, static_pose, parents, prompt_text,
                 str(gif), fps=args.fps, gt=gt_for_render,
