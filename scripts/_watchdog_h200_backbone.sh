@@ -20,22 +20,22 @@
 # Manages ONLY the H200 backbone. flock single-instance. NEVER scancel.
 set -uo pipefail
 P=/scratch/ts1v23/workspace/noKslot_clean
-OUT_REL="${OUT_REL:-runs/codeflow_graph_pscf_L4safeHuman_n8192_b16g64_lr8e5_4xh200_seed42}"
+OUT_REL="${OUT_REL:-runs/codeflow_graph_pscf_v4b272neutral_n8192_b16g64_lr8e5_4xh200_seed42}"
 OUT="$P/$OUT_REL"
 LOG="$P/.aris/meta/watchdog_h200.log"
 CHECK_SEC="${CHECK_SEC:-300}"        # poll every 5 min
 CTRL_NODE="${CTRL_NODE:-swarmh1002}" # stable node used for squeue queries
 STALE_SRUN_JOB_IDS="${STALE_SRUN_JOB_IDS:-}"   # prior known-dead alloc jobids to also pkill (empty for a fresh run)
 # Resume config — MUST match the original launch; the resume FORWARDS these to the launcher.
-# Defaults = the n8192 L4safeHuman backbone. The launcher otherwise defaults to the OLD
+# Defaults = the n8192 v4b-272neutral backbone. The launcher otherwise defaults to the OLD
 # mergedL4TB cache/ckpt, so NOT forwarding TOKEN_CACHE/FROZEN_CKPT would silently resume
 # the WRONG data (the #1 footgun this parameterization fixes).
-FROZEN_CKPT="${FROZEN_CKPT:-runs/vqvae_L4safeHuman_C72_J144_d512_Q4_n8192_b16g64_300ep_seed42/best_model.pt}"
-TOKEN_CACHE="${TOKEN_CACHE:-data/codeflow_tokens_L4safeHuman_n8192_ep239_fulllen300}"
+FROZEN_CKPT="${FROZEN_CKPT:-runs/vqvae_v4b272neutral_C96_J144_d512_Q4_n8192_b16g64_300ep_curric50to60_seed42/best_model.pt}"
+TOKEN_CACHE="${TOKEN_CACHE:-data/codeflow_tokens_v4b272neutral_n8192_ep219_fulllen300}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 LR="${LR:-8e-5}"
 GEN_EVAL="${GEN_EVAL:-1}"
-EVALUATOR_CKPT="${EVALUATOR_CKPT:-runs/anytop_t2m_evaluator_distilbert_coemb512_gb128_lr1e-4_mfd12_l4human_seed42/best_model.pt}"
+EVALUATOR_CKPT="${EVALUATOR_CKPT:-runs/anytop_t2m_evaluator_distilbert_coemb512_gb128_lr1e-4_mfd12_v4b272_seed42/best_model.pt}"
 GEN_EVAL_EVERY="${GEN_EVAL_EVERY:-50}"
 GEN_EVAL_N="${GEN_EVAL_N:-256}"
 GEN_EVAL_BATCH="${GEN_EVAL_BATCH:-8}"
@@ -44,13 +44,17 @@ GEN_EVAL_BATCH="${GEN_EVAL_BATCH:-8}"
 # HUMAN_UPSAMPLE_START_EPOCH=300 once the design doc is approved.
 HUMAN_UPSAMPLE_FACTOR="${HUMAN_UPSAMPLE_FACTOR:-1.0}"
 HUMAN_UPSAMPLE_START_EPOCH="${HUMAN_UPSAMPLE_START_EPOCH:--1}"
+HUMAN_UPSAMPLE_PHASE2_FACTOR="${HUMAN_UPSAMPLE_PHASE2_FACTOR:-1.0}"
+HUMAN_UPSAMPLE_PHASE2_START_EPOCH="${HUMAN_UPSAMPLE_PHASE2_START_EPOCH:--1}"
 mkdir -p "$P/.aris/meta"
 
-# Fail-fast guard: never resume an L4safeHuman/n8192 run with mismatched cache/ckpt
-# (the launcher's defaults point at the OLD mergedL4TB data).
-if [[ "$OUT_REL" == *L4safeHuman* || "$OUT_REL" == *n8192* ]]; then
-    if [[ "$FROZEN_CKPT" != *n8192* || "$TOKEN_CACHE" != *L4safeHuman*n8192* ]]; then
-        echo "[wd] ABORT: OUT_REL=$OUT_REL but FROZEN_CKPT=$FROZEN_CKPT / TOKEN_CACHE=$TOKEN_CACHE mismatch" >&2
+# Fail-fast guard: never resume an n8192 run with a mismatched cache/ckpt (the launcher's
+# defaults point at the OLD mergedL4TB n512 data). Accept any n8192 cache+ckpt whose tag is
+# consistent with OUT_REL (e.g. v4b272neutral*n8192, L4safeHuman*n8192); reject the stale
+# n512/mergedL4TB defaults (which lack 'n8192').
+if [[ "$OUT_REL" == *n8192* ]]; then
+    if [[ "$FROZEN_CKPT" != *n8192* || "$TOKEN_CACHE" != *n8192* ]]; then
+        echo "[wd] ABORT: OUT_REL=$OUT_REL (n8192) but FROZEN_CKPT=$FROZEN_CKPT / TOKEN_CACHE=$TOKEN_CACHE not both n8192" >&2
         exit 1
     fi
 fi
@@ -174,7 +178,7 @@ resume() {
     # launch detached; the launcher writes its PID to .aris/meta/.gpscf_h200_orch.pid AFTER
     # acquiring flock. rm that pidfile first, launch, then 8s later confirm the PID is alive
     # AND is the launcher (PID-based, so it cannot false-match the ssh wrapper's own argv).
-    out=$(timeout 80 ssh "$mn" "cd $P && rm -f .aris/meta/.gpscf_h200_orch.pid && setsid nohup env JOB_A=$mj JOB_B=$wj MASTER_NODE=$mn WORKER_NODE=$wn RDZV_HOST=$mip NCCL_SOCKET_IFNAME=$mface NCCL_IB_HCA=$mhca BATCH_SIZE=$BATCH_SIZE LR=$LR FROZEN_CKPT=$FROZEN_CKPT TOKEN_CACHE=$TOKEN_CACHE GEN_EVAL=$GEN_EVAL EVALUATOR_CKPT=$EVALUATOR_CKPT GEN_EVAL_EVERY=$GEN_EVAL_EVERY GEN_EVAL_N=$GEN_EVAL_N GEN_EVAL_BATCH=$GEN_EVAL_BATCH HUMAN_UPSAMPLE_FACTOR=$HUMAN_UPSAMPLE_FACTOR HUMAN_UPSAMPLE_START_EPOCH=$HUMAN_UPSAMPLE_START_EPOCH RESUME_CKPT=last_model.pt OVERWRITE=0 OUT=$OUT_REL bash scripts/_launch_graph_pscf_2node_h200.sh > $OUT/orch_resume_wd.log 2>&1 </dev/null & sleep 8; pid=\$(cat .aris/meta/.gpscf_h200_orch.pid 2>/dev/null || true); { [ -n \"\$pid\" ] && ps -p \"\$pid\" -o args= 2>/dev/null | grep -qF '_launch_graph_pscf_2node_h200.sh'; } && echo STARTED || echo DIEDFAST" 2>/dev/null)
+    out=$(timeout 80 ssh "$mn" "cd $P && rm -f .aris/meta/.gpscf_h200_orch.pid && setsid nohup env JOB_A=$mj JOB_B=$wj MASTER_NODE=$mn WORKER_NODE=$wn RDZV_HOST=$mip NCCL_SOCKET_IFNAME=$mface NCCL_IB_HCA=$mhca BATCH_SIZE=$BATCH_SIZE LR=$LR FROZEN_CKPT=$FROZEN_CKPT TOKEN_CACHE=$TOKEN_CACHE GEN_EVAL=$GEN_EVAL EVALUATOR_CKPT=$EVALUATOR_CKPT GEN_EVAL_EVERY=$GEN_EVAL_EVERY GEN_EVAL_N=$GEN_EVAL_N GEN_EVAL_BATCH=$GEN_EVAL_BATCH HUMAN_UPSAMPLE_FACTOR=$HUMAN_UPSAMPLE_FACTOR HUMAN_UPSAMPLE_START_EPOCH=$HUMAN_UPSAMPLE_START_EPOCH HUMAN_UPSAMPLE_PHASE2_FACTOR=$HUMAN_UPSAMPLE_PHASE2_FACTOR HUMAN_UPSAMPLE_PHASE2_START_EPOCH=$HUMAN_UPSAMPLE_PHASE2_START_EPOCH TEXT_DIM=${TEXT_DIM:-768} TEXT_INPUT_NORM=${TEXT_INPUT_NORM:-0} USE_SENTENCE_TOKEN=${USE_SENTENCE_TOKEN:-0} TEXT_SLOT_XATTN=${TEXT_SLOT_XATTN:-0} EPOCHS=${EPOCHS:-600} CAPTION_SAMPLING=${CAPTION_SAMPLING:-fixed} CAPTION_SIDECAR=${CAPTION_SIDECAR:-} PARAMETERIZATION=${PARAMETERIZATION:-} BATCH_SIZE=$BATCH_SIZE GRAD_ACCUM=${GRAD_ACCUM:-1} GEN_EVAL_CAPTION_CACHE=${GEN_EVAL_CAPTION_CACHE:-} GEN_EVAL_MANIFEST=${GEN_EVAL_MANIFEST:-} PROTOCOL=${PROTOCOL:-legacy} HOLDOUT_ART=${HOLDOUT_ART:-} HOLDOUT_SHA=${HOLDOUT_SHA:-} EMPIRICAL_MAX=0 RESUME_CKPT=last_model.pt OVERWRITE=0 OUT=$OUT_REL bash scripts/_launch_graph_pscf_2node_h200.sh > $OUT/orch_resume_wd.log 2>&1 </dev/null & sleep 8; pid=\$(cat .aris/meta/.gpscf_h200_orch.pid 2>/dev/null || true); { [ -n \"\$pid\" ] && ps -p \"\$pid\" -o args= 2>/dev/null | grep -qF '_launch_graph_pscf_2node_h200.sh'; } && echo STARTED || echo DIEDFAST" 2>/dev/null)
     if [ "$out" = STARTED ]; then
         log "RESUME launched OK on $mn (orchestrator PID alive after 8s); sleep 600 before next check"; return 0
     else

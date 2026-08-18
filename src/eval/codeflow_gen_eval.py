@@ -47,6 +47,33 @@ def pooled_rprec(q, g, pool):
     return {k: acc[k] / npool for k in acc}, npool
 
 
+def shuffle_pool_rprec(q, g, pool, reps, gen, ks=(1, 2, 3)):
+    """PROTOCOL text->motion R-precision (MotionMillion/T2M regime: batch=pool, shuffle=True,
+    drop_last, euclidean). `reps` independent random shuffles (via the passed `gen` generator so
+    the caller's global RNG / flow.sample stream is untouched), each partitioned into floor(n/pool)
+    pools of `pool` (remainder dropped), euclidean-distance retrieval with the true pair on the
+    diagonal, cumulative top-k, averaged over all pools x reps. Returns ({k: R@k}, n_pools_total).
+    For L2-normalized embeddings euclidean-rank == cosine-rank, so R@k is protocol-exact. This is
+    the shuffled counterpart of pooled_rprec (which slices consecutive dataset-order pools)."""
+    n = q.shape[0]; npool = n // pool
+    if npool == 0:
+        return None, 0
+    acc = {k: 0.0 for k in ks}
+    tgt = torch.arange(pool).unsqueeze(1)
+    cnt = 0
+    for _ in range(reps):
+        perm = torch.randperm(n, generator=gen)
+        for p in range(npool):
+            idx = perm[p * pool:(p + 1) * pool]
+            d = torch.cdist(q[idx], g[idx])              # [pool,pool] rows=text query, cols=motion
+            order = d.argsort(dim=1)                     # ascending euclidean distance
+            hits = (order[:, :max(ks)] == tgt).cumsum(1).clamp(max=1)
+            for k in ks:
+                acc[k] += hits[:, k - 1].float().mean().item()
+            cnt += 1
+    return {k: acc[k] / cnt for k in acc}, cnt
+
+
 def fid_score(x, y):
     try:
         from scipy.linalg import sqrtm
@@ -75,10 +102,11 @@ def mean_pair_l2(x, max_pairs, gen):
     return float((x[i[keep]] - x[j[keep]]).norm(dim=-1).mean().item())
 
 
-def subset_metrics(text_emb, gen_emb, gt_emb, pool, fid_min, max_div_pairs, gen):
+def subset_metrics(text_emb, gen_emb, gt_emb, pool, fid_min, max_div_pairs, gen, reps=20):
     n = gen_emb.shape[0]
     match = (text_emb * gen_emb).sum(-1)                 # cos(caption, gen) true pairs
-    rr, npp = pooled_rprec(text_emb, gen_emb, pool)      # text query, gen gallery
+    # PROTOCOL R-precision: shuffle pool-`pool` (MotionMillion regime), NOT dataset-order pooled_rprec.
+    rr, npp = shuffle_pool_rprec(text_emb, gen_emb, pool, reps, gen)  # text query, gen gallery
     m = {"n": n, "matching_mean": float(match.mean().item()),
          "matching_median": float(match.median().item()),
          "rprec_text_to_gen": rr, "rprec_pools": npp,
@@ -107,7 +135,8 @@ def motion_id_bucket(mid: str) -> str:
 @torch.no_grad()
 def run_gen_eval(*, flow, tokenizer, core, t5_encode_batch, ds, idxs, dev, stride,
                  pool=32, steps=25, cfg_scale=4.0, num_frames=300, gen_batch=32,
-                 fid_min=1024, max_div_pairs=20000, seed=42, gt_baseline=False, log=print):
+                 fid_min=1024, max_div_pairs=20000, seed=42, gt_baseline=False, log=print,
+                 emb_sink=None):
     """Generate text->motion for ds[idxs], decode continuous, embed with the frozen
     evaluator, return a report dict {n, overall, per_subset{animal/human/...}}.
 
@@ -126,6 +155,12 @@ def run_gen_eval(*, flow, tokenizer, core, t5_encode_batch, ds, idxs, dev, strid
         TE, GE, GTE, mids = [], [], [], []
         B = max(1, gen_batch)
         done = 0
+        rkeys = [] if emb_sink is not None else None   # (dataset_index, caption) — unique per ROW
+        # Soft-clamp bookkeeping. A short decode is scored as a shorter prefix against a
+        # full-duration GT; if clamp incidence covaries with clip length or skeleton, any
+        # per-skeleton analysis is biased. Recording it per row is what lets an offline
+        # consumer prove the count was zero instead of assuming it.
+        clamp_rows = [] if emb_sink is not None else None   # (target_frames, decoded_frames)
         for bstart in range(0, len(idxs), B):
             bidx = idxs[bstart:bstart + B]
             items = [ds[di] for di in bidx]
@@ -138,6 +173,12 @@ def run_gen_eval(*, flow, tokenizer, core, t5_encode_batch, ds, idxs, dev, strid
                 gte = core.encode_motion(batch).float().cpu()
                 GE.append(gte); GTE.append(gte); TE.append(core.encode_text(caps).float().cpu())
                 mids.extend(str(ds._plan[di][1]["motion_id"]) for di in bidx)
+                if rkeys is not None:
+                    rkeys.extend((int(di), str(c)) for di, c in zip(bidx, caps))
+                if clamp_rows is not None:
+                    # No decode happens on this branch, so nothing can be clamped.
+                    clamp_rows.extend((min(num_frames, int(it["num_frames"])),
+                                       min(num_frames, int(it["num_frames"]))) for it in items)
                 done += len(items)
                 log(f"[gen-eval] GT-baseline {done}/{len(idxs)} embedded (B={len(items)})")
                 continue
@@ -178,6 +219,8 @@ def run_gen_eval(*, flow, tokenizer, core, t5_encode_batch, ds, idxs, dev, strid
                     log(f"[gen-eval] WARN clip {bidx[bi]}: decode T={cont.shape[1]} < gt_T={gt_T}; "
                         f"scoring first {t_place} frames (T_lat={T_lat}, stride={stride})")
                 gen_x[bi, :, :, :t_place] = cont[bi, :t_place].permute(1, 2, 0)  # [t,J,13]->[J,13,t]
+                if clamp_rows is not None:
+                    clamp_rows.append((int(gt_T), int(t_place)))
             repl = {"anytop_x": gen_x}
             if clamp_fm is not None:
                 repl["frame_mask"] = clamp_fm                                   # gen frame validity trimmed for clamped clips
@@ -186,10 +229,24 @@ def run_gen_eval(*, flow, tokenizer, core, t5_encode_batch, ds, idxs, dev, strid
             GTE.append(core.encode_motion(batch).float().cpu())
             TE.append(core.encode_text(caps).float().cpu())
             mids.extend(str(ds._plan[di][1]["motion_id"]) for di in bidx)
+            if rkeys is not None:
+                rkeys.extend((int(di), str(c)) for di, c in zip(bidx, caps))
             done += len(items)
             log(f"[gen-eval]   {done}/{len(idxs)} generated (B={len(items)} T_lat={T_lat})")
 
         TE = torch.cat(TE); GE = torch.cat(GE); GTE = torch.cat(GTE)
+        # Optional out-param (default None = byte-identical for existing callers): hand the
+        # generated embeddings back so a caller can run MultiModality over repeated samples.
+        if emb_sink is not None:
+            # text_emb/gt_emb are handed back alongside gen_emb so a caller can recompute the
+            # per-clip matching score (text_emb·gen_emb, the same product subset_metrics uses)
+            # without re-deriving the text tower and risking a different normalization.
+            emb_sink.append({"gen_emb": GE.clone(), "motion_ids": list(mids),
+                             "row_keys": list(rkeys),
+                             "text_emb": TE.clone(), "gt_emb": GTE.clone(),
+                             "target_frames": [t for t, _ in clamp_rows],
+                             "decoded_frames": [d for _, d in clamp_rows],
+                             "n_soft_clamped": sum(1 for t, d in clamp_rows if d < t)})
         n = GE.shape[0]
         report = {"n": n, "pool": pool, "steps": steps, "cfg_scale": cfg_scale,
                   "num_frames": num_frames, "answer_form": "continuous"}
@@ -207,3 +264,84 @@ def run_gen_eval(*, flow, tokenizer, core, t5_encode_batch, ds, idxs, dev, strid
         torch.set_rng_state(cpu_state)
         if cuda_state is not None:
             torch.cuda.set_rng_state_all(cuda_state)
+
+
+def make_caption_lookup_encoder(cache_prefix, corpus_root, text_dim, dev):
+    """encode_batch callable backed by the LLM2Vec ragged sidecar — no model, a lookup.
+
+    Same contract as the T5 runtime encoder: texts -> (global [b,D], tokens [b,Lb,D],
+    mask [b,Lb]). Provenance is META-DRIVEN and mandatory (codex re-review #3): the
+    sidecar's meta.json names the captions json it was built from and carries its sha256;
+    this helper resolves that file under `corpus_root`, verifies the hash, re-derives the
+    canonical enumeration and requires it to MATCH keys.json row for row. A half-written
+    sidecar (no meta), an edited corpus (sha drift), or a shifted enumeration (key drift)
+    all fail loud here instead of serving the wrong vector for a caption.
+
+    The pooled row passes through an fp16 round-trip because training reads caption_emb
+    back from the npz as fp16 — eval must consume the identical quantised value. Token
+    rows are stored fp16 already, so a plain fp32 cast matches training.
+    """
+    import hashlib as _hl
+    import json as _json
+    from pathlib import Path as _Path
+    from src.data.caption_keys import canonical_occurrences
+
+    pfx = _Path(cache_prefix)
+    meta_p = _Path(f"{pfx}.meta.json")
+    if not meta_p.exists():
+        raise RuntimeError(
+            f"{meta_p} missing — refusing a caption sidecar without provenance "
+            f"(a half-assembled build looks exactly like this)")
+    meta = _json.loads(meta_p.read_text())
+    tj_name = meta.get("captions_json_name")
+    tj_sha = meta.get("captions_json_sha256")
+    if not tj_name or not tj_sha:
+        raise RuntimeError(f"{meta_p} lacks captions_json_name/sha256 provenance fields")
+    tj = _Path(corpus_root) / tj_name
+    got_sha = _hl.sha256(tj.read_bytes()).hexdigest()
+    if got_sha != tj_sha:
+        raise RuntimeError(
+            f"caption sidecar provenance mismatch: cache built from {tj_name} sha "
+            f"{tj_sha[:16]}..., but {tj} now hashes {got_sha[:16]}... — corpus drift")
+
+    embs = np.load(f"{pfx}.embs.npy", mmap_mode="r")
+    toks = np.load(f"{pfx}.tokens.npy", mmap_mode="r")
+    offs = np.load(f"{pfx}.offsets.npy")
+    keys = _json.loads(_Path(f"{pfx}.keys.json").read_text())
+    if int(embs.shape[1]) != int(text_dim):
+        raise RuntimeError(f"caption cache dim {embs.shape[1]} != text_dim {text_dim}")
+
+    occ = canonical_occurrences(_json.loads(tj.read_text()))
+    if len(occ) != len(keys) or len(occ) != embs.shape[0]:
+        raise RuntimeError(
+            f"caption cache rows {embs.shape[0]} / keys {len(keys)} / canonical "
+            f"enumeration {len(occ)} disagree")
+    for i in (0, len(occ) // 2, len(occ) - 1):
+        if occ[i][0] != keys[i]:
+            raise RuntimeError(
+                f"caption cache key order drift at row {i}: enumeration says "
+                f"{occ[i][0]!r}, keys.json says {keys[i]!r}")
+    row_of: dict = {}
+    for ri, (_k, c) in enumerate(occ):
+        row_of.setdefault(c, ri)
+
+    @torch.no_grad()
+    def encode_batch(texts):
+        rows = []
+        for t in texts:
+            if t not in row_of:
+                raise KeyError(f"caption not in the LLM2Vec sidecar: {t[:90]!r}")
+            rows.append(row_of[t])
+        Lb = max(int(offs[r + 1] - offs[r]) for r in rows)
+        gl = torch.zeros(len(rows), int(text_dim))
+        hs = torch.zeros(len(rows), Lb, int(text_dim))
+        m = torch.zeros(len(rows), Lb, dtype=torch.bool)
+        for j, r in enumerate(rows):
+            a, b = int(offs[r]), int(offs[r + 1])
+            gl[j] = torch.from_numpy(np.asarray(embs[r], np.float32)
+                                     .astype(np.float16).astype(np.float32))
+            hs[j, :b - a] = torch.from_numpy(np.asarray(toks[a:b], np.float32))
+            m[j, :b - a] = True
+        return gl.to(dev), hs.to(dev), m.to(dev)
+
+    return encode_batch

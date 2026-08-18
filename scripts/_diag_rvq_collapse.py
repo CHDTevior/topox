@@ -29,7 +29,7 @@ from src.data.anytop_dataset import (  # noqa: E402
     AnyTopDataset, collate_fn as anytop_collate_fn, _STD_FLOOR,
 )
 from src.models.graph_salad.batch import GraphMotionBatch  # noqa: E402
-from src.models.vq_model import GraphVQTokenizer  # noqa: E402
+from src.models.vq_model import GraphVQTokenizer, semantic_config_from_ckpt  # noqa: E402
 from src.data.anytop_rot6d_fk import recover_from_bvh_rot_np  # noqa: E402 (official rot6d FK)
 
 
@@ -37,6 +37,7 @@ def load_vq(ckpt_path, dev):
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     ta = ck["args"]
     model = GraphVQTokenizer(
+        **semantic_config_from_ckpt(ck),
         d_model=ta["d_model"], n_heads=ta["n_heads"], d_ff=ta["d_ff"],
         n_graph_layers=ta["n_graph_layers"],
         n_enc_temporal_layers=ta["n_enc_temporal_layers"],

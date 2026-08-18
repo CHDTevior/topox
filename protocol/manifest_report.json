@@ -1,0 +1,58 @@
+{
+  "holdout_artifact": "data/holdout_topologies_v1.json",
+  "artifact_sha256": "0baf7bcfb82266d504f9bb45d0ec4f22980043ee49e53c0d7d13b40ebc858e0c",
+  "inputs": {
+    "train_main.json": 97288,
+    "val_action_clean.json": 5142,
+    "val_action_overlap.json": 8,
+    "val_all.json": 5150,
+    "val_animal.json": 3808,
+    "val_human.json": 1342
+  },
+  "outputs": {
+    "train_main_retained.json": {
+      "kept": 90277,
+      "dropped": {
+        "representative": 4282,
+        "stress": 2729
+      }
+    },
+    "val_action_clean_retained.json": {
+      "kept": 4770,
+      "dropped": {
+        "representative": 227,
+        "stress": 145
+      }
+    },
+    "val_action_overlap_retained.json": {
+      "kept": 7,
+      "dropped": {
+        "stress": 1
+      }
+    },
+    "val_all_retained.json": {
+      "kept": 4777,
+      "dropped": {
+        "representative": 227,
+        "stress": 146
+      }
+    },
+    "val_animal_retained.json": {
+      "kept": 3435,
+      "dropped": {
+        "representative": 227,
+        "stress": 146
+      }
+    },
+    "val_human_retained.json": {
+      "kept": 1342,
+      "dropped": {}
+    },
+    "held_representative.json": {
+      "n": 4509
+    },
+    "held_stress.json": {
+      "n": 2875
+    }
+  }
+}

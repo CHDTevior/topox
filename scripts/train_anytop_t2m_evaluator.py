@@ -47,6 +47,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.data.anytop_t2m_eval_dataset import AnyTopT2MEvalDataset, collate_fn
+from src.data.holdout_guard import guard_dataset
+from src.data import provenance as prov
 from src.models.graph_salad.batch import GraphMotionBatch
 from src.models.graph_salad.t2m_evaluator import (
     AnyTopT2MEvaluator,
@@ -88,6 +90,20 @@ def is_main(rank: int) -> bool:
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
     # ---- data ----
+    ap.add_argument("--protocol", default="legacy",
+                   choices=["legacy", "unseen_topology_v1"],
+                   help="legacy (default) reproduces every pre-existing command exactly and does "
+                        "not require the held-out artifact. unseen_topology_v1 enforces the "
+                        "frozen pre-registration: retained splits, artifact SHA, and abort on any "
+                        "held topology. Only a run under unseen_topology_v1 may back an "
+                        "unseen-topology claim.")
+    ap.add_argument("--holdout_artifact", type=str, default=None,
+                    help="frozen pre-registration (data/holdout_topologies_v1.json). Required "
+                         "unless --allow_no_holdout. Point --manifest/--val_manifest at the "
+                         "*_retained.json produced by scripts/_build_holdout_eval_manifests.py.")
+    ap.add_argument("--holdout_sha", type=str, default=None)
+    ap.add_argument("--allow_no_holdout", action="store_true",
+                    help="run WITHOUT the guard; logs loudly and must not back any unseen claim.")
     ap.add_argument("--manifest", required=True, help="M0 train_main.json manifest.")
     ap.add_argument("--data_root", required=True, help="AnyTop merged data root.")
     ap.add_argument("--caption_emb_cache", default=None,
@@ -143,7 +159,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_dataset(args) -> AnyTopT2MEvalDataset:
-    return AnyTopT2MEvalDataset(
+    ds = AnyTopT2MEvalDataset(
         manifest_path=args.manifest,
         data_root=args.data_root,
         # DistilBERT primary path uses raw caption_text -> caption_emb_cache=None.
@@ -153,6 +169,14 @@ def build_dataset(args) -> AnyTopT2MEvalDataset:
         num_frames=args.num_frames,
         max_joints=args.max_joints,
     )
+    _strict = args.protocol == "unseen_topology_v1"
+    if _strict and not args.holdout_artifact:
+        raise SystemExit("--protocol unseen_topology_v1 requires --holdout_artifact")
+    guard_dataset(ds, data_root=args.data_root,
+                  artifact=args.holdout_artifact if _strict else None,
+                  expect_body_sha=args.holdout_sha, stage="evaluator:train",
+                  allow_no_holdout=(not _strict) or args.allow_no_holdout)
+    return ds
 
 
 def build_model(args) -> AnyTopT2MEvaluator:
@@ -260,6 +284,15 @@ def val_eval(core, val_loader, device, text_tower, max_batches):
 
 def main() -> int:
     args = parse_args()
+    _PROV_EVAL = prov.stamp(
+        protocol=args.protocol, stage="evaluator",
+        holdout_artifact=args.holdout_artifact
+        if args.protocol == "unseen_topology_v1" else None,
+        data_root=args.data_root,
+        extra={"manifest": args.manifest, "val_manifest": args.val_manifest,
+               "manifest_sha256": prov.sha256_file(args.manifest),
+               "val_manifest_sha256": prov.sha256_file(args.val_manifest)
+               if args.val_manifest else None})
     if args.text_tower == "t5_cache" and not args.caption_emb_cache:
         raise SystemExit(
             "--text_tower t5_cache requires --caption_emb_cache (T5 sidecar prefix); "
@@ -289,6 +322,12 @@ def main() -> int:
             caption_emb_cache=(args.caption_emb_cache if args.text_tower == "t5_cache" else None),
             split="val", view=args.view, num_frames=args.num_frames, max_joints=args.max_joints,
         )
+        # The val manifest is the ONLY signal allowed to select this checkpoint, so a held
+        # topology here would let the evaluator be tuned on the rigs it must later judge.
+        guard_dataset(val_ds, data_root=args.data_root,
+                      artifact=args.holdout_artifact if (args.protocol == "unseen_topology_v1") else None,
+                      expect_body_sha=args.holdout_sha, stage="evaluator:val",
+                      allow_no_holdout=(args.protocol != "unseen_topology_v1") or args.allow_no_holdout)
         val_loader = DataLoader(
             val_ds, batch_size=args.val_batch_size, shuffle=False, num_workers=2,
             collate_fn=collate_fn, drop_last=True,
@@ -361,7 +400,7 @@ def main() -> int:
 
         if (out_dir is not None and is_main(rank) and args.save_every > 0
                 and (epoch + 1) % args.save_every == 0):
-            ckpt = {"model": core.state_dict(), "epoch": epoch, "args": vars(args)}
+            ckpt = {prov.KEY: _PROV_EVAL, "model": core.state_dict(), "epoch": epoch, "args": vars(args)}
             tmp = out_dir / f".evaluator_ep{epoch+1}.pt.tmp"
             torch.save(ckpt, tmp)
             os.replace(tmp, out_dir / f"evaluator_ep{epoch+1}.pt")
@@ -380,8 +419,8 @@ def main() -> int:
                     if vm["r1"] > best_val_r1:
                         best_val_r1 = vm["r1"]
                         tmp = out_dir / ".best_model.pt.tmp"
-                        torch.save({"model": core.state_dict(), "epoch": epoch,
-                                    "val": vm, "args": vars(args)}, tmp)
+                        torch.save({prov.KEY: _PROV_EVAL, "model": core.state_dict(),
+                                    "epoch": epoch, "val": vm, "args": vars(args)}, tmp)
                         os.replace(tmp, out_dir / "best_model.pt")
                         print(f"[val] new best R@1={best_val_r1:.3f} -> best_model.pt", flush=True)
         if is_dist and run_val:

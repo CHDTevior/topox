@@ -175,6 +175,7 @@ class AnyTopT2MEvalDataset(Dataset):
         num_frames: int = 300,
         max_joints: int = 144,
         drop_uncovered_species_stripped: bool = True,
+        base_split: str | None = None,
         **anytop_kwargs,
     ) -> None:
         if view not in _VALID_VIEWS:
@@ -201,9 +202,13 @@ class AnyTopT2MEvalDataset(Dataset):
             "split", "num_frames", "max_joints", "data_root",
         ):
             anytop_kwargs.pop(forced, None)
+        # A HELD-OUT manifest draws from both original partitions, because a held topology
+        # contributes its entire clip inventory to the test side. Serving it against the val list
+        # alone fails on every clip that came from train, so the caller can point the underlying
+        # dataset at "all". `split` still governs the wrapper's own semantics.
         self.base = AnyTopDataset(
             data_root=data_root,
-            split=split,
+            split=(base_split or split),
             num_frames=num_frames,
             max_joints=max_joints,
             load_captions=False,     # wrapper supplies caption_text per view
@@ -218,6 +223,27 @@ class AnyTopT2MEvalDataset(Dataset):
         # `caption_text` (always attached below) and never needs the T5 cache.
         # Pass caption_emb_cache=None for the DistilBERT path; pass a prefix only
         # for the T5 fallback/ablation tower. ----
+        # Corpus-revision guard (codex r3 #5). A manifest stamped with a captions_json_name
+        # declares which corpus its caption strings (and cap indices) come from. The legacy
+        # T5 sidecar carries no provenance and was built from the ORIGINAL json, so pairing
+        # it with a stamped manifest would resolve `<mid>__capN` keys to the WRONG captions
+        # for every promoted/shifted row — silently. Refuse unless the cache's own meta
+        # declares the same corpus.
+        _stamp = None
+        for _r in self._records[:1]:
+            _stamp = _r.get("captions_json_name")
+        if _stamp and caption_emb_cache is not None:
+            _cmp = Path(str(caption_emb_cache) + ".meta.json")
+            _have = None
+            if _cmp.exists():
+                import json as _json
+                _have = _json.loads(_cmp.read_text()).get("captions_json_name")
+            if _have != _stamp:
+                raise ValueError(
+                    f"manifest {manifest_path} declares corpus {_stamp!r} but caption cache "
+                    f"{caption_emb_cache} {'declares ' + repr(_have) if _have else 'carries no provenance (legacy T5)'} — "
+                    f"cap-index rows would silently mismatch. Use the legacy manifest with "
+                    f"the legacy cache, or a cache built from the same corpus.")
         self._t5 = (
             _T5CaptionEmbeddingCache(caption_emb_cache)
             if caption_emb_cache is not None else None
@@ -274,6 +300,21 @@ class AnyTopT2MEvalDataset(Dataset):
             if self._t5 is not None and caption_valid and t5_key not in self._t5:
                 missing_t5.append(t5_key)
                 continue
+            # The guard resolves held-out membership from `filename`, while the payload is
+            # loaded via `motion_id`. If those two can disagree, a held motion paired with a
+            # retained filename passes every check and still trains. They agree on the current
+            # manifests, but nothing enforced it, so enforce it here where the plan is built —
+            # every consumer inherits the invariant, not just the guard.
+            fn_stem = Path(str(rec.get("filename", ""))).stem
+            mid_rec = str(rec.get("motion_id", ""))
+            mid_base = str(self.base.samples[base_idx]["motion_id"])
+            if not (fn_stem == mid_rec == mid_base):
+                raise ValueError(
+                    f"identity mismatch in manifest record: filename stem {fn_stem!r}, "
+                    f"motion_id {mid_rec!r}, underlying sample motion_id {mid_base!r}. "
+                    f"Held-out membership is resolved from the filename but the payload is "
+                    f"loaded by motion_id, so a disagreement here can smuggle a held-out "
+                    f"motion past the guard.")
             self._plan.append(
                 (base_idx, rec, t5_key, caption_text, caption_valid)
             )

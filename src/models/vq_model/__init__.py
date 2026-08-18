@@ -10,14 +10,14 @@ and diffusion pipelines keep working unchanged.
 
 from .quantizer import MaskedResidualVQ
 from .masked_motion_decoder import MaskedMotionDecoder
-from .graph_vq_tokenizer import GraphVQTokenizer
+from .graph_vq_tokenizer import GraphVQTokenizer, semantic_config_from_ckpt
 from .losses import compute_vq_loss_13ch
 from .utils import root_drift_jitter_qa
 
 __all__ = [
     "MaskedResidualVQ",
     "MaskedMotionDecoder",
-    "GraphVQTokenizer",
+    "GraphVQTokenizer", "semantic_config_from_ckpt",
     "compute_vq_loss_13ch",
     "root_drift_jitter_qa",
 ]

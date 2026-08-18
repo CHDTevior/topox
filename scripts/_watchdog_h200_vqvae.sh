@@ -43,8 +43,11 @@ OUT="$P/$OUT_REL"
 # Refuse to start (hence refuse to ever resume) on mismatch, so a stale old-default env can
 # never silently relaunch this run as L4safeTB/C96.
 if [[ "$OUT_REL" == *L4safeHuman* ]]; then
-  if [ "$ANYTOP_ROOT" != "data/animo4d_anytop_clean_L4_safe_plus_humanml3d" ] || [ "$MAX_COARSE" != "72" ]; then
-    echo "[wd-vq] ABORT: L4safeHuman run but ANYTOP_ROOT='$ANYTOP_ROOT' / MAX_COARSE='$MAX_COARSE' mismatch (need humanml3d root + 72)" >&2
+  # Accept any humanml3d merged root (v2 'data/..._L4_safe_plus_humanml3d' AND the v3a
+  # re-encode 'data/..._L4_safe_plus_humanml3d_v3a'); the guard's intent is to reject a
+  # stale NON-humanml3d default (e.g. L4safeTB/C96), not to pin one exact dir.
+  if [[ "$ANYTOP_ROOT" != data/animo4d_anytop_clean_L4_safe_plus_humanml3d* ]] || [ "$MAX_COARSE" != "72" ]; then
+    echo "[wd-vq] ABORT: L4safeHuman run but ANYTOP_ROOT='$ANYTOP_ROOT' / MAX_COARSE='$MAX_COARSE' mismatch (need a humanml3d root + 72)" >&2
     exit 1
   fi
 fi

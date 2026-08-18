@@ -68,10 +68,18 @@ class GraphCodeFlow(nn.Module):
         depth_single: int = 12,
         max_T_lat: int = 75,
         mlp_ratio: float = 4.0,
+        text_input_norm: bool = False,
+        use_sentence_token: bool = False,
+        text_slot_xattn: bool = False,
+        parameterization: str = "v",
     ) -> None:
         super().__init__()
+        if parameterization not in ("v", "x"):
+            raise ValueError(
+                f"unknown parameterization {parameterization!r} (expected v | x)")
         self.code_dim = code_dim
         self.model_variant = model_variant
+        self.parameterization = parameterization
         self.noise_scale = float(noise_scale)
         self.t_eps = float(t_eps)
         # Resolve dropout per variant if unset (spec §5.4: graph_pscf=0.05, level_a=0.1)
@@ -83,6 +91,10 @@ class GraphCodeFlow(nn.Module):
         # 11-positional-arg forward contract, so predict_velocity/CFG/empirical-norm
         # below are unchanged and drop-in for either variant.
         if model_variant == "level_a":
+            if text_input_norm or use_sentence_token or text_slot_xattn:
+                raise ValueError(
+                    "text_input_norm/use_sentence_token/text_slot_xattn are "
+                    "graph_pscf-only; level_a does not implement them")
             self.net = GraphStructuredCodeFlow(
                 code_dim=code_dim, n_heads=n_heads, d_ff=d_ff, n_layers=n_layers,
                 d_text=d_text, text_token_dim=text_token_dim, dropout=dropout)
@@ -92,7 +104,11 @@ class GraphCodeFlow(nn.Module):
                 d_ff=(2048 if d_ff is None else d_ff),
                 depth_double=depth_double, depth_single=depth_single,
                 d_text=d_text, text_token_dim=text_token_dim,
-                max_T_lat=max_T_lat, mlp_ratio=mlp_ratio, dropout=dropout)
+                max_T_lat=max_T_lat, mlp_ratio=mlp_ratio, dropout=dropout,
+                text_input_norm=text_input_norm,
+                use_sentence_token=use_sentence_token,
+                text_slot_xattn=text_slot_xattn)
+
         else:
             raise ValueError(
                 f"unknown model_variant {model_variant!r} (expected level_a | graph_pscf)")
@@ -128,6 +144,33 @@ class GraphCodeFlow(nn.Module):
     # ------------------------------------------------------------------ #
     # Velocity prediction (thin pass-through to the graph net)           #
     # ------------------------------------------------------------------ #
+    # x-parameterization: loss-weight cap. The v-space residual obeys the exact
+    # identity v_hat - v_target == (x_hat - x)/(1-t) (z_t = t*x + (1-t)*noise),
+    # so flow_loss computes the residual THAT way: the optimum stays x_hat == x
+    # at EVERY t (no bias term), and this floor merely caps the per-sample
+    # x-error weight at 1e4 for t > 0.99 (~1% of uniform t), where an uncapped
+    # 1/(1-t)^2 would amplify bf16 output rounding into loss spikes. (Capping
+    # (1-t) INSIDE the x->v conversion instead would add a (q/c - 1)*(x-noise)
+    # bias to the residual and move the optimum — codex r1 #1.)
+    X_PRED_MIN_ONE_MINUS_T = 1e-2
+
+    def _net_forward(
+        self,
+        z_t: torch.Tensor,
+        timesteps: torch.Tensor,
+        cond: dict,
+        *,
+        validate_inputs: bool = False,
+    ) -> torch.Tensor:
+        """Raw net output: a velocity under parameterization='v', the clean
+        latent x_hat under parameterization='x'."""
+        return self.net(
+            z_t, timesteps,
+            cond["text_global"], cond["text_tokens"], cond["text_token_mask"],
+            cond["has_text"], cond["pooled_adjacency"], cond["pooled_geodesic"],
+            cond["pooled_skeleton_embeddings"], cond["coarse_mask"],
+            cond["frame_mask_lat"], validate_inputs=validate_inputs)
+
     def predict_velocity(
         self,
         z_t: torch.Tensor,
@@ -139,13 +182,23 @@ class GraphCodeFlow(nn.Module):
         """cond carries the (already-prepared) conditioning tensors:
         text_global, text_tokens, text_token_mask, has_text, pooled_adjacency,
         pooled_geodesic, pooled_skeleton_embeddings, coarse_mask, frame_mask_lat.
+
+        Under parameterization="x" the net's output is read as the clean latent
+        x_hat and converted here EXACTLY: v_hat = (x_hat - z_t)/(1-t) in fp32
+        ((1-t) floored at t_eps=1e-4 purely against divide-by-zero — the Euler
+        sampling grid tops out at t = 1 - 1/steps, so for any steps <= 10^4 the
+        floor never activates and the sampler / predict_clean_from_velocity see
+        the exact conversion). Training does NOT go through this path (flow_loss
+        uses the identity residual, see X_PRED_MIN_ONE_MINUS_T above).
         """
-        return self.net(
-            z_t, timesteps,
-            cond["text_global"], cond["text_tokens"], cond["text_token_mask"],
-            cond["has_text"], cond["pooled_adjacency"], cond["pooled_geodesic"],
-            cond["pooled_skeleton_embeddings"], cond["coarse_mask"],
-            cond["frame_mask_lat"], validate_inputs=validate_inputs)
+        out = self._net_forward(z_t, timesteps, cond, validate_inputs=validate_inputs)
+        if self.parameterization == "x":
+            t = timesteps
+            while t.ndim < z_t.ndim:
+                t = t[..., None]
+            one_minus_t = (1.0 - t.float()).clamp_min(self.t_eps)
+            out = ((out.float() - z_t.float()) / one_minus_t).to(out.dtype)
+        return out
 
     def predict_clean_from_velocity(
         self, z_t: torch.Tensor, timesteps: torch.Tensor, velocity: torch.Tensor,
@@ -217,11 +270,28 @@ class GraphCodeFlow(nn.Module):
         z_t = (t_view * x + (1.0 - t_view) * noise) * valid
         v_target = (x - noise) * valid
 
-        v_pred = self.predict_velocity(z_t, t, cond, validate_inputs=validate_inputs)
+        raw = self._net_forward(z_t, t, cond, validate_inputs=validate_inputs)
+        if self.parameterization == "x":
+            # v-space residual via the exact identity v_hat - v_target ==
+            # (x_hat - x)/(1-t): optimum stays x_hat == x at every t; the floor
+            # only caps the weight (see X_PRED_MIN_ONE_MINUS_T). fp32.
+            c = (1.0 - t_view.float()).clamp_min(self.X_PRED_MIN_ONE_MINUS_T)
+            diff = (raw.float() - x.float()) / c
+            # Exact conversion for the QA extras (predict_clean_from_velocity
+            # reconstructs x_hat from this); t_eps guard against t == 1 only.
+            v_pred = ((raw.float() - z_t.float())
+                      / (1.0 - t_view.float()).clamp_min(self.t_eps)).to(raw.dtype)
+            # Clean prediction in NORMALIZED latent space, gradient-carrying —
+            # consumed by the trainer's decoded-geometry loss (ARDY-style L_dec).
+            clean_pred_norm = raw
+        else:
+            v_pred = raw
+            diff = v_pred.float() - v_target.float()
+            clean_pred_norm = z_t + (1.0 - t_view) * v_pred
 
         # Masked flow MSE in fp32 (CodeFlow :509-510 adapted to 2D mask + sum/D).
         vmask = token_mask.unsqueeze(-1).float()           # [B,T_lat,C,1]
-        diff_sq = (v_pred.float() - v_target.float()).pow(2) * vmask
+        diff_sq = diff.pow(2) * vmask
         denom = vmask.sum().clamp_min(1.0) * 1.0            # (#valid tokens) * D via broadcast below
         # diff_sq summed over the D axis is folded into the numerator already
         # (vmask broadcasts over D); divide by valid_token_count * D.
@@ -231,6 +301,7 @@ class GraphCodeFlow(nn.Module):
             "flow_loss": loss,
             "velocity_pred": v_pred,
             "velocity_target": v_target,
+            "clean_pred_norm": clean_pred_norm,
             "z_t": z_t,
             "timesteps": t,
         }

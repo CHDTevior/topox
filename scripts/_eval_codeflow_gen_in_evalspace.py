@@ -12,7 +12,7 @@ Per-subset is by motion_id (HML3D→human / PZ_→animal / else→truebones), do
 helper. SNAPSHOT eval (backbone may be mid-training). Single-GPU, frozen, no grad.
 """
 from __future__ import annotations
-import argparse, importlib.util, json
+import argparse, hashlib, importlib.util, json
 from pathlib import Path
 import torch
 import sys
@@ -34,6 +34,9 @@ def parse_args():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--flow_ckpt", required=True)
     ap.add_argument("--eval_ckpt", required=True)
+    ap.add_argument("--caption_cache", default=None,
+                    help="LLM2Vec ragged sidecar prefix; REQUIRED when the flow ckpt was "
+                         "trained with text_dim != 768")
     ap.add_argument("--val_manifest", required=True)
     ap.add_argument("--data_root", required=True)
     ap.add_argument("--n_samples", type=int, default=0, help="subset size (strided over the kept set for species spread); 0=full.")
@@ -63,6 +66,26 @@ def parse_args():
     ap.add_argument("--max_div_pairs", type=int, default=20000)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--base_split", default=None, choices=["train", "val", "all"],
+                    help="which partition the underlying dataset serves. Required as 'all' for a "
+                         "HELD-OUT manifest: a held topology contributes its whole inventory, so "
+                         "its clips come from both original partitions and the val list alone "
+                         "cannot resolve them.")
+    ap.add_argument("--moment_policy", default="own",
+                    choices=["own", "estimated", "measured"],
+                    help="where per-rig normalisation moments come from. own (default) = the "
+                         "rig's own motion moments, which for a HELD-OUT rig is transductive and "
+                         "must be reported as a disclosed upper bound. estimated = predicted from "
+                         "the static rest pose, the only honest choice at k=0. measured = "
+                         "computed from the k target clips one would actually have.")
+    ap.add_argument("--moment_estimator", default=None,
+                    help="estimator .npz, required for --moment_policy estimated")
+    ap.add_argument("--moment_measured", default=None,
+                    help="per-object measured moments .npz, required for --moment_policy measured")
+    ap.add_argument("--emb_dump", default=None,
+                    help="if set, also save the per-clip evaluator embeddings (text/gen/gt) and "
+                         "motion_ids to this .pt so per-skeleton analysis can be done offline. "
+                         "Does not change any reported metric.")
     return ap.parse_args()
 
 
@@ -116,21 +139,43 @@ def main():
         raise SystemExit(f"[gen-eval] --max_joints {args.max_joints} != evaluator max_joints {g('max_joints',None)}")
     print(f"[gen-eval] evaluator {args.eval_ckpt} ep={eck.get('epoch')} loaded", flush=True)
 
-    # T5 (training convention: t5-base, max_length=64), loaded ONCE.
-    from transformers import T5EncoderModel, T5TokenizerFast
-    t5tok = T5TokenizerFast.from_pretrained("t5-base")
-    t5 = T5EncoderModel.from_pretrained("t5-base").to(dev).eval()
+    # Text encoder matches the FLOW CKPT's convention (codex chain review #5): T5 runtime
+    # encoding for legacy 768 checkpoints; LLM2Vec sidecar LOOKUP for 4096 checkpoints (the
+    # 8B encoder never runs here — identical to the online gen-eval convention).
+    _fa = fck.get("args", {})
+    _fget = (lambda k, d: _fa.get(k, d)) if isinstance(_fa, dict) else (lambda k, d: getattr(_fa, k, d))
+    _tdim = int(_fget("text_dim", 768))
+    if _tdim == 768:
+        from transformers import T5EncoderModel, T5TokenizerFast
+        t5tok = T5TokenizerFast.from_pretrained("t5-base")
+        t5 = T5EncoderModel.from_pretrained("t5-base").to(dev).eval()
 
-    @torch.no_grad()
-    def t5_encode_batch(texts):
-        # batched T5: list[str] -> global[b,768], tokens[b,64,768], mask[b,64] (t5-base/max64/masked-mean)
-        enc = t5tok(list(texts), return_tensors="pt", padding="max_length", truncation=True, max_length=64).to(dev)
-        hs = t5(input_ids=enc.input_ids, attention_mask=enc.attention_mask).last_hidden_state  # [b,64,768]
-        m = enc.attention_mask.bool()                                                          # [b,64]
-        gl = (hs * m.unsqueeze(-1).float()).sum(1) / m.sum(1, keepdim=True).clamp_min(1)        # [b,768]
-        return gl.float(), hs.float(), m
+        @torch.no_grad()
+        def t5_encode_batch(texts):
+            # batched T5: list[str] -> global[b,768], tokens[b,64,768], mask[b,64] (t5-base/max64/masked-mean)
+            enc = t5tok(list(texts), return_tensors="pt", padding="max_length", truncation=True, max_length=64).to(dev)
+            hs = t5(input_ids=enc.input_ids, attention_mask=enc.attention_mask).last_hidden_state  # [b,64,768]
+            m = enc.attention_mask.bool()                                                          # [b,64]
+            gl = (hs * m.unsqueeze(-1).float()).sum(1) / m.sum(1, keepdim=True).clamp_min(1)        # [b,768]
+            return gl.float(), hs.float(), m
+    else:
+        if not args.caption_cache:
+            raise SystemExit(
+                f"[gen-eval] flow ckpt has text_dim={_tdim}; pass --caption_cache "
+                f"(LLM2Vec sidecar prefix) — offline eval looks captions up, it does not "
+                f"run the 8B encoder")
+        from src.eval.codeflow_gen_eval import make_caption_lookup_encoder
+        t5_encode_batch = make_caption_lookup_encoder(
+            args.caption_cache, args.data_root, _tdim, dev)
 
-    ds = AnyTopT2MEvalDataset(manifest_path=args.val_manifest, data_root=args.data_root,
+    _ms = None
+    if args.moment_policy != "own":
+        from src.data.moment_source import MomentSource
+        _ms = MomentSource(args.moment_policy, estimator_path=args.moment_estimator,
+                           measured_path=args.moment_measured)
+        print(f"[gen-eval] moment policy: {args.moment_policy}", flush=True)
+    ds = AnyTopT2MEvalDataset(moment_source=_ms, base_split=args.base_split,
+                              manifest_path=args.val_manifest, data_root=args.data_root,
                               caption_emb_cache=None, split="val", view="full",
                               num_frames=args.num_frames, max_joints=args.max_joints)
     n_total = len(ds)
@@ -157,14 +202,25 @@ def main():
     print(f"[gen-eval] val {n_total} (non-PZ={n_tb}); {'GT-baseline on' if args.gt_baseline else 'generating'} {len(idxs)} | "
           f"steps={args.steps} cfg={args.cfg_scale} nf={args.num_frames}", flush=True)
 
+    sink = [] if args.emb_dump else None
     report = run_gen_eval(
         flow=flow, tokenizer=tokenizer, core=core, t5_encode_batch=t5_encode_batch,
         ds=ds, idxs=idxs, dev=dev, stride=stride, pool=args.pool, steps=args.steps,
         cfg_scale=args.cfg_scale, num_frames=args.num_frames, gen_batch=args.gen_batch,
         fid_min=args.fid_min, max_div_pairs=args.max_div_pairs, seed=args.seed,
-        gt_baseline=args.gt_baseline)
+        gt_baseline=args.gt_baseline, emb_sink=sink)
+    from src.data import provenance as _prov
     report.update({"flow_ckpt": args.flow_ckpt, "flow_epoch": fck.get("epoch"), "eval_ckpt": args.eval_ckpt,
-                   "gt_baseline": bool(args.gt_baseline), "balanced": bool(args.balanced)})
+                   "gt_baseline": bool(args.gt_baseline), "balanced": bool(args.balanced),
+                   # A number produced under one moment policy is not comparable to one produced
+                   # under another, so the policy travels with the result rather than living in
+                   # someone's memory of which command was run.
+                   "moment_policy": args.moment_policy,
+                   "moment_artifact": args.moment_estimator or args.moment_measured,
+                   "moment_artifact_sha256": _prov.sha256_file(
+                       args.moment_estimator or args.moment_measured)
+                   if (args.moment_estimator or args.moment_measured) else None,
+                   "flow_provenance": _prov.read(fck)})
 
     def _rr(m):
         rr = m.get("rprec_text_to_gen")
@@ -184,6 +240,52 @@ def main():
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps(report, indent=2))
         print(f"[gen-eval] report -> {args.out}", flush=True)
+
+    if args.emb_dump:
+        # run_gen_eval appends exactly one payload; fail loud rather than silently dumping a
+        # partial or empty file that would look like a successful measurement.
+        if not sink or len(sink) != 1:
+            raise RuntimeError(f"--emb_dump: expected 1 emb_sink payload, got {len(sink) if sink is not None else 'None'}")
+        p = sink[0]
+        n_emb, n_mid = p["gen_emb"].shape[0], len(p["motion_ids"])
+        if not (n_emb == n_mid == p["text_emb"].shape[0] == p["gt_emb"].shape[0] == report["overall"]["n"]):
+            raise RuntimeError(f"--emb_dump: row mismatch gen={n_emb} mids={n_mid} "
+                               f"text={p['text_emb'].shape[0]} gt={p['gt_emb'].shape[0]} report_n={report['overall']['n']}")
+        # Provenance is dumped so the analysis can PROVE which cohort it is reading rather than
+        # trusting an independently supplied --data_root (codex P1 #3). `selection` records every
+        # flag that changes which clips were evaluated; `overall_matching_mean` lets the analysis
+        # recompute the mean from the embeddings and hard-fail if it disagrees.
+        def _md5(path):
+            try:
+                h = hashlib.md5()
+                with open(path, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        h.update(chunk)
+                return h.hexdigest()
+            except OSError as e:
+                raise RuntimeError(f"--emb_dump: cannot hash {path} for provenance: {e}") from e
+        splits = Path(args.data_root) / "splits"
+        Path(args.emb_dump).parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"schema": 2, "gen_emb": p["gen_emb"], "text_emb": p["text_emb"], "gt_emb": p["gt_emb"],
+                    "motion_ids": p["motion_ids"], "row_keys": p["row_keys"],
+                    "flow_ckpt": args.flow_ckpt, "flow_epoch": fck.get("epoch"),
+                    "eval_ckpt": args.eval_ckpt, "gt_baseline": bool(args.gt_baseline),
+                    "cfg_scale": args.cfg_scale, "steps": args.steps, "seed": args.seed,
+                    "data_root": str(Path(args.data_root).resolve()),
+                    "val_manifest": str(Path(args.val_manifest).resolve()),
+                    "val_manifest_md5": _md5(args.val_manifest),
+                    "val_split_md5": _md5(splits / "val.txt"),
+                    "train_split_md5": _md5(splits / "train.txt"),
+                    "selection": {"n_samples": args.n_samples, "balanced": bool(args.balanced),
+                                  "exclude_truebones": bool(args.exclude_truebones),
+                                  "n_total": int(n_total), "n_evaluated": int(len(idxs)),
+                                  "idxs": [int(i) for i in idxs]},
+                    "overall_matching_mean": float(report["overall"]["matching_mean"]),
+                    "num_frames": args.num_frames, "pool": args.pool,
+                    "target_frames": p["target_frames"], "decoded_frames": p["decoded_frames"],
+                    "n_soft_clamped": int(p["n_soft_clamped"])},
+                   args.emb_dump)
+        print(f"[gen-eval] embeddings ({n_emb} rows) -> {args.emb_dump}", flush=True)
     return 0
 
 

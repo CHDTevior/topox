@@ -43,7 +43,27 @@ NUM_WORKERS="${NUM_WORKERS:-6}"
 LOG_EVERY="${LOG_EVERY:-50}"
 QA_EVERY="${QA_EVERY:-200}"
 SAVE_EVERY="${SAVE_EVERY:-10}"
+GRAD_ACCUM="${GRAD_ACCUM:-1}"   # >1 preserves global batch/lr on fewer GPUs (per_gpu*world*accum); 1 = unchanged
 SEED="${SEED:-42}"
+# Text architecture (LLM2Vec run: TEXT_DIM=4096 TEXT_INPUT_NORM=1 USE_SENTENCE_TOKEN=1
+# TEXT_SLOT_XATTN=1 GEN_EVAL_CAPTION_CACHE=<sidecar prefix>). Defaults reproduce T5 legacy.
+TEXT_DIM="${TEXT_DIM:-768}"
+TEXT_INPUT_NORM="${TEXT_INPUT_NORM:-0}"
+USE_SENTENCE_TOKEN="${USE_SENTENCE_TOKEN:-0}"
+TEXT_SLOT_XATTN="${TEXT_SLOT_XATTN:-0}"
+GEN_EVAL_CAPTION_CACHE="${GEN_EVAL_CAPTION_CACHE:-}"
+CAPTION_SAMPLING="${CAPTION_SAMPLING:-fixed}"
+CAPTION_SIDECAR="${CAPTION_SIDECAR:-}"
+PARAMETERIZATION="${PARAMETERIZATION:-}"   # empty = trainer default (v); set x for x-pred
+W_DEC_WORLD="${W_DEC_WORLD:-}"             # decoded-geometry loss weights; empty = off
+W_DEC_TRAJ="${W_DEC_TRAJ:-}"
+W_DEC_SPEED="${W_DEC_SPEED:-}"
+DEC_GEOM_T_MIN="${DEC_GEOM_T_MIN:-}"
+DEC_GEOM_EVERY="${DEC_GEOM_EVERY:-}"
+GEN_EVAL_MANIFEST="${GEN_EVAL_MANIFEST:-}"
+PROTOCOL="${PROTOCOL:-legacy}"
+HOLDOUT_ART="${HOLDOUT_ART:-}"
+HOLDOUT_SHA="${HOLDOUT_SHA:-}"
 EMPIRICAL_MAX="${EMPIRICAL_MAX:-0}"     # 0 = full train-set empirical z_q norm (LOCKED real run);
                                        # a positive cap is for the SMOKE only (skip the full scan)
 RESUME_CKPT="${RESUME_CKPT:-}"          # FULL resume (model+optimizer+epoch+step)
@@ -56,15 +76,19 @@ EVALUATOR_CKPT="${EVALUATOR_CKPT:-}"
 GEN_EVAL_EVERY="${GEN_EVAL_EVERY:-50}"
 GEN_EVAL_N="${GEN_EVAL_N:-256}"
 GEN_EVAL_BATCH="${GEN_EVAL_BATCH:-8}"
-# Late-phase human-upsampling curriculum (opt-in): factor 1.0 / start -1 = OFF (unchanged).
+# Two-phase human-upsampling curriculum (opt-in): factor 1.0 / start -1 = OFF (unchanged).
+# phase2 (VQVAE-style): phase2_factor 1.0 / phase2_start -1 = OFF (single-phase).
 HUMAN_UPSAMPLE_FACTOR="${HUMAN_UPSAMPLE_FACTOR:-1.0}"
 HUMAN_UPSAMPLE_START_EPOCH="${HUMAN_UPSAMPLE_START_EPOCH:--1}"
+HUMAN_UPSAMPLE_PHASE2_FACTOR="${HUMAN_UPSAMPLE_PHASE2_FACTOR:-1.0}"
+HUMAN_UPSAMPLE_PHASE2_START_EPOCH="${HUMAN_UPSAMPLE_PHASE2_START_EPOCH:--1}"
 
-GLOBAL=$(( BATCH_SIZE * NNODES * NPROC_PER_NODE ))
+GLOBAL=$(( BATCH_SIZE * NNODES * NPROC_PER_NODE * GRAD_ACCUM ))   # EFFECTIVE global batch (incl grad accumulation)
 SMOKE_FLAG=""; [ "$SMOKE" = 1 ] && SMOKE_FLAG="--smoke"
 OVERWRITE_FLAG=""; [ "$OVERWRITE" = 1 ] && OVERWRITE_FLAG="--overwrite"
 GEN_EVAL_ARGS=""
-if [ -n "$GEN_EVAL" ]; then
+# "0" must DISABLE (codex r4 #1c): the old non-empty test made GEN_EVAL=0 arm the eval.
+if [ -n "$GEN_EVAL" ] && [ "$GEN_EVAL" != "0" ]; then
     [ -n "$EVALUATOR_CKPT" ] || { echo "[gpscf] FAIL: GEN_EVAL set but EVALUATOR_CKPT empty"; exit 2; }
     GEN_EVAL_ARGS="--gen_eval --evaluator_ckpt $EVALUATOR_CKPT --gen_eval_every $GEN_EVAL_EVERY --gen_eval_n $GEN_EVAL_N --gen_eval_batch $GEN_EVAL_BATCH"
 fi
@@ -96,7 +120,7 @@ else
 fi
 
 echo "[gpscf] $(date '+%F %T %Z') host=$(hostname) CVD=$CVD nnodes=$NNODES nproc=$NPROC_PER_NODE node_rank=$NODE_RANK"
-echo "[gpscf] per_gpu=$BATCH_SIZE global=$GLOBAL(=${BATCH_SIZE}x${NNODES}x${NPROC_PER_NODE}) lr=$LR warmup=$WARMUP_STEPS epochs=$EPOCHS smoke=$SMOKE"
+echo "[gpscf] per_gpu=$BATCH_SIZE global=$GLOBAL(=${BATCH_SIZE}x${NNODES}x${NPROC_PER_NODE}x accum${GRAD_ACCUM}) lr=$LR warmup=$WARMUP_STEPS epochs=$EPOCHS smoke=$SMOKE"
 echo "[gpscf] master=${MASTER_ADDR:-<standalone>}:$MASTER_PORT nccl_ifname=${NCCL_SOCKET_IFNAME:-<n/a>} cache=$TOKEN_CACHE out=$OUT"
 echo "[gpscf] resume=${RESUME_CKPT:-<none>}"
 
@@ -112,7 +136,24 @@ echo "[gpscf] resume=${RESUME_CKPT:-<none>}"
   --amp_dtype "$AMP_DTYPE" --seed "$SEED" --num_workers "$NUM_WORKERS" \
   --empirical_stats_max_clips "$EMPIRICAL_MAX" \
   --log_every "$LOG_EVERY" --qa_every "$QA_EVERY" --save_every "$SAVE_EVERY" \
+  --grad_accum "$GRAD_ACCUM" \
   --human_upsample_factor "$HUMAN_UPSAMPLE_FACTOR" --human_upsample_start_epoch "$HUMAN_UPSAMPLE_START_EPOCH" \
+  --human_upsample_phase2_factor "$HUMAN_UPSAMPLE_PHASE2_FACTOR" --human_upsample_phase2_start_epoch "$HUMAN_UPSAMPLE_PHASE2_START_EPOCH" \
+  --text_dim "$TEXT_DIM" --text_input_norm "$TEXT_INPUT_NORM" \
+  --use_sentence_token "$USE_SENTENCE_TOKEN" --text_slot_xattn "$TEXT_SLOT_XATTN" \
+  ${GEN_EVAL_CAPTION_CACHE:+--gen_eval_caption_cache "$GEN_EVAL_CAPTION_CACHE"} \
+  --caption_sampling "$CAPTION_SAMPLING" \
+  ${CAPTION_SIDECAR:+--caption_sidecar "$CAPTION_SIDECAR"} \
+  ${PARAMETERIZATION:+--parameterization "$PARAMETERIZATION"} \
+  ${W_DEC_WORLD:+--w_dec_world "$W_DEC_WORLD"} \
+  ${W_DEC_TRAJ:+--w_dec_traj "$W_DEC_TRAJ"} \
+  ${W_DEC_SPEED:+--w_dec_speed "$W_DEC_SPEED"} \
+  ${DEC_GEOM_T_MIN:+--dec_geom_t_min "$DEC_GEOM_T_MIN"} \
+  ${DEC_GEOM_EVERY:+--dec_geom_every "$DEC_GEOM_EVERY"} \
+  ${GEN_EVAL_MANIFEST:+--gen_eval_manifest "$GEN_EVAL_MANIFEST"} \
+  --protocol "$PROTOCOL" \
+  ${HOLDOUT_ART:+--holdout_artifact "$HOLDOUT_ART"} \
+  ${HOLDOUT_SHA:+--holdout_sha "$HOLDOUT_SHA"} \
   $GEN_EVAL_ARGS \
   ${RESUME_CKPT:+--resume "$RESUME_CKPT"} \
   --out "$OUT" $OVERWRITE_FLAG $SMOKE_FLAG

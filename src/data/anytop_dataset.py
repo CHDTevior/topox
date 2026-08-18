@@ -508,11 +508,19 @@ class AnyTopDataset(Dataset):
         max_joints: int = 143,
         target_fps: float = 20.0,
         load_captions: bool = True,
+        texts_json_name: str | None = None,
         val_frac: float = 0.2,
         seed: int = 42,
         augment: bool = False,
         augment_prob: float = 0.3,
         removal_rate: float = 0.5,
+        # Optional fixed seed for the joint-removal augmentation. Default None keeps the existing
+        # behaviour exactly: an unseeded draw per sample, freshly entropy-seeded. It exists so a
+        # test that must observe a specific rejection count can reproduce one — the guard test was
+        # otherwise a coin flip that passed 6 rejections one run and 1 the next, and would fail
+        # spuriously on a run that happened to draw none. Do not set it for training: one seed
+        # shared across dataloader workers would make every worker remove the same joints.
+        aug_seed: Optional[int] = None,
         caption_emb_cache: str | Path | None = None,
         random_caption: bool = False,
         random_crop: bool | None = None,
@@ -521,8 +529,40 @@ class AnyTopDataset(Dataset):
         return_caption_tokens: bool = False,
         caption_token_max_len: int = 64,
         species_whitelist: list[str] | None = None,
+        splits_dir: str | Path | None = None,
+        moment_source=None,
+        joint_semantics: str | Path | None = None,
+        holdout_artifact: str | Path | None = None,
     ) -> None:
         self.data_root = Path(data_root)
+        # Where train.txt/val.txt are read from. Defaults to <data_root>/splits, but the
+        # held-out-topology protocol points this at a directory whose train.txt/val.txt are
+        # the RETAINED lists, so a stage cannot pick up a held topology by pointing at the
+        # wrong file. Motions still come from data_root; only the membership lists move.
+        self.splits_dir = Path(splits_dir) if splits_dir is not None else None
+        # Where per-rig normalisation moments come from. None keeps the existing behaviour —
+        # the rig's own moments straight off the cond entry — and is bitwise identical to the
+        # code before this parameter existed. Anything else is only for rigs whose own moments
+        # do not exist (an unseen topology) or are deliberately withheld (the k-shot curve).
+        self.moment_source = moment_source
+        # Optional per-joint semantic embeddings (the LLM2Vec encoding of each joint's anatomical
+        # description). None = the field is absent and the model's semantic pathway stays off,
+        # which is the pre-existing behaviour. The table's per-rig joint-order hash is checked on
+        # first use: rows silently paired with the wrong joints would be invisible downstream.
+        self._sem_path = str(joint_semantics) if joint_semantics is not None else None
+        self._sem = None
+        self._sem_order = None
+        # Joint-removal augmentation builds a REDUCED topology at runtime. Measured on this
+        # corpus: 3 of 668 sampled reductions of a retained rig land on a canonical form that is
+        # in the held-out set (0.45%). Over a 220-epoch run at augment_prob 0.3 that is tens of
+        # thousands of exposures to a topology the protocol says the model has never seen — and
+        # the split guard cannot see it, because the offending skeleton exists only in memory.
+        self._held_canon = None
+        if holdout_artifact is not None:
+            from src.data.holdout_guard import verify_artifact as _va
+            _art = _va(holdout_artifact, self.data_root)
+            self._held_canon = {t["canonical_form_sha256"] for t in _art["held_out_trees"]}
+        self.n_aug_rejected_held = 0
         self.split = split
         self.num_frames = num_frames
         self.max_joints = max_joints
@@ -532,6 +572,7 @@ class AnyTopDataset(Dataset):
         self.augment = bool(augment) and split == "train"
         self.augment_prob = augment_prob
         self.removal_rate = removal_rate
+        self._aug_rng = random.Random(aug_seed) if aug_seed is not None else None
 
         if not self.data_root.exists():
             raise FileNotFoundError(f"AnyTop data_root not found: {self.data_root}")
@@ -622,7 +663,7 @@ class AnyTopDataset(Dataset):
         elif split not in ("train", "val"):
             raise ValueError(f"split must be 'train'/'val'/'all', got {split!r}")
         else:
-            splits_dir = self.data_root / "splits"
+            splits_dir = self.splits_dir if self.splits_dir is not None else self.data_root / "splits"
             f_this = splits_dir / f"{split}.txt"
             f_other = splits_dir / ("val.txt" if split == "train" else "train.txt")
             if use_split_file and f_this.exists() and f_other.exists():
@@ -658,13 +699,33 @@ class AnyTopDataset(Dataset):
                         f"(stale split file); e.g. {absent[:3]}. Refresh _export_split_lists.py."
                     )
                 listed = set(want_this) | set(want_other)
-                uncovered = [n for n in by_name if n not in listed]
+                # A held-out-topology split directory deliberately excludes whole topologies,
+                # so train+val no longer cover the disk. Those clips must still be ACCOUNTED
+                # for: any held_*.txt in the same directory declares them. The invariant is
+                # unchanged — every clip on disk appears in exactly one declared list —
+                # it now just spans four lists instead of two. An undeclared absence is still
+                # a hard error, which is the point of this check.
+                held_files = sorted(splits_dir.glob("held_*.txt"))
+                held_listed: set[str] = set()
+                for hf in held_files:
+                    held_listed |= set(_read_split_file(hf))
+                if held_listed & listed:
+                    raise ValueError(
+                        f"{len(held_listed & listed)} clip(s) appear in BOTH a held_*.txt and "
+                        f"train/val under {splits_dir} — the holdout is not disjoint; "
+                        f"e.g. {sorted(held_listed & listed)[:3]}."
+                    )
+                uncovered = [n for n in by_name if n not in listed and n not in held_listed]
                 if uncovered:
                     raise ValueError(
                         f"{len(uncovered)} clip(s) on disk in NEITHER train.txt nor "
-                        f"val.txt (excluded from training); e.g. {uncovered[:3]}. "
+                        f"val.txt{' nor any held_*.txt' if held_files else ''} "
+                        f"(excluded from training); e.g. {uncovered[:3]}. "
                         f"Refresh _export_split_lists.py."
                     )
+                if held_files:
+                    print(f"  [AnyTopDataset] {len(held_listed)} clip(s) excluded by "
+                          f"{[f.name for f in held_files]} in {splits_dir}")
                 self.samples = [by_name[n] for n in want_this]
                 print(f"  [AnyTopDataset] split='{split}' read from {f_this} "
                       f"({len(self.samples)} clips)")
@@ -715,15 +776,28 @@ class AnyTopDataset(Dataset):
         self.captions: dict[str, str] = {}
         self.captions_multi: dict[str, list[str]] = {}
         if load_captions:
-            # Prefer the with_codex_drafts file if present (1070 covers full set);
-            # fall back to the legacy file otherwise.
-            for fn in ("motion_texts_by_file_with_codex_drafts.json",
-                       "motion_texts_by_file.json"):
-                cap_path = self.data_root / fn
-                if cap_path.exists():
-                    break
+            if texts_json_name:
+                # Explicit override (additive; the LLM2Vec chain points at the CLEANED
+                # corpus json, whose name is outside the legacy fallback chain by
+                # design so legacy runs cannot pick it up accidentally). Missing
+                # file is a hard error — an override that silently falls back would
+                # defeat the sidecar provenance gate downstream.
+                cap_path = self.data_root / texts_json_name
+                if not cap_path.exists():
+                    raise FileNotFoundError(
+                        f"texts_json_name={texts_json_name!r} not found under "
+                        f"{self.data_root}")
             else:
-                cap_path = None
+                # Prefer the with_codex_drafts file if present (1070 covers full set);
+                # fall back to the legacy file otherwise.
+                for fn in ("motion_texts_by_file_with_codex_drafts.json",
+                           "motion_texts_by_file.json"):
+                    cap_path = self.data_root / fn
+                    if cap_path.exists():
+                        break
+                else:
+                    cap_path = None
+            self._texts_json_path = cap_path      # provenance anchor for sidecar checks
             if cap_path is not None:
                 with cap_path.open("r") as f:
                     raw_caps = json.load(f)
@@ -755,12 +829,20 @@ class AnyTopDataset(Dataset):
         # caption per motion) is still loaded — each motion gets a single-element
         # list, so random.choice is degenerate but functional.
         self.caption_embs_multi: dict[str, list[np.ndarray]] = {}
+        _sidecar_emb_dim = None       # set by the sidecar branch; 768 (T5) otherwise
         if caption_emb_cache is not None:
             cache_path = Path(caption_emb_cache)
-            if not cache_path.exists():
+            # The legacy T5 flow has a real .npz at this path plus sidecars; the LLM2Vec
+            # builder writes ONLY sidecars (<prefix>.embs.npy + .keys.json). Accept a
+            # sidecar-only prefix; keep failing loud when neither form exists.
+            if not cache_path.exists() and not (
+                    cache_path.with_suffix(".embs.npy").exists()
+                    and cache_path.with_suffix(".keys.json").exists()):
                 raise FileNotFoundError(
-                    f"caption_emb_cache not found: {cache_path} "
-                    f"(run scripts/precompute_t5_captions.py first)"
+                    f"caption_emb_cache not found: {cache_path} (no such file and no "
+                    f".embs.npy/.keys.json sidecar pair beside it; run "
+                    f"scripts/precompute_t5_captions.py or "
+                    f"scripts/_build_caption_llm2vec.py first)"
                 )
             # Group by motion_id: collect (idx, emb) per motion, then sort by idx.
             raw_groups: dict[str, list[tuple[int, np.ndarray]]] = {}
@@ -783,6 +865,34 @@ class AnyTopDataset(Dataset):
             # Falls back to the legacy per-key npz path if sidecar is absent.
             sidecar_embs = cache_path.with_suffix(".embs.npy")
             sidecar_keys = cache_path.with_suffix(".keys.json")
+            sidecar_meta = cache_path.with_suffix(".meta.json")
+            if sidecar_meta.exists():
+                # Provenance gate: the sidecar records the sha256 of the captions
+                # json it was built from. If THIS dataset instance resolved a
+                # different file (edited corpus, or a with_codex_drafts variant
+                # appearing in the root and winning the fallback), the caption
+                # STRINGS served per index would silently diverge from the
+                # conditioning VECTORS bound to the same index. Same keys, same
+                # counts, wrong text — nothing downstream would notice.
+                _meta = json.loads(sidecar_meta.read_text())
+                _want = _meta.get("captions_json_sha256")
+                if _want:
+                    if getattr(self, "_texts_json_path", None) is None:
+                        raise ValueError(
+                            f"caption sidecar {sidecar_meta} carries a captions_json "
+                            f"provenance hash but this dataset loaded no captions "
+                            f"json (load_captions off?); refusing to bind embeddings "
+                            f"to unverifiable text")
+                    import hashlib as _hl
+                    _got = _hl.sha256(self._texts_json_path.read_bytes()).hexdigest()
+                    if _got != _want:
+                        raise ValueError(
+                            f"caption sidecar provenance mismatch: cache built from "
+                            f"captions json sha {_want[:16]}..., but this dataset "
+                            f"resolved {self._texts_json_path} with sha {_got[:16]}.... "
+                            f"The strings served per caption index would not be the "
+                            f"text the vectors encode. Rebuild the sidecar or align "
+                            f"the corpus.")
             if sidecar_embs.exists() and sidecar_keys.exists():
                 embs = np.load(sidecar_embs, mmap_mode="r")
                 with open(sidecar_keys) as _kf:
@@ -797,6 +907,7 @@ class AnyTopDataset(Dataset):
                     raw_groups.setdefault(mid, []).append(
                         (idx, np.asarray(embs[ki], dtype=np.float32))
                     )
+                _sidecar_emb_dim = int(embs.shape[1])
             else:
                 with np.load(cache_path) as npz:
                     for key in npz.files:
@@ -811,7 +922,9 @@ class AnyTopDataset(Dataset):
             print(f"  [AnyTopDataset] loaded {n_caps_total} caption embeddings "
                   f"across {n_motions} motions (avg "
                   f"{n_caps_total/max(n_motions,1):.1f}/motion) from {cache_path}")
-        self._caption_emb_dim = 768
+        # Sidecar-derived when present (LLM2Vec = 4096); the legacy per-key npz
+        # path is T5-only, so 768 stays its (correct) hardcode.
+        self._caption_emb_dim = _sidecar_emb_dim if _sidecar_emb_dim is not None else 768
 
         # ---- Caption T5 TOKEN cache (M2 token_cross_attn; OPTIONAL sidecar) ----
         # Parallel to the mean-pooled cache, gated by `return_caption_tokens`.
@@ -837,38 +950,76 @@ class AnyTopDataset(Dataset):
             tok_prefix = Path(caption_token_cache)
             tok_emb_path = tok_prefix.with_suffix(".tokens.npy")
             tok_mask_path = tok_prefix.with_suffix(".token_mask.npy")
+            tok_off_path = tok_prefix.with_suffix(".offsets.npy")
             tok_keys_path = tok_prefix.with_suffix(".keys.json")
-            for p in (tok_emb_path, tok_mask_path, tok_keys_path):
+            # RAGGED layout (LLM2Vec builder): tokens [total, dim] + offsets [N+1];
+            # row i is tokens[offsets[i]:offsets[i+1]], every stored token valid, no
+            # mask file. FIXED layout (T5): tokens [N, L, dim] + token_mask [N, L].
+            # Detected by which sidecar exists, so both cache generations keep working.
+            self._token_ragged = tok_off_path.exists()
+            need = (tok_emb_path, tok_keys_path) + (
+                (tok_off_path,) if self._token_ragged else (tok_mask_path,))
+            for p in need:
                 if not p.exists():
                     raise FileNotFoundError(
                         f"caption token cache missing {p} (run "
-                        f"scripts/precompute_t5_caption_tokens.py)"
+                        f"scripts/precompute_t5_caption_tokens.py for the fixed T5 "
+                        f"layout or scripts/_build_caption_llm2vec.py for ragged)"
                     )
             # mmap (item C): keep file on disk, page in only the sliced row.
             self._token_emb_mmap = np.load(tok_emb_path, mmap_mode="r")
-            self._token_mask_mmap = np.load(tok_mask_path, mmap_mode="r")
             with open(tok_keys_path) as _tkf:
                 tok_keys = json.load(_tkf)
-            N_tok, L_tok = self._token_emb_mmap.shape[0], self._token_emb_mmap.shape[1]
-            if (len(tok_keys) != N_tok
-                    or self._token_mask_mmap.shape[0] != N_tok
-                    or self._token_mask_mmap.shape[1] != L_tok):
-                raise ValueError(
-                    f"token cache shape mismatch: keys={len(tok_keys)} "
-                    f"tokens={self._token_emb_mmap.shape} "
-                    f"mask={self._token_mask_mmap.shape}"
-                )
-            if L_tok != self.caption_token_max_len:
-                raise ValueError(
-                    f"token cache L={L_tok} != caption_token_max_len="
-                    f"{self.caption_token_max_len}; rebuild cache with matching "
-                    f"--max_length or pass the right caption_token_max_len."
-                )
-            if self._token_emb_mmap.shape[2] != self._caption_emb_dim:
-                raise ValueError(
-                    f"token cache dim {self._token_emb_mmap.shape[2]} != "
-                    f"{self._caption_emb_dim}"
-                )
+            if self._token_ragged:
+                self._token_mask_mmap = None
+                self._token_offsets = np.load(tok_off_path)
+                N_tok = int(self._token_offsets.shape[0]) - 1
+                if len(tok_keys) != N_tok:
+                    raise ValueError(
+                        f"ragged token cache mismatch: keys={len(tok_keys)} "
+                        f"offsets rows={N_tok}")
+                if int(self._token_offsets[-1]) != self._token_emb_mmap.shape[0]:
+                    raise ValueError(
+                        f"ragged token cache mismatch: offsets end "
+                        f"{int(self._token_offsets[-1])} != tokens rows "
+                        f"{self._token_emb_mmap.shape[0]}")
+                row_lens = np.diff(self._token_offsets)
+                if int(row_lens.max()) > self.caption_token_max_len:
+                    raise ValueError(
+                        f"ragged token cache max row {int(row_lens.max())} > "
+                        f"caption_token_max_len {self.caption_token_max_len}")
+                if int(row_lens.min()) <= 0:
+                    raise ValueError(
+                        "ragged token cache has an empty row; the builder gates "
+                        "against this, so the cache is corrupt")
+                if self._token_emb_mmap.shape[1] != self._caption_emb_dim:
+                    raise ValueError(
+                        f"token cache dim {self._token_emb_mmap.shape[1]} != "
+                        f"{self._caption_emb_dim}")
+            else:
+                self._token_offsets = None
+                self._token_mask_mmap = np.load(tok_mask_path, mmap_mode="r")
+                N_tok, L_tok = (self._token_emb_mmap.shape[0],
+                                self._token_emb_mmap.shape[1])
+                if (len(tok_keys) != N_tok
+                        or self._token_mask_mmap.shape[0] != N_tok
+                        or self._token_mask_mmap.shape[1] != L_tok):
+                    raise ValueError(
+                        f"token cache shape mismatch: keys={len(tok_keys)} "
+                        f"tokens={self._token_emb_mmap.shape} "
+                        f"mask={self._token_mask_mmap.shape}"
+                    )
+                if L_tok != self.caption_token_max_len:
+                    raise ValueError(
+                        f"token cache L={L_tok} != caption_token_max_len="
+                        f"{self.caption_token_max_len}; rebuild cache with matching "
+                        f"--max_length or pass the right caption_token_max_len."
+                    )
+                if self._token_emb_mmap.shape[2] != self._caption_emb_dim:
+                    raise ValueError(
+                        f"token cache dim {self._token_emb_mmap.shape[2]} != "
+                        f"{self._caption_emb_dim}"
+                    )
             # Group row indices by motion_id, sorted by cap idx — EXACTLY the same
             # grouping the mean cache used (so [mid][idx] aligns across caches).
             tok_groups: dict[str, list[tuple[int, int]]] = {}
@@ -889,10 +1040,16 @@ class AnyTopDataset(Dataset):
                         f"token={None if rows is None else len(rows)}. The token "
                         f"cache must be built from the SAME keys.json."
                     )
-            print(f"  [AnyTopDataset] loaded token cache "
-                  f"{self._token_emb_mmap.shape} (mmap) + mask "
-                  f"{self._token_mask_mmap.shape} across "
-                  f"{len(self.caption_token_rows_multi)} motions from {tok_prefix}")
+            if self._token_ragged:
+                print(f"  [AnyTopDataset] loaded RAGGED token cache "
+                      f"{self._token_emb_mmap.shape} (mmap) + offsets "
+                      f"{self._token_offsets.shape} across "
+                      f"{len(self.caption_token_rows_multi)} motions from {tok_prefix}")
+            else:
+                print(f"  [AnyTopDataset] loaded token cache "
+                      f"{self._token_emb_mmap.shape} (mmap) + mask "
+                      f"{self._token_mask_mmap.shape} across "
+                      f"{len(self.caption_token_rows_multi)} motions from {tok_prefix}")
         # random_caption: True (default) = per __getitem__ random.choice; False =
         # always idx 0 (primary). Train uses True (SALAD-style); val uses False
         # to keep val_denoise loss deterministic across epochs.
@@ -990,19 +1147,40 @@ class AnyTopDataset(Dataset):
         # `sk` is the effective skeleton dict for THIS sample: the shared cached
         # cond `c` when not augmenting, or a reduced-topology rebuild otherwise.
         # `_remove_joints_aug` never mutates `c` (works on local numpy copies).
-        if self.augment and random.random() < self.augment_prob:
-            raw_motion, sk = _remove_joints_aug(
-                raw_motion, c, self.removal_rate, random.Random()
+        sk = c
+        _aug_rng = self._aug_rng
+        if self.augment and (_aug_rng or random).random() < self.augment_prob:
+            _rm, _sk = _remove_joints_aug(
+                raw_motion, c, self.removal_rate, _aug_rng or random.Random()
             )
-        else:
-            sk = c
+            if self._held_canon is not None:
+                import hashlib as _hl
+                from src.data.holdout_guard import canonical_form as _cf
+                _h = _hl.sha256(_cf(tuple(int(x) for x in
+                                          np.asarray(_sk["parents"]).ravel())).encode()).hexdigest()
+                if _h in self._held_canon:
+                    # This reduction reproduced a held-out topology. Drop the augmentation for
+                    # this sample rather than the sample itself: skipping the clip would bias the
+                    # data distribution, and augmentation is optional by construction.
+                    self.n_aug_rejected_held += 1
+                    _rm = None
+            if _rm is not None:
+                raw_motion, sk = _rm, _sk
         J_orig = sk["n_joints"]
 
         T_var = raw_motion.shape[0]
 
         # ---------- AnyTop normalized 13ch view (for the future end-to-end path) ----------
-        mean = sk["mean"]               # [J_orig, 13] RAW (pre-normalize)
-        std = sk["std"]                 # [J_orig, 13]
+        if self.moment_source is None:
+            mean = sk["mean"]               # [J_orig, 13] RAW (pre-normalize)
+            std = sk["std"]                 # [J_orig, 13]
+        else:
+            mean, std = self.moment_source(info["object_type"], sk)
+            if mean.shape != sk["mean"].shape or std.shape != sk["std"].shape:
+                raise RuntimeError(
+                    f"moment_source returned {mean.shape}/{std.shape} for "
+                    f"{info['object_type']!r}, expected {sk['mean'].shape}. A shape mismatch "
+                    f"here would normalise with the wrong joints and be invisible downstream.")
         std_safe = std + _STD_FLOOR
         normed_13 = (raw_motion - mean[None, :, :]) / std_safe[None, :, :]
         normed_13 = np.nan_to_num(normed_13).astype(np.float32)
@@ -1086,6 +1264,27 @@ class AnyTopDataset(Dataset):
         name_hashes_padded = np.zeros(Jm, dtype=np.int64)
         name_hashes_padded[:J_orig] = sk["name_hashes"]
 
+        sem_padded = None
+        if self._sem_path is not None:
+            if self._sem is None:
+                import json as _json
+                self._sem = np.load(self._sem_path, allow_pickle=False)
+                self._sem_order = _json.loads(str(self._sem["__order_hash"]))
+                self._sem_dim = int(self._sem["__dim"])
+            ot = info["object_type"]
+            key = f"emb__{ot}"
+            if key not in self._sem:
+                raise KeyError(f"joint_semantics table has no entry for {ot!r}")
+            want = hashlib.sha256("|".join(str(x) for x in sk["joint_names"]).encode()).hexdigest()
+            if self._sem_order.get(ot) != want:
+                raise RuntimeError(
+                    f"joint_semantics joint-order hash mismatch for {ot!r}: the table was built "
+                    f"against a different joint ordering, so every row would be paired with the "
+                    f"wrong joint. Rebuild it with scripts/_build_joint_semantic_embeddings.py.")
+            tab = self._sem[key]
+            sem_padded = np.zeros((Jm, self._sem_dim), dtype=np.float32)
+            sem_padded[:J_orig] = tab[:J_orig]
+
         rest_offsets_padded = np.zeros((Jm, 3), dtype=np.float32)
         rest_offsets_padded[:J_orig] = sk["offsets"]
 
@@ -1143,9 +1342,15 @@ class AnyTopDataset(Dataset):
         tpos_padded[:J_orig] = tpos_norm
         # mean / std [J_max, 13] padded (RAW, un-normalized)
         mean_padded = np.zeros((Jm, 13), dtype=np.float32)
-        mean_padded[:J_orig] = sk["mean"]
+        # The SELECTED moments, not sk's own. Normalisation above used `mean`/`std`; returning
+        # sk's own here would mean every downstream de-normalisation (losses.py world-geometry,
+        # the token export, rendering) inverts with a different pair than the one that was
+        # applied. Measured before this fix: max error 34.6 in physical units on the estimated
+        # arm. With moment_source=None these are literally sk["mean"]/sk["std"], so the default
+        # path is unchanged.
+        mean_padded[:J_orig] = mean
         std_padded = np.ones((Jm, 13), dtype=np.float32)  # ones to avoid div-by-0
-        std_padded[:J_orig] = sk["std"]
+        std_padded[:J_orig] = std
 
         # Parent indices as Python list[int] of length J_orig (FK-ordered).
         parent_indices_list = [int(p) for p in sk["parents"]]
@@ -1185,12 +1390,20 @@ class AnyTopDataset(Dataset):
                     )
                 row = rows[idx]
                 # Slice the single row from the mmap then cast fp32 (item C).
-                caption_token_emb = np.asarray(
-                    self._token_emb_mmap[row], dtype=np.float32
-                ).copy()                                          # [L, 768]
-                caption_token_mask = np.asarray(
-                    self._token_mask_mmap[row], dtype=bool
-                ).copy()                                          # [L]
+                if self._token_ragged:
+                    a = int(self._token_offsets[row])
+                    b = int(self._token_offsets[row + 1])
+                    caption_token_emb = np.asarray(
+                        self._token_emb_mmap[a:b], dtype=np.float32
+                    ).copy()                                      # [n_i, dim] variable
+                    caption_token_mask = np.ones((b - a,), dtype=bool)
+                else:
+                    caption_token_emb = np.asarray(
+                        self._token_emb_mmap[row], dtype=np.float32
+                    ).copy()                                      # [L, 768]
+                    caption_token_mask = np.asarray(
+                        self._token_mask_mmap[row], dtype=bool
+                    ).copy()                                      # [L]
         else:
             caption_emb = np.zeros(self._caption_emb_dim, dtype=np.float32)
             has_text = False
@@ -1198,8 +1411,12 @@ class AnyTopDataset(Dataset):
             if self.return_caption_tokens:
                 # No caption for this motion → all-False mask, zero tokens. The
                 # denoiser/CFG zeroes the cross-attn output for has_text=False, so
-                # these rows contribute nothing (item 5).
-                L = self.caption_token_max_len
+                # these rows contribute nothing (item 5). Ragged mode keeps one
+                # zero row (not zero-length): a [0, dim] array survives np.savez
+                # but a batch whose every row is empty would collate to L=0 and
+                # the joint-attention split would degenerate.
+                L = 1 if getattr(self, "_token_ragged", False) \
+                    else self.caption_token_max_len
                 caption_token_emb = np.zeros((L, self._caption_emb_dim),
                                              dtype=np.float32)
                 caption_token_mask = np.zeros((L,), dtype=bool)
@@ -1213,6 +1430,8 @@ class AnyTopDataset(Dataset):
             "adjacency": torch.from_numpy(adjacency_padded),               # [Jm, Jm]
             "geodesic_dist": torch.from_numpy(geo_padded),                 # [Jm, Jm]
             "name_hashes": torch.from_numpy(name_hashes_padded),           # [Jm] int64
+            **({"joint_semantics": torch.from_numpy(sem_padded)}             # [Jm, d_text]
+               if sem_padded is not None else {}),
             "root_position": torch.from_numpy(root_pos_padded),            # [Tm, 3]
             "root_velocity": torch.from_numpy(root_vel_padded),            # [Tm, 3]
             "local_rotations_6d": torch.from_numpy(rot6d_padded),          # [Tm, Jm, 6]

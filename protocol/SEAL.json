@@ -1,0 +1,170 @@
+{
+  "protocol": "unseen_topology_v1",
+  "git_sha_at_seal": "25bd45d976255dbaff9376669681896158198ee3",
+  "inline": {
+    "data/holdout_topologies_v1.json": {
+      "sha256": "24d94d675246fb65abc35ea5d395c70e15be01d3d23e2b896d9b658eac8643fa",
+      "bytes": 32861
+    },
+    "data/holdout_splits_v1/splits_manifest.json": {
+      "sha256": "adf72f0984866ce5a854b444137fb075775967f155351a1b1c928c362628b307",
+      "bytes": 2157
+    },
+    "data/holdout_eval_splits_v1/manifest_report.json": {
+      "sha256": "198dea28266850c4c506bc6784a0aa9a54d5f67c651521d22a492c1e6990f4c6",
+      "bytes": 1236
+    },
+    "data/holdout_eval_splits_v1/README.txt": {
+      "sha256": "f97b82d11abeb78abbf2abaf2eae50f3d3934643e2376dab1c2f4e9152b7184e",
+      "bytes": 545
+    }
+  },
+  "hashed": {
+    "data/holdout_splits_v1/train.txt": {
+      "sha256": "6cbd672f886e98b3935eebff17d340e1bc53cb9843852fb9fa944c4ff1d5ae64",
+      "bytes": 9592029
+    },
+    "data/holdout_splits_v1/val.txt": {
+      "sha256": "5798db9db7bba383fcd76ed78fcf3a04244a388a987dbfc12f64b648383d5feb",
+      "bytes": 506239
+    },
+    "data/holdout_splits_v1/held_representative.txt": {
+      "sha256": "53e9b4c1a5ff5dfe614686f3f804efa69684576e2185bd363111c1cdf3f9e531",
+      "bytes": 620336
+    },
+    "data/holdout_splits_v1/held_stress.txt": {
+      "sha256": "37c1493145613d8bfa9142884bf27fea22dcf23ef17be771603a69afa664b824",
+      "bytes": 419330
+    },
+    "data/holdout_eval_splits_v1/train_main_retained.json": {
+      "sha256": "9ce01dfcc134b4bb97e484ea999c7095d693b9e42ad880b9e5eec4fde3611bea",
+      "bytes": 85974255
+    },
+    "data/holdout_eval_splits_v1/val_all_retained.json": {
+      "sha256": "d77ac66e3f6f0826f9d300bb4303f0eb62ffb8f9378dc516dfe5197f6cd4bf7d",
+      "bytes": 4556890
+    },
+    "data/holdout_eval_splits_v1/held_representative.json": {
+      "sha256": "4b89cc5c8d20af3d0048b46bfa4969b4aa47bcead7f3dc143a503c5e331374bd",
+      "bytes": 4999441
+    },
+    "data/holdout_eval_splits_v1/held_stress.json": {
+      "sha256": "83b655d4a3d826d6d97ebce7070f77148101d3fb99cb0399d49b2328ad9d58b8",
+      "bytes": 3349842
+    },
+    "data/joint_descriptions_v1.json": {
+      "sha256": "e20582bc46bec8ffe1fe01cd44da2fafdfb761f17d96a02daea4801b74353af9",
+      "bytes": 263715
+    },
+    "data/joint_semantics_llm2vec_v1.npz": {
+      "sha256": "7cd3f87ebf15b8113d1d36df2893747bd6821fd88caf96458c9c8cd087699222",
+      "bytes": 177853011
+    },
+    "data/joint_semantics_v1.npz": {
+      "sha256": "78ffe1c538edd360b29da7cdf5a5b02bfb3768cc0312bc516858210b096e0b46",
+      "bytes": 65420960
+    },
+    "data/animo4d_L4TB_plus_human_v4b272neutral/cond.npy": {
+      "sha256": "161795a6507e24c2908f3837c9c999f19d411ecefd7943852f308942d8949bfb",
+      "bytes": 19304854
+    },
+    "data/animo4d_L4TB_plus_human_v4b272neutral/splits/train.txt": {
+      "sha256": "16784c8a587a2a43b4f364e330473e1d3a5ba41003ebb1e6d0424965ab0eb1e0",
+      "bytes": 10579202
+    },
+    "data/animo4d_L4TB_plus_human_v4b272neutral/splits/val.txt": {
+      "sha256": "5b9724474fe86cf7ab61931ed811256ae69a7706ffea3aa80ef196e6cba8afb5",
+      "bytes": 558414
+    }
+  },
+  "code": {
+    "scripts/_build_holdout_trees.py": {
+      "sha256": "acfb6176e5a9898aa97447db22673d3fafecab9e162d012e0e8f8c1ea4cc3556",
+      "bytes": 24764
+    },
+    "scripts/_build_holdout_splits.py": {
+      "sha256": "26fa75bfa92a0a356341c0632bafa94e98c2c5b87a8b988602ee0a53647425fa",
+      "bytes": 6963
+    },
+    "scripts/_build_holdout_eval_manifests.py": {
+      "sha256": "3f04a02b9fc2f51290010f3fb063400498bff825b224f5eed3074b97e2380df4",
+      "bytes": 5771
+    },
+    "scripts/_build_joint_descriptions.py": {
+      "sha256": "c53fb3633adbdaa2448f88fc7b776624ab2df9d941154fb65299ba0025c911c3",
+      "bytes": 12614
+    },
+    "scripts/_build_joint_semantic_embeddings.py": {
+      "sha256": "8d5a5091a6f81cfc7bf19da071b5d6fd7eef545571c819d4788e64a599029f8c",
+      "bytes": 5176
+    },
+    "scripts/_fit_restpose_moment_estimator.py": {
+      "sha256": "c728d51e9cf2a6a123dce0375da731923439021e304a1ad4cfb79862754b0466",
+      "bytes": 10571
+    },
+    "scripts/_probe_joint_descriptions.py": {
+      "sha256": "9db9c514b6f7715394eb8dae8d108dc7650963159a1884af8354b515fc066bd4",
+      "bytes": 10172
+    },
+    "src/data/holdout_guard.py": {
+      "sha256": "4b6ba799e57113274a8cba0463b85921644fb61fd14db4c367bf45e2f4f015a2",
+      "bytes": 13719
+    },
+    "src/data/moment_source.py": {
+      "sha256": "5fca9af5602a5e4bcc703bcae07899188206704c4b25c57fceb5f0fea94c7eeb",
+      "bytes": 6100
+    },
+    "src/data/text_encoders.py": {
+      "sha256": "26ed35bd972634bdddabd6c07661b4fe82b54f985924f5e7f10d169d50409ee2",
+      "bytes": 4368
+    },
+    "src/data/provenance.py": {
+      "sha256": "54f3a8146f213b924fd8afbe72d8b21232e67ad9294569061e6db2a6a00aa88c",
+      "bytes": 12423
+    },
+    "src/data/anytop_dataset.py": {
+      "sha256": "a58ddb2b086f52efce4d1589494f19387ca347d9bac83c8070dfebf9f3d6adb8",
+      "bytes": 72536
+    },
+    "src/models/vq_model/graph_vq_tokenizer.py": {
+      "sha256": "66f2cd8bc274ffcd932e6ad7310b67f305bbddd724d3d55e886fcd837e76d674",
+      "bytes": 30173
+    },
+    "src/models/encoder.py": {
+      "sha256": "7e840d17bbd060e5dd7e9ec6791e202e7a903cd2147ecfc5d26fbd9bf0ae93a7",
+      "bytes": 20579
+    },
+    "src/models/CodeFlow_Model/token_dataset.py": {
+      "sha256": "e7ae2113c86ed796551dbc0a36054b213720fe1ae42dd361f68fce47b8e3d053",
+      "bytes": 8703
+    },
+    "scripts/train_graph_vqvae.py": {
+      "sha256": "1416ae7e7594f161aa2af66ea660054ae7d91533a5e57496df34738806f2703f",
+      "bytes": 58391
+    },
+    "scripts/export_graph_vq_tokens.py": {
+      "sha256": "ab4356f559dbe0827d8ee3f1fde1fe7337380b9839757e59fde0b0d6f5911621",
+      "bytes": 24670
+    },
+    "scripts/merge_export_shards.py": {
+      "sha256": "8918d1249cb5765dd74a3b966e14b6ce887d9514d594d4a5dd07fcb5a6255d0c",
+      "bytes": 8867
+    },
+    "scripts/_launch_holdout_vqvae.sh": {
+      "sha256": "6699cc1ac4802f5ad7e7f370a04e574cb44cd32a3907c867feb18e93118c8e6c",
+      "bytes": 10403
+    },
+    "scripts/_launch_holdout_vqvae_8card.sh": {
+      "sha256": "4e7ef62d497c5506ee0c9a8f1ad86ed6e20416232563a4161ef3de58ca47e88b",
+      "bytes": 4113
+    },
+    "scripts/_watchdog_holdout_vqvae.sh": {
+      "sha256": "669aa229d4bf0497fc527bc1ca3fb7b7d4a8b1d413ed5e768acadea0b3d428a0",
+      "bytes": 4773
+    },
+    "scripts/_regression_suite.py": {
+      "sha256": "b45168fd1dcd4d8f53bb0353c1172c0f413aa9085d703088d77df4a08ed19a7f",
+      "bytes": 34965
+    }
+  }
+}

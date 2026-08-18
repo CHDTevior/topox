@@ -41,7 +41,47 @@ STATIC_MANIFEST_KEYS = (
     "frozen_vqvae_ckpt", "ckpt_epoch", "D", "Q", "K", "max_coarse",
     "temporal_stride", "num_frames", "T_lat", "ckpt_max_frames",
     "anytop_root", "amp_dtype", "geo_inf_sentinel",
+    # Caption-corpus provenance (codex r3 #4): shards baked from different texts jsons or
+    # caption caches must not fuse. The whole dict is compared, so any field drifting
+    # (name, sha, dim) fails the merge.
+    "caption_provenance",
+    # Without this the parallel export path silently produces a provenance-free manifest, and
+    # the whole strict chain is broken at the one step nobody looks at.
+    "_provenance",
 )
+
+# Present-when-present keys (codex r4 #2): compared across shards for EQUALITY like every
+# static key, but their ABSENCE from shard 0 is legal — caches exported before the field
+# existed must stay re-mergeable. A new export always emits them, and a mixed old/new merge
+# still fails the equality check (None != {...}).
+OPTIONAL_STATIC_KEYS = frozenset({"caption_provenance"})
+
+
+def check_shard_contracts(out_dir: Path, splits, num_shards: int, sd0: dict) -> int:
+    """Every shard of every split must agree with shard 0 on the whole static contract.
+
+    A merge that copies shard 0's fields and never reads the others would happily fuse shards
+    exported from two different tokenizers, two different corpora, or one strict and one legacy
+    run, and the merged manifest would confidently describe only the first.
+
+    The sidecars live at `out_dir/<split>/manifest_shard<NNN>.json`. An earlier version of this
+    check looked for them at the output root and therefore raised on every real multi-shard
+    merge — hence the two-split two-shard regression test that accompanies it.
+    """
+    checked = 0
+    for split in splits:
+        for sh in range(num_shards):
+            side = Path(out_dir) / split / f"manifest_shard{sh:03d}.json"
+            if not side.exists():
+                raise FileNotFoundError(f"[merge] missing shard sidecar {side}")
+            sdn = json.loads(side.read_text())
+            diff = [k for k in STATIC_MANIFEST_KEYS if sdn.get(k) != sd0.get(k)]
+            if diff:
+                raise RuntimeError(
+                    f"[merge] {split} shard {sh} disagrees with shard 0 on {diff}. These shards "
+                    f"were not produced by the same export and must not be fused into one cache.")
+            checked += 1
+    return checked
 
 
 def count_npz(split_dir: Path) -> int:
@@ -123,13 +163,16 @@ def main() -> int:
             f"[merge] missing shard-0 sidecar {first_sidecar} "
             f"(cannot recover global manifest fields)")
     sd0 = json.loads(first_sidecar.read_text())
-    missing = [k for k in STATIC_MANIFEST_KEYS if k not in sd0]
+    missing = [k for k in STATIC_MANIFEST_KEYS
+               if k not in sd0 and k not in OPTIONAL_STATIC_KEYS]
     if missing:
         raise RuntimeError(
             f"[merge] shard sidecar {first_sidecar} missing global manifest "
             f"fields {missing}; export must emit them in manifest_shard*.json.")
 
-    manifest = {k: sd0[k] for k in STATIC_MANIFEST_KEYS}
+    check_shard_contracts(out_dir, splits, args.num_shards, sd0)
+
+    manifest = {k: sd0[k] for k in STATIC_MANIFEST_KEYS if k in sd0}
     manifest["splits"] = {}
     for split in splits:
         n_clips, max_id_err = merge_split(out_dir, split, args.num_shards)

@@ -47,7 +47,11 @@ from torch.utils.data import DataLoader, DistributedSampler
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.models.vq_model import GraphVQTokenizer
+from src.models.vq_model import GraphVQTokenizer, semantic_config_from_ckpt
+from src.data.holdout_guard import guard_dataset
+from src.data import provenance as prov
+from src.models.graph_salad.losses import compute_world_geometry_terms
+from scripts.train_denoiser import decoded_speed_loss
 from src.models.CodeFlow_Model import GraphCodeFlow
 from src.models.CodeFlow_Model.token_dataset import TokenCacheDataset, token_collate
 
@@ -80,11 +84,14 @@ class HumanCurriculumSampler(torch.utils.data.Sampler):
     Deterministic per (seed, epoch[, rank]); reseeded each set_epoch. __len__ is equal on
     all ranks. With num_replicas=1/rank=0 it also serves the single-process (non-DDP) path.
     """
-    def __init__(self, n, is_human, factor, start_epoch, num_replicas, rank, seed=42):
+    def __init__(self, n, is_human, factor, start_epoch, num_replicas, rank, seed=42,
+                 phase2_factor=1.0, phase2_start_epoch=-1):
         self.n = int(n)
         self.is_human = torch.as_tensor(list(is_human), dtype=torch.bool)
         self.factor = float(factor)
         self.start_epoch = int(start_epoch)
+        self.phase2_factor = float(phase2_factor)
+        self.phase2_start_epoch = int(phase2_start_epoch)
         self.num_replicas = max(1, int(num_replicas))
         self.rank = int(rank)
         self.seed = int(seed)
@@ -98,8 +105,18 @@ class HumanCurriculumSampler(torch.utils.data.Sampler):
     def __len__(self):
         return self.num_samples
 
+    def _current_factor(self):
+        # TWO-PHASE (VQVAE-style): phase2 takes precedence once epoch >= phase2_start_epoch,
+        # else the phase-1 factor once epoch >= start_epoch, else 1.0 (OFF). phase2 defaults
+        # (1.0 / -1) keep this byte-identical to the original single-phase behaviour.
+        if self.phase2_factor > 1.0 and self.phase2_start_epoch >= 0 and self.epoch >= self.phase2_start_epoch:
+            return self.phase2_factor
+        if self.factor > 1.0 and self.start_epoch >= 0 and self.epoch >= self.start_epoch:
+            return self.factor
+        return 1.0
+
     def _active(self):
-        return self.factor > 1.0 and self.start_epoch >= 0 and self.epoch >= self.start_epoch
+        return self._current_factor() > 1.0
 
     def __iter__(self):
         if not self._active():
@@ -118,7 +135,7 @@ class HumanCurriculumSampler(torch.utils.data.Sampler):
             # random cross-rank repeats remain possible but are rare, not systematic. __len__ equal.
             g = torch.Generator(); g.manual_seed(self.seed + self.epoch * 1009 + self.rank)
             w = torch.ones(self.n, dtype=torch.float)
-            w[self.is_human] = self.factor
+            w[self.is_human] = self._current_factor()
             idx = torch.multinomial(w, self.num_samples, replacement=True, generator=g)
         return iter(idx.tolist())
 
@@ -141,6 +158,10 @@ def load_frozen_tokenizer(ckpt_path: str, dev: torch.device) -> GraphVQTokenizer
         num_quantizers=ta["num_quantizers"], ema_mu=ta["ema_mu"],
         quantize_dropout_prob=ta["quantize_dropout_prob"],
         dead_code_threshold=ta["dead_code_threshold"],
+        # Semantic ckpts carry encoder.clip_proj sized for the joint-semantics table;
+        # rebuilding without it fails strict load (the dev-scan fix that never landed
+        # in this checkout — caught by the 8-rank smoke).
+        **semantic_config_from_ckpt(ck),
     ).to(dev)
     model.load_state_dict(ck["model_state_dict"], strict=True)
     model.eval()
@@ -312,6 +333,58 @@ def main() -> int:
                    help="level_a = GraphStructuredCodeFlow probe (compat/smoke); "
                         "graph_pscf = 287M formal backbone (DEFAULT for formal "
                         "training, spec §5.3)")
+    p.add_argument("--text_dim", type=int, default=768,
+                   help="caption embedding dim (768=T5 legacy, 4096=LLM2Vec); sets both "
+                        "d_text and text_token_dim")
+    p.add_argument("--text_input_norm", type=int, default=0,
+                   help="LayerNorm on raw caption embeddings before both text projections "
+                        "(required for LLM2Vec: per-dim RMS ~17x T5's)")
+    p.add_argument("--use_sentence_token", type=int, default=0,
+                   help="prepend the CFG-gated pooled projection to h_text as token 0")
+    p.add_argument("--text_slot_xattn", type=int, default=0,
+                   help="per-block TextCrossAttention: slots query text tokens directly")
+    # ARDY-style decoded-geometry loss (L_dec): decode the gradient-carrying clean
+    # prediction through the FROZEN tokenizer and supervise world geometry / root
+    # trajectory / world speed against the no-grad decode of the GT z_q (the token
+    # cache stores no GT 13ch motion; decode(z_q) is a lossless proxy per the v4b
+    # recon evidence). All default None = unset sentinel (dropped from the config
+    # digest so v2/v3 ckpts keep their resume contract); explicit values participate.
+    # Validated v4b-era recipe: world/traj/speed @ 0.1 each (handoff
+    # 20260608_2100_decode_loss_energy_collapse_result.md, -41% energy deviation).
+    p.add_argument("--w_dec_world", type=float, default=None,
+                   help="decoded-clean world-geometry L1 weight (None/0 = off)")
+    p.add_argument("--w_dec_traj", type=float, default=None,
+                   help="decoded-clean root-trajectory L1 weight (None/0 = off)")
+    p.add_argument("--w_dec_speed", type=float, default=None,
+                   help="decoded-clean world-speed log-Huber weight (None/0 = off)")
+    p.add_argument("--dec_geom_t_min", type=float, default=None,
+                   help="apply decoded geometry only to rows with t > this (RF: t=1 is "
+                        "clean, so this gates to NEAR-CLEAN rows — polarity REVERSED vs "
+                        "the diffusion-era timestep<t_max gate). None = 0.6")
+    p.add_argument("--dec_geom_every", type=int, default=None,
+                   help="compute decoded geometry every N train steps (None = 1)")
+    p.add_argument("--dec_speed_floor", type=float, default=None,
+                   help="skip GT speeds <= this; clamp both speeds >= floor before log "
+                        "(None = 1e-4)")
+    p.add_argument("--dec_speed_loss", choices=["log_huber", "log_l1", "raw_l1"],
+                   default=None, help="decoded speed loss form (None = log_huber)")
+    p.add_argument("--parameterization", choices=["v", "x"], default=None,
+                   help="network output semantics: v = velocity (default), x = clean-latent "
+                        "x0 prediction converted to velocity inside predict_velocity "
+                        "(v-space loss, same effective time weighting). Default None = "
+                        "unset sentinel: it is dropped from the config digest so ckpts "
+                        "trained before this flag existed keep their resume contract; an "
+                        "EXPLICIT value participates in the contract.")
+    p.add_argument("--caption_sampling", choices=["fixed", "random"], default="fixed",
+                   help="fixed = npz-baked primary caption (legacy). random = uniform draw over "
+                        "ALL of a motion's captions from the LLM2Vec sidecar, reseeded per "
+                        "epoch (train only; val is always fixed for determinism)")
+    p.add_argument("--caption_sidecar", default=None,
+                   help="LLM2Vec ragged sidecar prefix; REQUIRED for caption_sampling=random. "
+                        "Byte-verified against the token cache's caption_provenance.")
+    p.add_argument("--gen_eval_caption_cache", default=None,
+                   help="LLM2Vec sidecar prefix for online gen-eval caption lookup "
+                        "(required when --text_dim != 768)")
     p.add_argument("--code_dim", type=int, default=512)
     p.add_argument("--n_heads", type=int, default=8)
     p.add_argument("--d_ff", type=int, default=2048)
@@ -342,6 +415,12 @@ def main() -> int:
     p.add_argument("--eta_min_ratio", type=float, default=0.01)
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--grad_clip", type=float, default=1.0)
+    p.add_argument("--grad_accum", type=int, default=1,
+                   help="gradient accumulation micro-steps per optimizer step. Default 1 = "
+                        "unchanged (step every micro-batch). Use >1 to preserve the same GLOBAL "
+                        "batch (=per_gpu*world*grad_accum) / learning efficiency on fewer GPUs, "
+                        "e.g. 2 GPUs x bs16 x accum2 = global 64 (same as 4 GPUs x bs16 x accum1). "
+                        "n_iter/LR-schedule/logging count OPTIMIZER steps, so resume stays seamless.")
     p.add_argument("--cond_drop_prob", type=float, default=0.1)
     p.add_argument("--flow_loss_weight", type=float, default=1.0)
     p.add_argument("--terminal_loss_weight", type=float, default=0.0)
@@ -357,6 +436,14 @@ def main() -> int:
     p.add_argument("--human_upsample_start_epoch", type=int, default=-1,
                    help="epoch at which human upsampling activates (-1 = never). Only relevant if "
                         "--human_upsample_factor > 1.")
+    p.add_argument("--human_upsample_phase2_factor", type=float, default=1.0,
+                   help="TWO-PHASE CURRICULUM (VQVAE-style): once epoch >= --human_upsample_phase2_start_epoch "
+                        "the human upweight switches from --human_upsample_factor to THIS (takes precedence). "
+                        "1.0 (default) = OFF (single-phase, byte-unchanged). e.g. VQVAE used factor=3.0 start=0 "
+                        "phase2_factor=4.5 phase2_start=50.")
+    p.add_argument("--human_upsample_phase2_start_epoch", type=int, default=-1,
+                   help="epoch at which phase-2 human upsampling activates (-1 = never / single-phase). Only "
+                        "relevant if --human_upsample_phase2_factor > 1; should be > --human_upsample_start_epoch.")
     p.add_argument("--empirical_stats_max_clips", type=int, default=0,
                    help="0 (default) = use ALL train clips for the empirical z_q "
                         "norm (LOCKED: full train-set stats). A positive value caps "
@@ -399,6 +486,25 @@ def main() -> int:
     p.add_argument("--smoke_iters", type=int, default=4)
     p.add_argument("--mem_profile", action="store_true",
                    help="one fwd+bwd at --batch_size, report peak CUDA mem, exit")
+    # --- held-out-topology protocol ---------------------------------------------------
+    p.add_argument("--protocol", default="legacy",
+                   choices=["legacy", "unseen_topology_v1"],
+                   help="legacy (default) reproduces every pre-existing command exactly and does "
+                        "not require the held-out artifact. unseen_topology_v1 enforces the "
+                        "frozen pre-registration: retained splits, artifact SHA, and abort on any "
+                        "held topology. Only a run under unseen_topology_v1 may back an "
+                        "unseen-topology claim.")
+    p.add_argument("--holdout_artifact", type=str, default=None,
+                   help="frozen pre-registration (data/holdout_topologies_v1.json). Required "
+                        "unless --allow_no_holdout. The token cache this stage reads must have "
+                        "been exported from the RETAINED splits.")
+    p.add_argument("--holdout_sha", type=str, default=None,
+                   help="expected artifact sha256; abort if the freeze differs.")
+    p.add_argument("--holdout_data_root", type=str, default=None,
+                   help="corpus root holding cond.npy, for resolving canonical topologies. "
+                        "Defaults to the anytop_root recorded in the token-cache manifest.")
+    p.add_argument("--allow_no_holdout", action="store_true",
+                   help="run WITHOUT the guard; logs loudly and must not back any unseen claim.")
     args = p.parse_args()
 
     is_ddp, rank, local_rank, world_size, is_main = _ddp_setup()
@@ -416,6 +522,48 @@ def main() -> int:
         if args.device == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("[DEVICE FAIL] --device cuda but CUDA unavailable.")
         dev = torch.device(args.device)
+
+    # Restore + dropout resolution run FIRST — before ANY code reads an architecture or
+    # text arg (the arch banner, tokenizer code_dim validation and the provenance stamp all
+    # come later), so every consumer sees the EFFECTIVE args and the config digest matches
+    # between a fresh run and its own resume (codex r5 B3).
+    # Resume restore runs BEFORE the provenance stamp so the config digest hashes the args
+    # that will actually take effect (codex r4 #3: a digest over pre-restore defaults would
+    # false-mismatch every restored key).
+    if args.resume is not None and Path(args.resume).exists():
+        _rargs = torch.load(args.resume, map_location="cpu",
+                            weights_only=False).get("args", {})
+        for _k, _default in (("model_variant", "level_a"), ("code_dim", None),
+                             ("n_heads", None), ("d_ff", None), ("n_layers", None),
+                             ("depth_double", 6), ("depth_single", 12),
+                             ("hidden_size", None), ("mlp_ratio", 4.0),
+                             ("dropout", None), ("max_T_lat", 75),
+                             # Text-architecture flags (codex chain review #4).
+                             # use_sentence_token has NO parameters of its own, so a
+                             # strict state-dict load canNOT catch it silently off —
+                             # only restoring it from the ckpt can.
+                             ("text_dim", 768), ("text_input_norm", 0),
+                             ("use_sentence_token", 0), ("text_slot_xattn", 0)):
+        # --parameterization is deliberately NOT restored from the ckpt: restoring it
+        # before the provenance stamp would make the contract digest always match, so a
+        # watchdog relaunch of an x-run that LOST the flag would be silently accepted as
+        # x (codex xpred r1 #2). Leaving the CLI sentinel untouched makes the digest
+        # fail-closed instead: x-ckpt + missing/wrong flag -> contract mismatch ->
+        # REFUSED before the model is built. Resuming an x-run therefore REQUIRES
+        # --parameterization x on the CLI (the launcher's PARAMETERIZATION env).
+            _v = _rargs.get(_k, _default) if isinstance(_rargs, dict) \
+                else getattr(_rargs, _k, _default)
+            if _v is not None:
+                setattr(args, _k, _v)
+        if is_main:
+            print(f"resume: rebuilding model from ckpt args model_variant={args.model_variant} "
+                  f"depth_double={args.depth_double} depth_single={args.depth_single}", flush=True)
+    # Resolve dropout per variant (spec §5.4: graph_pscf=0.05, level_a=0.1). None =
+    # not set on the CLI; an explicit --dropout wins, and resume above may have restored
+    # the ckpt's dropout (non-None -> takes precedence). Resolving HERE — before
+    # vars(args) is saved into the ckpt — records the real dropout so resume rebuilds it.
+    if args.dropout is None:
+        args.dropout = 0.05 if args.model_variant == "graph_pscf" else 0.1
 
     out_dir = Path(args.out)
     resume_in_place = (args.resume is not None
@@ -453,9 +601,69 @@ def main() -> int:
         f"max_coarse={ta['max_coarse']}")
 
     # ---- Data (offline token cache) ----
-    ds_train = TokenCacheDataset(args.token_cache, "train")
+    # Resolved before the dataset is built: under the protocol each payload's topology must be
+    # checked against the corpus that DEFINES it, not only against the payload's own hash.
+    _tc_man = json.loads((Path(args.token_cache) / "manifest.json").read_text())
+    _hroot = args.holdout_data_root or _tc_man.get("anytop_root")
+    strict = args.protocol == "unseen_topology_v1"
+    if strict and not args.holdout_artifact:
+        raise SystemExit("--protocol unseen_topology_v1 requires --holdout_artifact")
+    # The backbone reads a token cache, not the corpus, so the guard checks the cache's own
+    # index.jsonl motion_ids. A cache exported from the full splits would put held topologies
+    # here with nothing else to notice.
+    ds_train = TokenCacheDataset(args.token_cache, "train",
+                                 authority_root=_hroot if strict else None,
+                                 caption_sidecar=args.caption_sidecar,
+                                 caption_sampling=args.caption_sampling,
+                                 caption_seed=args.seed,
+                                 # sidecar full verification (31 GB hash + exhaustive npz
+                                 # scan) on rank 0 only: 8 ranks doing it concurrently
+                                 # starved the shared fs past the NCCL PG timeout (smoke
+                                 # 2026-08-05 SIGABRT). Rank 0 raising kills the whole
+                                 # torchrun job, so every rank still trains only on a
+                                 # verified artifact; other ranks keep the size pins.
+                                 caption_verify=is_main)
+
+    _PROV = prov.stamp(protocol=args.protocol, stage="codeflow",
+                       holdout_artifact=args.holdout_artifact if strict else None,
+                       data_root=_tc_man.get("anytop_root"),
+                       upstream={"token_cache": str(args.token_cache),
+                                 "token_cache_provenance": prov.read(_tc_man),
+                                 "frozen_vqvae_ckpt": _tc_man.get("frozen_vqvae_ckpt")},
+                       extra={"training_config_sha256":
+                              prov.codeflow_training_config_sha256(args, world_size)})
+    # The backbone never touches the corpus, so the token cache IS its data. A cache exported
+    # from a full-corpus tokenizer is not made clean by the retained index it happens to carry.
+    prov.verify_upstream(prov.read(_tc_man), protocol=args.protocol,
+                         what=f"token cache {args.token_cache}",
+                         expect_artifact_body_sha=_PROV.get("holdout_artifact_body_sha256"), log=log)
+    if args.resume is not None:
+        _rck_prov = prov.read(torch.load(args.resume, map_location="cpu", weights_only=False))
+        prov.verify_upstream(
+            _rck_prov,
+            protocol=args.protocol, what=f"resume checkpoint {args.resume}",
+            expect_artifact_body_sha=_PROV.get("holdout_artifact_body_sha256"), log=log)
+        # Hard resume contract (codex r4 #3): protocol, holdout identity AND the full
+        # training-config digest (text flags included, by exclusion) must match the ckpt.
+        prov.verify_resume_contract(_rck_prov, _PROV,
+                                    what=f"resume checkpoint {args.resume}", log=log)
+    if strict and args.gen_eval and args.evaluator_ckpt:
+        # The instrument must not have been trained on the rigs it will score.
+        prov.verify_upstream(
+            prov.read(torch.load(args.evaluator_ckpt, map_location="cpu", weights_only=False)),
+            protocol=args.protocol, what=f"online evaluator {args.evaluator_ckpt}",
+            expect_artifact_body_sha=_PROV.get("holdout_artifact_body_sha256"), log=log)
+    guard_dataset(ds_train, data_root=_hroot,
+                  artifact=args.holdout_artifact if strict else None,
+                  expect_body_sha=args.holdout_sha, stage="codeflow:train",
+                  allow_no_holdout=(not strict) or args.allow_no_holdout, log=log)
     try:
-        ds_val = TokenCacheDataset(args.token_cache, "val")
+        ds_val = TokenCacheDataset(args.token_cache, "val",
+                                   authority_root=_hroot if strict else None)
+        guard_dataset(ds_val, data_root=_hroot,
+                      artifact=args.holdout_artifact if strict else None,
+                      expect_body_sha=args.holdout_sha, stage="codeflow:val",
+                      allow_no_holdout=(not strict) or args.allow_no_holdout, log=log)
     except FileNotFoundError:
         ds_val = None
     log(f"token cache: train={len(ds_train)}" + (f" val={len(ds_val)}" if ds_val else " (no val)"))
@@ -481,27 +689,7 @@ def main() -> int:
     # (strict=True) would mismatch. Old ckpts (pre-model_variant) default to
     # level_a so they still load. Only architecture-defining args are overridden;
     # train/schedule args stay from the CLI.
-    if args.resume is not None and Path(args.resume).exists():
-        _rargs = torch.load(args.resume, map_location="cpu",
-                            weights_only=False).get("args", {})
-        for _k, _default in (("model_variant", "level_a"), ("code_dim", None),
-                             ("n_heads", None), ("d_ff", None), ("n_layers", None),
-                             ("depth_double", 6), ("depth_single", 12),
-                             ("hidden_size", None), ("mlp_ratio", 4.0),
-                             ("dropout", None), ("max_T_lat", 75)):
-            _v = _rargs.get(_k, _default) if isinstance(_rargs, dict) \
-                else getattr(_rargs, _k, _default)
-            if _v is not None:
-                setattr(args, _k, _v)
-        log(f"resume: rebuilding model from ckpt args model_variant={args.model_variant} "
-            f"depth_double={args.depth_double} depth_single={args.depth_single}")
 
-    # Resolve dropout per variant (spec §5.4: graph_pscf=0.05, level_a=0.1). None =
-    # not set on the CLI; an explicit --dropout wins, and resume above may have restored
-    # the ckpt's dropout (non-None -> takes precedence). Resolving HERE — before
-    # vars(args) is saved into the ckpt — records the real dropout so resume rebuilds it.
-    if args.dropout is None:
-        args.dropout = 0.05 if args.model_variant == "graph_pscf" else 0.1
 
     # ---- Model ----
     # spec A3: graph_pscf pins H==D==512 for v1 (no "H!=D is fine" speculation).
@@ -511,11 +699,18 @@ def main() -> int:
             f"got hidden_size={args.hidden_size} code_dim={args.code_dim}")
     flow = GraphCodeFlow(
         code_dim=args.code_dim, n_heads=args.n_heads, d_ff=args.d_ff,
-        n_layers=args.n_layers, d_text=768, text_token_dim=768, dropout=args.dropout,
+        n_layers=args.n_layers, d_text=args.text_dim, text_token_dim=args.text_dim,
+        dropout=args.dropout,
+        text_input_norm=bool(args.text_input_norm),
+        use_sentence_token=bool(args.use_sentence_token),
+        text_slot_xattn=bool(args.text_slot_xattn),
         model_variant=args.model_variant, depth_double=args.depth_double,
         depth_single=args.depth_single, mlp_ratio=args.mlp_ratio,
         max_T_lat=args.max_T_lat,
+        parameterization=(args.parameterization or "v"),
     ).to(dev)
+    log(f"flow parameterization: {args.parameterization or 'v'}"
+        + (" (x0 prediction, v-space loss)" if (args.parameterization or "v") == "x" else ""))
     # Empirical z_q normalization (LOCKED): mean/std over valid train tokens.
     # Startup acceleration: disk-cache the stats (keyed by cache identity from the
     # manifest, so a re-export invalidates it) + rank-0 scan + broadcast under DDP.
@@ -574,16 +769,29 @@ def main() -> int:
             dist.destroy_process_group()
         return 0
 
-    if args.human_upsample_factor > 1.0:
+    # fail-loud (mirrors the VQVAE guard): a factor>1 paired with a negative start_epoch would
+    # SILENTLY never activate (_current_factor stays 1.0). Abort rather than train without the
+    # intended curriculum. A phase must be BOTH factor>1 AND start_epoch>=0 to be "on".
+    if args.human_upsample_factor > 1.0 and args.human_upsample_start_epoch < 0:
+        raise SystemExit("[human-upsample] --human_upsample_factor>1 requires --human_upsample_start_epoch>=0 (else silent no-op)")
+    if args.human_upsample_phase2_factor > 1.0 and args.human_upsample_phase2_start_epoch < 0:
+        raise SystemExit("[human-upsample] --human_upsample_phase2_factor>1 requires --human_upsample_phase2_start_epoch>=0 (else silent no-op)")
+    _p1_on = args.human_upsample_factor > 1.0 and args.human_upsample_start_epoch >= 0
+    _p2_on = args.human_upsample_phase2_factor > 1.0 and args.human_upsample_phase2_start_epoch >= 0
+    if _p1_on or _p2_on:                     # gate matches when _current_factor() can ever be >1
         _is_human = [str(r.get("motion_id", "")).upper().startswith("HML") for r in ds_train.rows]
         _nh, _nt = sum(_is_human), len(_is_human)
-        _tgt = args.human_upsample_factor * _nh / max(1, args.human_upsample_factor * _nh + (_nt - _nh))
-        log(f"[human-upsample] curriculum ON: factor={args.human_upsample_factor} "
-            f"start_epoch={args.human_upsample_start_epoch}; human={_nh}/{_nt} "
-            f"({100*_nh/max(1,_nt):.1f}%) -> ~{100*_tgt:.0f}% per batch once epoch>=start_epoch")
+        def _share(f): return f * _nh / max(1, f * _nh + (_nt - _nh))
+        _p1s = (f"phase1 factor={args.human_upsample_factor} start={args.human_upsample_start_epoch} "
+                f"(~{100*_share(args.human_upsample_factor):.0f}%)") if _p1_on else "phase1 OFF"
+        _p2s = (f"phase2 factor={args.human_upsample_phase2_factor} start={args.human_upsample_phase2_start_epoch} "
+                f"(~{100*_share(args.human_upsample_phase2_factor):.0f}%)") if _p2_on else "phase2 OFF"
+        log(f"[human-upsample] curriculum ON: {_p1s} -> {_p2s}; "
+            f"human={_nh}/{_nt} ({100*_nh/max(1,_nt):.1f}% base)")
         train_sampler = HumanCurriculumSampler(
             len(ds_train), _is_human, args.human_upsample_factor, args.human_upsample_start_epoch,
-            num_replicas=(world_size if is_ddp else 1), rank=(rank if is_ddp else 0), seed=args.seed)
+            num_replicas=(world_size if is_ddp else 1), rank=(rank if is_ddp else 0), seed=args.seed,
+            phase2_factor=args.human_upsample_phase2_factor, phase2_start_epoch=args.human_upsample_phase2_start_epoch)
     else:
         train_sampler = (DistributedSampler(ds_train, shuffle=True, drop_last=True)
                          if is_ddp else None)
@@ -591,7 +799,12 @@ def main() -> int:
     dl_train = DataLoader(
         ds_train, batch_size=args.batch_size, shuffle=(train_sampler is None),
         sampler=train_sampler, collate_fn=token_collate, num_workers=nw,
-        drop_last=True, pin_memory=True, persistent_workers=(nw > 0),
+        drop_last=True, pin_memory=True,
+        # persistent workers NEVER see set_caption_epoch (parent-only state; codex
+        # caption-sampling review #1 reproduced the freeze) — random mode re-forks
+        # workers each epoch so they inherit the updated epoch. Worker spawn is
+        # seconds against a ~29-minute epoch. Fixed mode keeps the old behaviour.
+        persistent_workers=(nw > 0 and args.caption_sampling != "random"),
         prefetch_factor=(4 if nw > 0 else None))
     dl_val = (DataLoader(ds_val, batch_size=args.batch_size, shuffle=False,
                          collate_fn=token_collate, num_workers=max(1, nw // 2),
@@ -602,8 +815,30 @@ def main() -> int:
         flow = DDP(flow, device_ids=[local_rank], find_unused_parameters=False)
     raw_flow = flow.module if is_ddp else flow
 
+    # Resolve the decoded-geometry knobs from their None sentinels (unset -> off /
+    # v4b-validated defaults). Done ONCE here so the hot loop reads plain floats.
+    _dec_world_w = float(args.w_dec_world or 0.0)
+    _dec_traj_w = float(args.w_dec_traj or 0.0)
+    _dec_speed_w = float(args.w_dec_speed or 0.0)
+    _dec_t_min = 0.6 if args.dec_geom_t_min is None else float(args.dec_geom_t_min)
+    _dec_every = max(1, int(args.dec_geom_every or 1))
+    _dec_speed_floor = 1e-4 if args.dec_speed_floor is None else float(args.dec_speed_floor)
+    _dec_speed_mode = args.dec_speed_loss or "log_huber"
+    if _dec_speed_w > 0 and _dec_speed_floor <= 0 and _dec_speed_mode != "raw_l1":
+        raise RuntimeError(
+            f"[CFG FAIL] --dec_speed_floor must be > 0 when the log-space speed loss is "
+            f"active (got {_dec_speed_floor}): log(speed->0) produces non-finite loss")
+    if (_dec_world_w + _dec_traj_w + _dec_speed_w) > 0:
+        log(f"decoded-geometry loss ON: world={_dec_world_w} traj={_dec_traj_w} "
+            f"speed={_dec_speed_w}({_dec_speed_mode}) t_min={_dec_t_min} "
+            f"every={_dec_every} floor={_dec_speed_floor} (target=no-grad decode(z_q))")
+
     opt = torch.optim.AdamW(flow.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    steps_per_epoch = max(1, len(dl_train))
+    # n_iter counts OPTIMIZER steps (one per grad_accum micro-batches), so total_steps for the
+    # LR schedule must be in optimizer steps too — else grad_accum>1 stretches the cosine decay
+    # and lr_at(n_iter) diverges from the accum=1 run on resume (codex catch).
+    _accum = max(1, int(args.grad_accum))
+    steps_per_epoch = max(1, len(dl_train) // _accum)
     total_steps = max(1, args.epochs * steps_per_epoch)
 
     def lr_at(step: int) -> float:
@@ -634,7 +869,12 @@ def main() -> int:
         log(f"resumed: start_epoch={start_epoch} n_iter={n_iter} best_val={best_val:.4f}")
         del rc
 
-    n_epochs = 2 if args.smoke else args.epochs
+    # Resume-aware smoke bound (codex v2b r2 MAJOR-1): a bare `2` makes
+    # range(start_epoch, 2) EMPTY whenever we smoke a resumed run (start_epoch=290 for the
+    # v2->v2b continuation), so the smoke exits 0 having executed zero iterations — a
+    # false PASS that verifies neither forward/backward, grad accumulation, nor NCCL.
+    # Anchor the bound to where training actually starts, and never exceed the schedule.
+    n_epochs = min(args.epochs, start_epoch + 2) if args.smoke else args.epochs
     smoke_cap = args.smoke_iters if args.smoke else None
 
     # ---- ONLINE gen-eval setup: load the FROZEN evaluator + T5 + eval dataset ONCE,
@@ -673,6 +913,16 @@ def main() -> int:
             _vq_root = ta.get("anytop_root") or ta.get("data_root")
             if _vq_root and _resolve(_ev_root) != _resolve(_vq_root):
                 raise RuntimeError(f"evaluator data_root {_ev_root} != tokenizer root {_vq_root} (eval-space would be invalid)")
+            if int(args.text_dim) != 768 and not args.gen_eval_manifest:
+                # The legacy default manifest embeds caption strings from the ORIGINAL
+                # corpus; 18 of its primaries were removed in clean_v1 and the lookup
+                # encoder hard-fails on them at the first scheduled eval (codex r3 #1).
+                # Requiring the explicit clean manifest here fails at SETUP, not at
+                # epoch N.
+                raise RuntimeError(
+                    "--text_dim != 768 requires --gen_eval_manifest (pass "
+                    "eval_splits/val_all_clean_v1.json — the legacy default embeds "
+                    "removed caption strings)")
             _manifest = args.gen_eval_manifest or str(Path(_ev_root) / "eval_splits" / "val_all.json")
             _core = AnyTopT2MEvaluator(
                 coemb_dim=_g("coemb_dim", 512), text_tower=_g("text_tower", "distilbert"),
@@ -686,16 +936,32 @@ def main() -> int:
             if _bad or _unexp:
                 raise RuntimeError(f"evaluator load mismatch: missing={_bad[:6]} unexpected={list(_unexp)[:6]}")
             _core.to(dev).eval()
-            _t5tok = T5TokenizerFast.from_pretrained("t5-base")
-            _t5 = T5EncoderModel.from_pretrained("t5-base").to(dev).eval()
+            if int(args.text_dim) == 768:
+                _t5tok = T5TokenizerFast.from_pretrained("t5-base")
+                _t5 = T5EncoderModel.from_pretrained("t5-base").to(dev).eval()
 
-            @torch.no_grad()
-            def _t5_encode_batch(texts):
-                enc = _t5tok(list(texts), return_tensors="pt", padding="max_length", truncation=True, max_length=64).to(dev)
-                hs = _t5(input_ids=enc.input_ids, attention_mask=enc.attention_mask).last_hidden_state
-                m = enc.attention_mask.bool()
-                gl = (hs * m.unsqueeze(-1).float()).sum(1) / m.sum(1, keepdim=True).clamp_min(1)
-                return gl.float(), hs.float(), m
+                @torch.no_grad()
+                def _t5_encode_batch(texts):
+                    enc = _t5tok(list(texts), return_tensors="pt", padding="max_length", truncation=True, max_length=64).to(dev)
+                    hs = _t5(input_ids=enc.input_ids, attention_mask=enc.attention_mask).last_hidden_state
+                    m = enc.attention_mask.bool()
+                    gl = (hs * m.unsqueeze(-1).float()).sum(1) / m.sum(1, keepdim=True).clamp_min(1)
+                    return gl.float(), hs.float(), m
+            else:
+                # LLM2Vec run: the text encoder is an 8B model and does NOT run on the
+                # training GPUs. Every val caption is in the ragged sidecar the token
+                # cache was built from, so "encoding" is a lookup — and byte-identical
+                # to what training consumed. An unknown caption is a hard error: it
+                # would mean the eval set and the cache disagree, and silently
+                # re-encoding it differently is exactly the drift this forbids.
+                if not args.gen_eval_caption_cache:
+                    raise RuntimeError(
+                        "--text_dim != 768 requires --gen_eval_caption_cache "
+                        "(the LLM2Vec sidecar prefix; online gen-eval looks captions up "
+                        "instead of running the 8B encoder on the training GPUs)")
+                from src.eval.codeflow_gen_eval import make_caption_lookup_encoder
+                _t5_encode_batch = make_caption_lookup_encoder(
+                    args.gen_eval_caption_cache, _ev_root, int(args.text_dim), dev)
 
             _ds = AnyTopT2MEvalDataset(manifest_path=_manifest, data_root=_ev_root, caption_emb_cache=None,
                                        split="val", view="full", num_frames=_ev_nf, max_joints=_ev_mj)
@@ -708,6 +974,11 @@ def main() -> int:
                 f"n={len(_idxs)}/{_nt} every {args.gen_eval_every}ep steps={args.gen_eval_steps} cfg={args.eval_cond_scale}")
         except Exception as _e:
             import traceback
+            # LLM2Vec runs (text_dim != 768): a failed setup is a PROVENANCE failure
+            # (bad sidecar, corpus drift, wrong prefix) — silently training without
+            # eval is exactly the drift-hiding this path forbids (codex re-review #3).
+            if int(args.text_dim) != 768:
+                raise
             gen_eval_ctx = None
             log(f"[gen-eval] DISABLED — setup failed (training continues WITHOUT online eval): "
                 f"{_e}\n{traceback.format_exc()}")
@@ -719,18 +990,92 @@ def main() -> int:
     for epoch in range(start_epoch, n_epochs):
         if train_sampler is not None and hasattr(train_sampler, "set_epoch"):
             train_sampler.set_epoch(epoch)   # DistributedSampler + HumanCurriculumSampler both need this
+        ds_train.set_caption_epoch(epoch)    # per-epoch caption re-draw (no-op in fixed mode)
         flow.train()
         t0 = time.time()
         run_sum, run_cnt = 0.0, 0
+        accum = max(1, int(args.grad_accum))   # micro-steps per optimizer step (1 = unchanged)
+        opt.zero_grad()                        # clean slate; leftover partial cycle at epoch end is discarded here next epoch
+        micro = 0
         for it, b in enumerate(dl_train):
             if smoke_cap is not None and it >= smoke_cap:
                 break
             b = {k: v.to(dev) if torch.is_tensor(v) else v for k, v in b.items()}
             cond = build_cond(b, args.cond_drop_prob, training=True, dtype=fwd_dtype)
+            # DDP micro-batch sync control. PyTorch's no_sync() contract requires the
+            # FORWARD inside the context — the reducer latches the flag at forward
+            # time, so a backward-only wrapper still all-reduces every micro (codex
+            # r3 comm-hook probe: 2 reductions for 2 micros). Setting
+            # require_backward_grad_sync directly (exactly what no_sync() does)
+            # covers forward+backward with no restructuring: False on non-final
+            # micros accumulates grads locally; True on the final micro all-reduces
+            # the accumulated total once per optimizer step.
+            _sync_micro = ((micro + 1) % accum == 0)
+            if is_ddp:
+                flow.require_backward_grad_sync = _sync_micro
             with amp_ctx():
                 r = flow(b["z_q"].to(fwd_dtype), b["token_mask"], cond,
                          validate_inputs=(it == 0 and epoch == start_epoch))
             loss = args.flow_loss_weight * r["flow_loss"]
+
+            # ---- ARDY-style decoded-geometry loss (L_dec; v4b-validated recipe) ----
+            # Decode the gradient-carrying clean prediction through the FROZEN
+            # tokenizer in fp32 with autocast DISABLED (decoder Jacobian + cumsum
+            # world recovery are precision-sensitive; landed pattern from
+            # train_denoiser.py:976). Target = no-grad decode(GT z_q). Gated to
+            # near-clean rows (t > t_min) and every-N steps for memory/time.
+            dec_w = _dec_world_w + _dec_traj_w + _dec_speed_w
+            loss_dec_world = loss_dec_traj = loss_dec_speed = None
+            # Sync-micro-only decode: with grad accumulation the decoded loss runs on
+            # the FINAL micro-batch of each optimizer step only (halves decode compute
+            # at accum=2), with its weights scaled by `accum` below to cancel the
+            # uniform /accum — expected gradient contribution per optimizer step is
+            # unchanged (one full-weight dec term on a B*1 sample instead of the
+            # B*accum average; slightly noisier, same scale). _sync_micro is set
+            # above, before the DDP forward.
+            if dec_w > 0 and (n_iter % _dec_every == 0) and _sync_micro:
+                _t_rows = r["timesteps"]                       # [B] fp32
+                _gate = _t_rows > _dec_t_min
+                if bool(_gate.any()):
+                    _idx = _gate.nonzero(as_tuple=True)[0]
+                    _clean = r["clean_pred_norm"].float()[_idx]        # grad-carrying
+                    _tm = b["token_mask"][_idx]
+                    _z_hat = (raw_flow.denormalize(_clean)
+                              * _tm.unsqueeze(-1).float())
+                    _skel = {"s_j": b["s_j"][_idx], "assignment": b["assignment"][_idx],
+                             "coarse_mask": b["coarse_mask"][_idx],
+                             "frame_mask_lat": b["frame_mask_lat"][_idx],
+                             "pooled_adjacency": b["pooled_adjacency"][_idx],
+                             "pooled_geodesic": b["pooled_geodesic"][_idx]}
+                    _fake_b = SimpleNamespace(joint_mask=b["joint_mask"][_idx])
+                    with torch.autocast(device_type="cuda", enabled=False):
+                        # Target FIRST (no-grad, freed of graph) so its transient
+                        # activations don't overlap the prediction's retained
+                        # autograd graph (codex decloss r1 #1 memory ordering).
+                        with torch.no_grad():
+                            _dt = tokenizer.decode(b["z_q"][_idx].float(), _skel, _fake_b)
+                        _dp = tokenizer.decode(_z_hat, _skel, _fake_b)
+                    _pred_m = _dp["pred_motion"].float()
+                    _tgt_m = _dt["pred_motion"].float()
+                    _fmask = _dp["frame_mask_recovered"].bool()
+                    if _dec_world_w > 0 or _dec_traj_w > 0:
+                        _terms = compute_world_geometry_terms(
+                            pred_motion=_pred_m, gt_motion=_tgt_m,
+                            anytop_mean=b["anytop_mean"][_idx],
+                            anytop_std=b["anytop_std"][_idx],
+                            joint_mask=b["joint_mask"][_idx], frame_mask=_fmask)
+                        if _dec_world_w > 0:
+                            loss_dec_world = _terms["world"]
+                            loss = loss + (accum * _dec_world_w) * loss_dec_world
+                        if _dec_traj_w > 0:
+                            loss_dec_traj = _terms["traj"]
+                            loss = loss + (accum * _dec_traj_w) * loss_dec_traj
+                    if _dec_speed_w > 0:
+                        loss_dec_speed = decoded_speed_loss(
+                            _pred_m, _tgt_m, b["anytop_mean"][_idx],
+                            b["anytop_std"][_idx], b["joint_mask"][_idx], _fmask,
+                            _dec_speed_floor, _dec_speed_mode)
+                        loss = loss + (accum * _dec_speed_w) * loss_dec_speed
 
             if it == 0 and epoch == start_epoch:
                 B, T_lat, C, Dd = b["z_q"].shape
@@ -740,8 +1085,14 @@ def main() -> int:
             if not torch.isfinite(loss):
                 log(f"[GATE FAIL] loss non-finite at iter {n_iter}")
                 return 1
-            opt.zero_grad()
-            loss.backward()
+            # scale by 1/accum so accumulated grads = mean over the full global batch
+            # (=per_gpu*world*accum); DDP averages across ranks each backward, summing to
+            # the correct global-batch gradient after `accum` micro-steps.
+            (loss / accum).backward()
+            run_sum += float(r["flow_loss"].detach()); run_cnt += 1
+            micro += 1
+            if micro % accum != 0:
+                continue                       # keep accumulating; step only every `accum` micro-batches
             grad_norm = torch.nn.utils.clip_grad_norm_(flow.parameters(), args.grad_clip)
             if not torch.isfinite(grad_norm):
                 log(f"[GATE FAIL] non-finite grad norm at iter {n_iter}")
@@ -750,8 +1101,8 @@ def main() -> int:
             for pg in opt.param_groups:
                 pg["lr"] = cur_lr
             opt.step()
+            opt.zero_grad()
 
-            run_sum += float(r["flow_loss"].detach()); run_cnt += 1
             do_log = (n_iter % args.log_every == 0) or (it == 0 and epoch == start_epoch)
             do_qa = (n_iter % args.qa_every == 0) or (args.smoke and it == 0)
             if do_log or do_qa:
@@ -761,8 +1112,15 @@ def main() -> int:
                                        build_cond(b, 0.0, training=False, dtype=fwd_dtype),
                                        dev, decode=do_qa)
                 if do_log:
+                    _dec_str = ""
+                    if (loss_dec_world is not None or loss_dec_traj is not None
+                            or loss_dec_speed is not None):
+                        _dec_str = (" | dec"
+                                    + (f" world={loss_dec_world.item():.4f}" if loss_dec_world is not None else "")
+                                    + (f" traj={loss_dec_traj.item():.4f}" if loss_dec_traj is not None else "")
+                                    + (f" speed={loss_dec_speed.item():.4f}" if loss_dec_speed is not None else ""))
                     log(f"[ep{epoch} it{it} n_iter={n_iter}] flow_loss={r['flow_loss'].item():.5f} "
-                        f"grad_norm={grad_norm.item():.3f} lr={cur_lr:.3e}"
+                        f"grad_norm={grad_norm.item():.3f} lr={cur_lr:.3e}" + _dec_str
                         + (f" | proj_err={qa['projection_error']:.4f} "
                            f"code_usage/q={qa['code_usage_per_q']}" if qa else ""))
                     if qa and "decode_cont_vs_snap_maxabs" in qa:
@@ -802,7 +1160,8 @@ def main() -> int:
             log(f"  [val] flow_loss={val_flow:.5f} projection_error={val_proj:.4f}")
             if not args.smoke:
                 hist_best = min(best_val, val_flow)
-                ckpt = {"model_state_dict": raw_flow.state_dict(),
+                ckpt = {prov.KEY: _PROV,
+                        "model_state_dict": raw_flow.state_dict(),
                         "optimizer_state_dict": opt.state_dict(),
                         "epoch": epoch, "global_step": n_iter, "args": vars(args),
                         "val_flow": val_flow, "val_proj": val_proj, "best_val": hist_best,
@@ -840,6 +1199,10 @@ def main() -> int:
                 log(_msg)
                 with open(metrics_path, "a") as f:
                     f.write(json.dumps({"epoch": epoch, "n_iter": n_iter, "gen_eval": _rep}) + "\n")
+            except KeyError:
+                # A caption missing from the sidecar mid-run = corpus drift under a
+                # live training. Not a transient eval hiccup; stop rather than hide it.
+                raise
             except Exception as _e:
                 import traceback
                 log(f"  [gen-eval] FAILED ep{epoch} (skipped, training continues): {_e}\n{traceback.format_exc()}")

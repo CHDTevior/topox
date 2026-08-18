@@ -1,0 +1,71 @@
+{
+  "holdout_artifact": "data/holdout_topologies_v1.json",
+  "artifact_sha256": "0baf7bcfb82266d504f9bb45d0ec4f22980043ee49e53c0d7d13b40ebc858e0c",
+  "data_root": "/iridisfs/scratch/ts1v23/workspace/noKslot_clean/data/animo4d_L4TB_plus_human_v4b272neutral",
+  "counts": {
+    "train": 90277,
+    "val": 4777,
+    "held_representative": 4509,
+    "held_stress": 2875
+  },
+  "files": {
+    "train": "6cbd672f886e98b3935eebff17d340e1bc53cb9843852fb9fa944c4ff1d5ae64",
+    "val": "5798db9db7bba383fcd76ed78fcf3a04244a388a987dbfc12f64b648383d5feb",
+    "held_representative": "53e9b4c1a5ff5dfe614686f3f804efa69684576e2185bd363111c1cdf3f9e531",
+    "held_stress": "37c1493145613d8bfa9142884bf27fea22dcf23ef17be771603a69afa664b824"
+  },
+  "held_object_types": {
+    "representative": [
+      "Anaconda",
+      "BrownBear",
+      "Elephant",
+      "KingCobra",
+      "Leapord",
+      "Monkey",
+      "PZ_Aardvark_Male",
+      "PZ_Alpaca_Juvenile",
+      "PZ_Alpine_Goat_Female",
+      "PZ_Alpine_Goat_Male",
+      "PZ_Asian_Small_Clawed_Otter_Juvenile",
+      "PZ_Asian_Small_Clawed_Otter_Male",
+      "PZ_Caracal_Male",
+      "PZ_Giant_Panda_Female",
+      "PZ_Giant_Panda_Male",
+      "PZ_Japanese_Macaque_Male",
+      "PZ_North_American_Beaver_Juvenile",
+      "PZ_North_American_Beaver_Male",
+      "PZ_Quokka_Female",
+      "PZ_Quokka_Juvenile",
+      "PZ_Quokka_Male",
+      "PZ_Siberian_Tiger_Juvenile",
+      "PZ_Striped_Skunk_Juvenile",
+      "PZ_Striped_Skunk_Male",
+      "PZ_Wolverine_Male",
+      "Raptor",
+      "Scorpion-2"
+    ],
+    "stress": [
+      "Bear",
+      "Camel",
+      "Crab",
+      "Dragon",
+      "Goat",
+      "PZ_African_Crested_Porcupine_Male",
+      "PZ_American_Bison_Female",
+      "PZ_American_Bison_Male",
+      "PZ_Dromedary_Camel_Juvenile",
+      "PZ_Giant_Anteater_Female",
+      "PZ_Giant_Anteater_Male",
+      "PZ_Indian_Elephant_Female",
+      "PZ_Indian_Elephant_Juvenile",
+      "PZ_Indian_Elephant_Male",
+      "PZ_Llama_Juvenile",
+      "PZ_Nine_Banded_Armadillo_Juvenile",
+      "PZ_Nine_Banded_Armadillo_Male",
+      "PZ_Reindeer_Female",
+      "PZ_Siberian_Tiger_Female",
+      "Pigeon",
+      "Spider"
+    ]
+  }
+}

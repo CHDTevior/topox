@@ -96,7 +96,148 @@ def _mat_to_6d(R: np.ndarray) -> np.ndarray:
     return np.concatenate([R[..., :, 0], R[..., :, 1]], axis=-1)
 
 
-def reencode_rot6d(raw13: np.ndarray, P: np.ndarray, offsets: np.ndarray) -> np.ndarray:
+# ----------------------------------------------------------------------------
+# v3 re-encode helpers (handoff/20260630_033233_human_rot6d_v3_converter_*.md).
+# v3a/v3b replace the rank-1-degenerate Kabsch at SINGLE-CHILD parents with a
+# deterministic zero-twist SWING (the under-constrained axial twist that LAPACK
+# fills with an arbitrary, frame-to-frame-flipping completion is the root of the
+# human rot6d-FK jitter). Multi-child parents keep full Kabsch (v3a) or a
+# temporally-continuous Kabsch (v3b, spine3 only). v2 path is byte-unchanged.
+# ----------------------------------------------------------------------------
+def _skew(w: np.ndarray) -> np.ndarray:
+    """[...,3] -> [...,3,3] skew-symmetric cross-product matrix."""
+    K = np.zeros(w.shape[:-1] + (3, 3), dtype=np.float64)
+    K[..., 0, 1] = -w[..., 2]; K[..., 0, 2] = w[..., 1]
+    K[..., 1, 0] = w[..., 2];  K[..., 1, 2] = -w[..., 0]
+    K[..., 2, 0] = -w[..., 1]; K[..., 2, 1] = w[..., 0]
+    return K
+
+
+def _axis_angle(axis: np.ndarray, angle: float) -> np.ndarray:
+    """Single Rodrigues rotation [3],scalar -> [3,3] (axis assumed unit)."""
+    K = _skew(np.asarray(axis, dtype=np.float64))
+    return (np.eye(3) + np.sin(angle) * K
+            + (1.0 - np.cos(angle)) * (K @ K))
+
+
+def _axis_angle_batch(axis: np.ndarray, angle: np.ndarray) -> np.ndarray:
+    """Batched Rodrigues: axis [T,3] (unit), angle [T] -> [T,3,3]. Used by v4 twist roll."""
+    K = _skew(np.asarray(axis, dtype=np.float64))
+    s = np.sin(angle)[:, None, None]; c = np.cos(angle)[:, None, None]
+    I = np.broadcast_to(np.eye(3), K.shape).copy()
+    return I + s * K + (1.0 - c) * np.matmul(K, K)
+
+
+def _shortest_arc(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Batched minimal-arc (zero-twist) rotation with R@a = b for UNIT a,b [...,3].
+    Closed form R = I + [w]x + [w]x^2/(1+c), w=a x b, c=a.b. Singular at c=-1
+    (1/(1+c) -> inf); the CALLER masks those frames. At c=+1 -> I."""
+    a = a / (np.linalg.norm(a, axis=-1, keepdims=True) + 1e-12)
+    b = b / (np.linalg.norm(b, axis=-1, keepdims=True) + 1e-12)
+    w = np.cross(a, b)
+    c = np.sum(a * b, axis=-1)
+    K = _skew(w)
+    I = np.broadcast_to(np.eye(3), K.shape).copy()
+    coef = 1.0 / (1.0 + c)                                   # inf at c=-1; masked by caller
+    return I + K + np.matmul(K, K) * coef[..., None, None]
+
+
+def _swing_batch(u_rest: np.ndarray, v_cur: np.ndarray,
+                 eps: float = 1e-7, floor: float = 1e-7) -> np.ndarray:
+    """SINGLE-CHILD parent world rotation WR[t]: the deterministic minimal-arc
+    swing carrying the rest bone u_rest [3] onto the CURRENT bone v_cur [T,3],
+    canonical twist=0. INVARIANT R[t]@normalize(u) == normalize(v[t]) is asserted
+    STRICTLY (<1e-5) on the normal + anti-parallel branches; relaxed to ~|v-u| on
+    the sub-floor identity branch. We branch on the cross-product MAGNITUDE |u x v|
+    (= |sin angle|), NOT on dot -- so a near-but-not-exact +u frame (e.g. dot=1-1e-8,
+    |u x v|~1.5e-4) goes through the WELL-conditioned shortest-arc (axis u x v is
+    normalizable) and maps u->v exactly, instead of snapping to identity and failing
+    the assert (the old dot>1-eps identity branch crashed on clips 000197/000332):
+      |u x v| >= floor, dot > -1+eps -> shortest-arc (closed form, zero-twist). STRICT.
+      dot < -1+eps                   -> anti-parallel: shortest-arc singular. DETERMINISTIC
+                                        reference flip (pi about a fixed axis perp u, maps
+                                        u->-u exactly) THEN well-conditioned arc(-u->v).
+                                        R@u = arc@(-u) = v -> STRICT.
+      |u x v| < floor, dot > 0       -> bone genuinely unchanged: pure identity, an
+                                        intentional sub-floor approximation (|v-u| < ~1e-7),
+                                        invariant relaxed to R@u ~= v within |v-u|."""
+    T = v_cur.shape[0]
+    u = u_rest.astype(np.float64) / (np.linalg.norm(u_rest) + 1e-12)
+    v = v_cur.astype(np.float64) / (np.linalg.norm(v_cur, axis=-1, keepdims=True) + 1e-12)
+    uT = np.broadcast_to(u, (T, 3))
+    c = v @ u                                                # [T] = cos(angle)
+    cross_mag = np.linalg.norm(np.cross(uT, v), axis=-1)     # [T] = |sin(angle)| (rotation-axis length)
+    R = _shortest_arc(uT, v)                                 # exact for dot > -1+eps; garbage only at anti-parallel
+    para = (cross_mag < floor) & (c > 0.0)                   # genuinely unchanged: sub-floor approximation
+    R[para] = np.eye(3)
+    sing = np.where(c < -1.0 + eps)[0]                       # anti-parallel (cross also sub-floor but dot<0)
+    if len(sing):                                            # deterministic, transport-free
+        ref = np.array([1.0, 0.0, 0.0]) if abs(u[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        axis = np.cross(u, ref); axis /= (np.linalg.norm(axis) + 1e-12)
+        R_flip = _axis_angle(axis, np.pi)                    # R_flip @ u == -u (exact, axis perp u)
+        minus_u = (R_flip @ u)[None]                         # == -u
+        for t in sing:                                       # arc(-u -> v[t]) is well-conditioned
+            R[t] = _shortest_arc(minus_u, v[t:t + 1])[0] @ R_flip
+    Ru = np.einsum("tij,j->ti", R, u)                        # invariant: swing maps rest bone onto current bone
+    err = np.abs(Ru - v)                                     # [T,3]
+    assert float(np.max(err[~para], initial=0.0)) < 1e-5, "swing invariant R@u==v violated (strict branch)"
+    if para.any():                                           # sub-floor identity (R@u=u) approx within |v-u|
+        vu = float(np.abs(v[para] - u).max())
+        assert float(err[para].max()) <= vu + 1e-9, "sub-floor identity beyond |v-u|"
+    return R
+
+
+def _kabsch_continuous(U: np.ndarray, V: np.ndarray,
+                       enter: float = 0.05, exit: float = 0.15) -> np.ndarray:
+    """v3b EXPERIMENTAL spine3 (multi-child) world rotation. v3a is the PRIMARY
+    candidate; v3b's only delta vs v3a is this spine3 token-gauge (FK-position-
+    invariant either way). Robustness contract (asserted in the gate runner):
+      (1) REDUCES EXACTLY to _kabsch_batch on every NON-degenerate frame (identical
+          SVD + identical diag(1,1,sign(det)) construction + identical formula);
+      (2) only INSIDE a near-degenerate sigma regime -- entered when the gap of the
+          two SMALLER sigmas (s1-s2)/s0 < `enter`, left only when it rises above
+          `exit` (true two-threshold HYSTERESIS, no per-frame chatter) -- is the
+          ambiguous singular-vector subspace resolved by TEMPORAL CONTINUITY
+          (1<->2 column-order + per-column SIGN matched to the previous frame);
+      (3) det-correction is the SAME diag(1,1,sign(det(Vt^T Uu^T))) as _kabsch_batch,
+          applied to the continuity-SELECTED basis and ONLY when det<0 (det>0 -> D=I,
+          NO flip). Frame-0 = plain LAPACK seed (single-child joints already handled
+          by _swing_batch, so spine3 has no single-bone canonical swing to seed)."""
+    T = V.shape[0]
+    H = np.einsum("ni,tnj->tij", U, V)                       # [T,3,3]
+    R = np.zeros((T, 3, 3), dtype=np.float64)
+    Uu_p = None
+    in_degen = False
+    for t in range(T):
+        Uu, s, Vt = np.linalg.svd(H[t])                      # H = Uu diag(s) Vt
+        ratio = (s[1] - s[2]) / (s[0] + 1e-12)               # near-degeneracy of the two SMALLER sigmas
+        in_degen = (ratio < exit) if in_degen else (ratio < enter)   # two-threshold hysteresis
+        if in_degen and Uu_p is not None:
+            # 1<->2 ordering continuity (only the two smaller, ambiguous, sigma-vectors)
+            keep = np.dot(Uu[:, 1], Uu_p[:, 1]) ** 2 + np.dot(Uu[:, 2], Uu_p[:, 2]) ** 2
+            swap = np.dot(Uu[:, 1], Uu_p[:, 2]) ** 2 + np.dot(Uu[:, 2], Uu_p[:, 1]) ** 2
+            if swap > keep:
+                Uu = Uu[:, [0, 2, 1]]; Vt = Vt[[0, 2, 1], :]
+            for k in range(3):                               # per-column sign continuity
+                if np.dot(Uu[:, k], Uu_p[:, k]) < 0:
+                    Uu[:, k] = -Uu[:, k]; Vt[k, :] = -Vt[k, :]
+        # det-correction: identical to _kabsch_batch, on the (continuity-selected) basis, det<0 only
+        D = np.eye(3)
+        D[2, 2] = np.sign(np.linalg.det(Vt.T @ Uu.T))
+        R[t] = Vt.T @ D @ Uu.T
+        Uu_p = Uu                                            # basis actually used (post swap/sign)
+    return R
+
+
+# single-/multi-child split (codex-confirmed against PARENTS): single-child parents
+# are rank-1-degenerate (twist ill-posed); multi-child = pelvis(0)+spine3(9).
+_SINGLE_CHILD_PARENTS = [p for p in range(J) if len(CHILDREN[p]) == 1]
+_MULTI_CHILD_PARENTS = [p for p in range(J) if len(CHILDREN[p]) > 1]
+
+
+def reencode_rot6d(raw13: np.ndarray, P: np.ndarray, offsets: np.ndarray,
+                   rot6d_mode: str = "v2", return_wr: bool = False,
+                   twist_phi: dict | None = None):
     """Re-encode non-root ch3:9 from HumanML3D per-bone into AnyTop per-parent
     (rigid-BVH) convention so recover_from_bvh_rot_np reproduces the RIC positions
     (siblings share the parent's rotation, matching the animal dataset).
@@ -105,7 +246,16 @@ def reencode_rot6d(raw13: np.ndarray, P: np.ndarray, offsets: np.ndarray) -> np.
     local rot_q[p] = WR[parent[p]]^T @ WR[p] (rot_q[0]=WR[0]). token[j] stores
     rot_q[parent[j]] (so all children of a parent carry the same 6D). Root token
     ch3:9 (yaw facing) is kept for root-position recovery.
+
+    rot6d_mode: "v2" (default, BYTE-UNCHANGED rigid Kabsch everywhere); "v3a"
+    (single-child parents -> deterministic zero-twist swing, multi-child Kabsch);
+    "v3b" (single-child -> swing same as v3a, spine3 -> temporally-continuous
+    Kabsch, pelvis -> plain Kabsch). v3a/v3b only change WR[p]; the local-rotation
+    + sibling-share + token packing below is identical, so the per-parent /
+    sibling-shared convention + ch0:3 + root ch3:9 are preserved.
     """
+    if rot6d_mode not in ("v2", "v3a", "v3b", "v4"):
+        raise ValueError(f"reencode_rot6d: unknown rot6d_mode {rot6d_mode!r}")
     T = P.shape[0]
     WR = np.broadcast_to(np.eye(3), (J, T, 3, 3)).copy()     # [J,T,3,3] world rot
     for p in range(J):
@@ -114,7 +264,20 @@ def reencode_rot6d(raw13: np.ndarray, P: np.ndarray, offsets: np.ndarray) -> np.
             continue
         U = offsets[cs]                                      # [n,3]
         V = P[:, cs, :] - P[:, p:p + 1, :]                   # [T,n,3]
-        WR[p] = _kabsch_batch(U, V)
+        if rot6d_mode == "v2":
+            WR[p] = _kabsch_batch(U, V)                      # byte-unchanged v2 path
+        elif len(cs) == 1:                                   # single-child: v3a/v3b/v4 swing (+v4 twist roll)
+            Sw = _swing_batch(U[0], V[:, 0, :])              # FK-EXACT zero-twist swing (positions preserved)
+            if rot6d_mode == "v4" and twist_phi is not None and p in twist_phi:
+                # Variant S: real axial twist as a roll about the CURRENT bone (a pure gauge -> FK unchanged).
+                a = V[:, 0, :] / (np.linalg.norm(V[:, 0, :], axis=-1, keepdims=True) + 1e-12)
+                WR[p] = np.matmul(_axis_angle_batch(a, np.asarray(twist_phi[p], np.float64)), Sw)
+            else:
+                WR[p] = Sw                                   # v3a/v3b, or v4 fallback (twist_valid=NONE -> zero twist)
+        elif rot6d_mode == "v3b" and p == 9:                 # spine3: continuity Kabsch (v3b only)
+            WR[p] = _kabsch_continuous(U, V)
+        else:                                                # multi-child (pelvis; spine3 in v3a/v4)
+            WR[p] = _kabsch_batch(U, V)
     rotq = np.broadcast_to(np.eye(3), (J, T, 3, 3)).copy()
     for i in range(J):
         if not CHILDREN[i]:
@@ -124,6 +287,8 @@ def reencode_rot6d(raw13: np.ndarray, P: np.ndarray, offsets: np.ndarray) -> np.
     new = raw13.astype(np.float64).copy()
     for j in range(1, J):
         new[:, j, 3:9] = _mat_to_6d(rotq[PARENTS[j]])
+    if return_wr:                                            # WR[J,T,3,3]: intended builder world rot (Gate G round-trip)
+        return new.astype(np.float32), WR
     return new.astype(np.float32)
 
 
@@ -278,7 +443,11 @@ def main():
     ap.add_argument("--mode", choices=["sample", "full"], default="sample")
     ap.add_argument("--out", default=REPO + "/data/humanml3d_anytop13")
     ap.add_argument("--sample_n", type=int, default=80)
+    ap.add_argument("--rot6d_mode", choices=["v2", "v3a", "v3b"], default="v2",
+                    help="ch3:9 re-encode: v2 (default, unchanged) / v3a (single-child "
+                         "zero-twist swing) / v3b (+spine3 continuity Kabsch).")
     args = ap.parse_args()
+    print(f"[convert] rot6d_mode={args.rot6d_mode}")
 
     import shutil
     out = Path(args.out)
@@ -335,7 +504,7 @@ def main():
         raw = convert_263_to_13(x)
         # re-encode non-root ch3:9 into AnyTop per-parent convention (aligns with
         # animal dataset; FK route reproduces RIC to ~0.26%, was ~14% direct-copy)
-        raw = reencode_rot6d(raw, world_positions(x), OFFSETS)
+        raw = reencode_rot6d(raw, world_positions(x), OFFSETS, rot6d_mode=args.rot6d_mode)
         if raw.shape != (T, J, 13):
             raise RuntimeError(f"{mid} bad shape {raw.shape}")
         if not np.isfinite(raw).all():
@@ -385,7 +554,8 @@ def main():
     # ---- cond.npy (single HML3D_Human object) ----
     offsets = OFFSETS
     x021 = np.load(Path(SRC) / "new_joint_vecs" / f"{TGT_SKEL_ID}.npy")
-    tpos = reencode_rot6d(convert_263_to_13(x021), world_positions(x021), OFFSETS)[0]
+    tpos = reencode_rot6d(convert_263_to_13(x021), world_positions(x021), OFFSETS,
+                          rot6d_mode=args.rot6d_mode)[0]
     derived = _build_derived(PARENTS, offsets, JOINT_NAMES)
     cond = {OBJ: {
         "parents": PARENTS.copy(),

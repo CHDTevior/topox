@@ -39,6 +39,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.data.anytop_dataset import AnyTopDataset, collate_fn as anytop_collate_fn
+from src.data.holdout_guard import guard_dataset
+from src.data import provenance as prov
 from src.data.human_curriculum_sampler import HumanCurriculumSampler
 from src.models.graph_salad.batch import GraphMotionBatch
 from src.models.vq_model import (
@@ -275,7 +277,11 @@ def run_unit_checks(dev) -> int:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser()
+    # allow_abbrev=False because abbreviation defeats the launcher's protected-argument guard:
+    # the guard refuses a trailing `--protocol legacy`, but `--proto legacy` sails past it and
+    # argparse then resolves it to `--protocol` — and the later occurrence wins, so a strict run
+    # silently becomes a legacy one. Reproduced by review, not hypothesised.
+    p = argparse.ArgumentParser(allow_abbrev=False)
     # data
     p.add_argument("--anytop_root", type=str, default="data/animo4d_anytop_clean_L5")
     p.add_argument("--max_frames", type=int, default=64)
@@ -385,6 +391,42 @@ def main() -> int:
     p.add_argument("--smoke_iters", type=int, default=4)
     p.add_argument("--unit_checks", action="store_true",
                    help="Run M3 mask/STE/commit/EMA unit assertions and exit")
+    # --- held-out-topology protocol -------------------------------------------------
+    # The freeze is worthless if nothing checks it: before these flags existed the guard
+    # module had zero callers, so a chain launched here would have trained on the held
+    # topologies and every "unseen" number downstream would have been fabricated.
+    p.add_argument("--splits_dir", type=str, default=None,
+                   help="directory whose train.txt/val.txt are the RETAINED lists "
+                        "(e.g. data/holdout_splits_v1). Default = <data_root>/splits, which is "
+                        "the FULL corpus including every held-out topology.")
+    p.add_argument("--joint_semantics", type=str, default=None,
+                   help="per-joint semantic embedding table (data/joint_semantics_llm2vec_v1.npz). "
+                        "Off by default. This is the ONLY difference between the two ablation "
+                        "arms, so it must reach the model — an arm that silently runs without it "
+                        "is byte-identical to the control.")
+    p.add_argument("--semantic_enabled", type=int, default=1, choices=[0, 1],
+                   help="whether the semantic projection is READ (1) or merely allocated (0). "
+                        "BOTH ablation arms pass --joint_semantics so that both build the same "
+                        "architecture from the same table dimension; this switch is the entire "
+                        "difference between them. Sizing the projection differently instead would "
+                        "shift every subsequent initialisation — measured: 116 same-shaped tensors "
+                        "initialised differently under one seed — and confound the comparison with "
+                        "unrelated initial weights.")
+    p.add_argument("--protocol", default="legacy",
+                   choices=["legacy", "unseen_topology_v1"],
+                   help="legacy (default) reproduces every pre-existing command exactly and does "
+                        "not require the held-out artifact. unseen_topology_v1 enforces the "
+                        "frozen pre-registration: retained splits, artifact SHA, and abort on any "
+                        "held topology. Only a run under unseen_topology_v1 may back an "
+                        "unseen-topology claim.")
+    p.add_argument("--holdout_artifact", type=str, default=None,
+                   help="frozen pre-registration (data/holdout_topologies_v1.json). Required "
+                        "unless --allow_no_holdout is given.")
+    p.add_argument("--holdout_sha", type=str, default=None,
+                   help="expected artifact sha256; the run aborts if the freeze differs.")
+    p.add_argument("--allow_no_holdout", action="store_true",
+                   help="run WITHOUT the held-out guard. Logs loudly; such a run must not be "
+                        "used for any unseen-topology claim.")
     args = p.parse_args()
 
     is_ddp, rank, local_rank, world_size, is_main = _ddp_setup()
@@ -466,8 +508,53 @@ def main() -> int:
                val_frac=args.val_frac, load_captions=False,
                data_root=args.anytop_root)
     log(f"Loading AnyTop L5 from {args.anytop_root} ...")
+    if args.splits_dir:
+        atk["splits_dir"] = args.splits_dir
+    if args.joint_semantics:
+        atk["joint_semantics"] = args.joint_semantics
+    if args.holdout_artifact and args.protocol == "unseen_topology_v1":
+        atk["holdout_artifact"] = args.holdout_artifact
     ds_train = AnyTopDataset(split="train", **atk)
     ds_val = AnyTopDataset(split="val", **atk)
+    strict = args.protocol == "unseen_topology_v1"
+    if strict and not args.holdout_artifact:
+        raise SystemExit("--protocol unseen_topology_v1 requires --holdout_artifact")
+    # The semantic dimension is part of the contract, so it must be known BEFORE the stamp is
+    # built. An incomplete contract is worse than none: it looks like something that was checked.
+    _sem_dim = 0
+    if args.joint_semantics:
+        import numpy as _np
+        _sem_dim = int(_np.load(args.joint_semantics, allow_pickle=False)["__dim"])
+    _PROV = prov.stamp(protocol=args.protocol, stage="vqvae",
+                       holdout_artifact=args.holdout_artifact if strict else None,
+                       data_root=args.anytop_root, splits_dir=args.splits_dir,
+                       extra={"joint_semantics": args.joint_semantics,
+                              "joint_semantics_sha256": prov.sha256_file(args.joint_semantics)
+                              if args.joint_semantics else None,
+                              "semantic_dim": (_sem_dim or None),
+                              "semantic_enabled": bool(args.semantic_enabled) if args.joint_semantics else False,
+                              "training_config_sha256": prov.training_config_sha256(args, world_size),
+                              "moment_policy": "own",
+                              "augment": bool(args.augment) if hasattr(args, "augment") else False,
+                              "augment_prob": getattr(args, "augment_prob", None),
+                              "removal_rate": getattr(args, "removal_rate", None)})
+    # Log the contract before anything expensive starts: a run whose experiment contract is not
+    # in its own log cannot be described from its artifacts alone six weeks later.
+    log("experiment contract: " + json.dumps(prov.contract(_PROV), sort_keys=True))
+    if args.resume is not None:
+        # A resumed checkpoint carries the protocol it was trained under. Resuming a
+        # full-corpus checkpoint into a "held-out" run would launder the held topologies
+        # straight into the weights, and the split guard downstream would see nothing wrong.
+        _rp = prov.read(torch.load(args.resume, map_location="cpu", weights_only=False))
+        prov.verify_upstream(_rp, protocol=args.protocol,
+                             what=f"resume checkpoint {args.resume}",
+                             expect_artifact_body_sha=_PROV.get("holdout_artifact_body_sha256"), log=log)
+        prov.verify_resume_contract(_rp, _PROV, what=f"resume checkpoint {args.resume}", log=log)
+    for _ds, _st in ((ds_train, "vqvae:train"), (ds_val, "vqvae:val")):
+        guard_dataset(_ds, data_root=args.anytop_root,
+                      artifact=args.holdout_artifact if strict else None,
+                      expect_body_sha=args.holdout_sha, stage=_st,
+                      allow_no_holdout=(not strict) or args.allow_no_holdout, log=log)
     log(f"train={len(ds_train)} val={len(ds_val)}")
     if len(ds_train) < args.batch_size:
         raise RuntimeError(f"[DATA FAIL] train {len(ds_train)} < batch {args.batch_size}")
@@ -519,7 +606,13 @@ def main() -> int:
     )
 
     # ---- Model ----
+    if args.joint_semantics:
+        log(f"joint semantics: {args.joint_semantics} dim={_sem_dim} "
+            f"enabled={bool(args.semantic_enabled)}"
+            + ("" if args.semantic_enabled else "  <- CONTROL ARM: projection allocated, never read"))
     model = GraphVQTokenizer(
+        semantic_dim=_sem_dim,
+        semantic_enabled=bool(args.semantic_enabled),
         d_model=args.d_model, n_heads=args.n_heads, d_ff=args.d_ff,
         n_graph_layers=args.n_graph_layers,
         n_enc_temporal_layers=args.n_enc_temporal_layers,
@@ -875,6 +968,7 @@ def main() -> int:
                 # (codex 019ea63f #1, mirrors train_graph_vae.py best_val_loss).
                 hist_best_val = min(best_val, val_total)
                 ckpt = {
+                    prov.KEY: _PROV,
                     "model_state_dict": raw_model.state_dict(),
                     "optimizer_state_dict": opt.state_dict(),
                     "epoch": epoch, "global_step": n_iter,

@@ -37,7 +37,7 @@ from src.data.anytop_dataset import (  # noqa: E402
 )
 from src.data.anytop_rot6d_fk import recover_from_bvh_rot_np  # noqa: E402
 from src.models.graph_salad.batch import GraphMotionBatch  # noqa: E402
-from src.models.vq_model import GraphVQTokenizer  # noqa: E402
+from src.models.vq_model import GraphVQTokenizer, semantic_config_from_ckpt  # noqa: E402
 from src.models.CodeFlow_Model import GraphCodeFlow  # noqa: E402
 
 
@@ -45,6 +45,7 @@ def load_frozen_tokenizer(ckpt_path: str, dev: torch.device):
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     ta = ck["args"]
     model = GraphVQTokenizer(
+        **semantic_config_from_ckpt(ck),
         d_model=ta["d_model"], n_heads=ta["n_heads"], d_ff=ta["d_ff"],
         n_graph_layers=ta["n_graph_layers"],
         n_enc_temporal_layers=ta["n_enc_temporal_layers"],
@@ -69,12 +70,18 @@ def load_flow(ckpt_path: str, code_dim: int, dev: torch.device):
     flow = GraphCodeFlow(
         code_dim=a.get("code_dim", code_dim), n_heads=a.get("n_heads", 8),
         d_ff=a.get("d_ff", 2048), n_layers=a.get("n_layers", 5),
-        d_text=768, text_token_dim=768, dropout=a.get("dropout", 0.1),
+        d_text=a.get("text_dim", 768), text_token_dim=a.get("text_dim", 768),
+        dropout=a.get("dropout", 0.1),
+        text_input_norm=bool(a.get("text_input_norm", 0)),
+        use_sentence_token=bool(a.get("use_sentence_token", 0)),
+        text_slot_xattn=bool(a.get("text_slot_xattn", 0)),
         # model_variant + graph_pscf arch args (old ckpts: level_a defaults so they
         # still rebuild; graph_pscf ckpts carry depth_double/depth_single/mlp_ratio).
         model_variant=a.get("model_variant", "level_a"),
         depth_double=a.get("depth_double", 6), depth_single=a.get("depth_single", 12),
         max_T_lat=a.get("max_T_lat", 75), mlp_ratio=a.get("mlp_ratio", 4.0),
+        # x-pred ckpts store an explicit value; older ckpts lack the key (None -> v).
+        parameterization=(a.get("parameterization") or "v"),
     ).to(dev)
     flow.load_state_dict(ck["model_state_dict"], strict=True)
     flow.eval(); flow.requires_grad_(False)
@@ -137,6 +144,12 @@ def main() -> int:
                          "GT is always the precomputed position route, so 'position' makes "
                          "GT and PRED consistent.")
     ap.add_argument("--fps", type=int, default=8)
+    ap.add_argument("--gif_max_frames", type=int, default=48,
+                    help="max frames drawn in the T2M gif before even subsampling. Default 48 "
+                         "(back-compat) SPEEDS UP long clips: T>48 is subsampled to 48 then played "
+                         "at --fps, so a 215-frame(10.8s@20fps) motion plays in 48/fps s. For TRUE "
+                         "real-time playback of long clips set this >= T (e.g. 320) AND --fps 20 "
+                         "(the dataset's native fps) so every frame is shown at native rate.")
     ap.add_argument("--anytop_root", type=str, default=None)
     ap.add_argument("--caption_emb_cache", type=str,
                     default="data/anytop_caption_t5_cleanL5_multi.npz")
@@ -180,17 +193,55 @@ def main() -> int:
           f"T_lat={T_lat} T_full={T_full} cfg={args.cfg_scale} steps={args.steps}")
 
     anytop_root = args.anytop_root or ta.get("anytop_root")
+    # Text convention follows the FLOW ckpt (codex re-review #5): LLM2Vec ckpts read the
+    # ragged sidecar whose rows reach 113 tokens; the legacy default of 64 would reject it.
+    _fa2 = fck.get("args", {})
+    _fg2 = (_fa2.get if isinstance(_fa2, dict) else lambda k, d=None: getattr(_fa2, k, d))
+    _tdim_anim = int(_fg2("text_dim", 768) or 768)
+    # The clean-corpus json name comes from the caption cache's OWN meta (the same
+    # provenance record the sha gate checks), so render and cache cannot disagree
+    # about which corpus revision defines the caption indices (codex r3 #2).
+    _tjn = None
+    if args.caption_emb_cache:
+        _mp = Path(str(args.caption_emb_cache) + ".meta.json")
+        if _mp.exists():
+            import json as _json
+            _tjn = _json.loads(_mp.read_text()).get("captions_json_name")
+    # Semantic tokenizers need joint_semantics in every batch; resolve from the FROZEN
+    # ckpt's own args (mirror of the export-side fix — the model half already rebuilds via
+    # semantic_config_from_ckpt, this is the dataset half).
+    _sem = ta.get("joint_semantics") if ta.get("joint_semantics") and ta.get("semantic_enabled", True) else None
     ds = AnyTopDataset(
         split=args.split, num_frames=num_frames, max_joints=ta.get("max_joints", 64),
         val_frac=ta.get("val_frac", 0.05), seed=ta.get("seed", 42),
-        data_root=anytop_root, load_captions=True,
+        data_root=anytop_root, load_captions=True, joint_semantics=_sem,
         caption_emb_cache=args.caption_emb_cache,
         caption_token_cache=args.caption_token_cache,
+        caption_token_max_len=(113 if _tdim_anim != 768 else 64),
+        texts_json_name=_tjn,
         return_caption_tokens=True, random_caption=False)
 
     # OOD/custom text: encode once (single string applied to all picked clips).
+    # 4096-d ckpts encode with the REAL LLM2Vec (offline render host, so loading the 8B
+    # encoder here is acceptable; it matches the cache-build convention exactly because
+    # it goes through the same LLM2VecEncoder.encode_tokens + mean).
     ood_fields = None
-    if args.ood_text:
+    if args.ood_text and _tdim_anim != 768:
+        from src.data.text_encoders import build as _build_enc
+        _l2v = _build_enc("llm2vec", device=str(dev), max_length=128)
+        _H, _M = _l2v.encode_tokens([args.ood_text], bs=1)
+        _n = int(_M[0].sum())
+        if _n > 113:
+            raise SystemExit(f"--ood_text is {_n} tokens (>113); shorten it")
+        _hs = torch.from_numpy(_H[0][:_n]).float()
+        _g = _hs.mean(0)
+        # fp16 round-trip: training consumed fp16-quantised caption vectors.
+        _g = torch.from_numpy(_g.numpy().astype("float16").astype("float32"))
+        _hs = torch.from_numpy(_hs.numpy().astype("float16").astype("float32"))
+        ood_fields = (_g.to(dev), _hs.to(dev), torch.ones(_n, dtype=torch.bool, device=dev))
+        del _l2v
+        torch.cuda.empty_cache()
+    elif args.ood_text:
         ood_fields = encode_ood_text(args.ood_text, dev)
         print(f"[OOD-TEXT] {args.ood_text!r} -> global{tuple(ood_fields[0].shape)} "
               f"tokens{tuple(ood_fields[1].shape)} valid_tok={int(ood_fields[2].sum())}; "
@@ -337,7 +388,7 @@ def main() -> int:
                 print(f"  [export] {_snap_pr[0].shape} float32 (original cond joint order) -> {exp_path}")
             make_t2m_large_gif(
                 snap_world, cont_world, static_pose, parents, prompt_text,
-                str(gif), fps=args.fps, gt=gt_for_render,
+                str(gif), fps=args.fps, gt=gt_for_render, max_frames=args.gif_max_frames,
                 pred_labels=("PRED snapped decode", "PRED continuous decode"))
             ratio_str = ("N/A(OOD)" if ood_fields is not None
                          else f"{p_spd / max(g_spd, 1e-9):.3f}")

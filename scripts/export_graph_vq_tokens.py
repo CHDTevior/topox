@@ -33,6 +33,7 @@ waits for the ep300 frozen ckpt.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import sys
@@ -45,8 +46,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.data.anytop_dataset import AnyTopDataset, collate_fn as anytop_collate_fn
+from src.data.holdout_guard import guard_dataset, canonical_form as _canonical_form
+from src.data import provenance as prov
 from src.models.graph_salad.batch import GraphMotionBatch
-from src.models.vq_model import GraphVQTokenizer
+from src.models.vq_model import GraphVQTokenizer, semantic_config_from_ckpt
 
 # Sentinel for +inf in pooled_geodesic on disk (unreachable pairs). The CodeFlow
 # loader maps it back to +inf before feeding GraphAttentionBlock. Chosen well
@@ -63,6 +66,7 @@ def load_frozen_tokenizer(ckpt_path: str, dev: torch.device):
         raise SystemExit(f"export: ckpt {ckpt_path} missing 'args' "
                          f"(not from train_graph_vqvae.py?)")
     model = GraphVQTokenizer(
+        **semantic_config_from_ckpt(ck),
         d_model=ta["d_model"], n_heads=ta["n_heads"], d_ff=ta["d_ff"],
         n_graph_layers=ta["n_graph_layers"],
         n_enc_temporal_layers=ta["n_enc_temporal_layers"],
@@ -95,6 +99,10 @@ def main() -> int:
                     default="data/anytop_caption_t5_cleanL5_multi",
                     help="prefix for .tokens.npy/.token_mask.npy/.keys.json")
     ap.add_argument("--caption_token_max_len", type=int, default=64)
+    ap.add_argument("--texts_json_name", type=str, default=None,
+                    help="corpus texts json filename override (the LLM2Vec chain passes "
+                         "motion_texts_by_file_clean_v1.json; default keeps the legacy "
+                         "fallback chain)")
     ap.add_argument("--num_frames", type=int, default=None,
                     help="override the frozen tokenizer ckpt's max_frames; None = "
                          "use ckpt's max_frames. Full-length backbone training uses "
@@ -122,6 +130,29 @@ def main() -> int:
                          "tokens (fp16 storage round-trip; the fp32 audit before "
                          "casting must be ~1e-5)")
     ap.add_argument("--device", default="cuda")
+    # --- held-out-topology protocol -------------------------------------------------
+    # The freeze is worthless if nothing checks it: before these flags existed the guard
+    # module had zero callers, so a chain launched here would have trained on the held
+    # topologies and every "unseen" number downstream would have been fabricated.
+    ap.add_argument("--splits_dir", type=str, default=None,
+                   help="directory whose train.txt/val.txt are the RETAINED lists "
+                        "(e.g. data/holdout_splits_v1). Default = <data_root>/splits, which is "
+                        "the FULL corpus including every held-out topology.")
+    ap.add_argument("--protocol", default="legacy",
+                   choices=["legacy", "unseen_topology_v1"],
+                   help="legacy (default) reproduces every pre-existing command exactly and does "
+                        "not require the held-out artifact. unseen_topology_v1 enforces the "
+                        "frozen pre-registration: retained splits, artifact SHA, and abort on any "
+                        "held topology. Only a run under unseen_topology_v1 may back an "
+                        "unseen-topology claim.")
+    ap.add_argument("--holdout_artifact", type=str, default=None,
+                   help="frozen pre-registration (data/holdout_topologies_v1.json). Required "
+                        "unless --allow_no_holdout is given.")
+    ap.add_argument("--holdout_sha", type=str, default=None,
+                   help="expected artifact sha256; the run aborts if the freeze differs.")
+    ap.add_argument("--allow_no_holdout", action="store_true",
+                   help="run WITHOUT the held-out guard. Logs loudly; such a run must not be "
+                        "used for any unseen-topology claim.")
     args = ap.parse_args()
 
     if args.num_shards < 1:
@@ -164,18 +195,75 @@ def main() -> int:
     # Caption caches ON (gap #3): VQ training used load_captions=False; the
     # CodeFlow backbone needs T5 mean + token captions, so the exporter must open
     # them. dual_text => return_caption_tokens=True (mean + token caches).
+    # Semantic tokenizers require joint_semantics in every batch. The file is resolved from
+    # the FROZEN CKPT's own args (meta-driven — export cannot pick a different table than the
+    # tokenizer trained with) and its bytes are verified against the ckpt provenance stamp.
+    _sem_path = None
+    if ta.get("joint_semantics") and ta.get("semantic_enabled", True):
+        _sem_path = ta["joint_semantics"]
+        if not Path(_sem_path).exists():
+            raise SystemExit(f"[export] frozen ckpt was trained with joint_semantics="
+                             f"{_sem_path} but that file does not exist")
+        _ck_prov = prov.read(ck)
+        _want_sem_sha = (_ck_prov or {}).get("joint_semantics_sha256")
+        if _want_sem_sha:
+            _got_sem_sha = prov.sha256_file(_sem_path)
+            if _got_sem_sha != _want_sem_sha:
+                raise SystemExit(
+                    f"[export] joint_semantics drift: ckpt provenance says "
+                    f"{_want_sem_sha[:16]}..., on-disk file hashes {_got_sem_sha[:16]}...")
+        print(f"[export] semantic tokenizer: joint_semantics={_sem_path} (sha verified)",
+              flush=True)
     ds_common = dict(
         num_frames=num_frames, max_joints=ta.get("max_joints", 64),
         val_frac=ta.get("val_frac", 0.05), seed=ta.get("seed", 42),
-        data_root=anytop_root, load_captions=True,
+        data_root=anytop_root, load_captions=True, joint_semantics=_sem_path,
         caption_emb_cache=args.caption_emb_cache,
         caption_token_cache=args.caption_token_cache,
         return_caption_tokens=True,
         caption_token_max_len=args.caption_token_max_len,
+        texts_json_name=args.texts_json_name,
         random_caption=False,  # deterministic primary caption for the export
     )
 
-    manifest = {"frozen_vqvae_ckpt": str(args.frozen_vqvae_ckpt),
+    _strict0 = args.protocol == "unseen_topology_v1"
+    _PROV = prov.stamp(protocol=args.protocol, stage="token_export",
+                       holdout_artifact=args.holdout_artifact if _strict0 else None,
+                       data_root=anytop_root, splits_dir=args.splits_dir,
+                       upstream={"vqvae_ckpt": str(args.frozen_vqvae_ckpt),
+                                 "vqvae_ckpt_sha256": prov.sha256_file(args.frozen_vqvae_ckpt)})
+    prov.verify_upstream(
+        prov.read(torch.load(args.frozen_vqvae_ckpt, map_location="cpu", weights_only=False)),
+        protocol=args.protocol,
+                         what=f"VQVAE checkpoint {args.frozen_vqvae_ckpt}",
+                         expect_artifact_body_sha=_PROV.get("holdout_artifact_body_sha256"))
+    # Caption-corpus provenance (codex r3 #4): record WHICH texts json + caption cache
+    # produced the baked caption tensors, so a trained checkpoint can prove its text came
+    # from clean-v1 and the merger can refuse shards built from different corpora.
+    import hashlib as _hl
+    _cap_prov = {
+        "texts_json_name": args.texts_json_name,
+        "caption_emb_cache": str(args.caption_emb_cache) if args.caption_emb_cache else None,
+        "caption_dim": None, "caption_cache_meta_sha256": None,
+        "captions_json_sha256": None,
+    }
+    if args.texts_json_name:
+        _tjp = Path(anytop_root) / args.texts_json_name
+        _cap_prov["captions_json_sha256"] = _hl.sha256(_tjp.read_bytes()).hexdigest()
+    if args.caption_emb_cache:
+        _cmp = Path(str(args.caption_emb_cache) + ".meta.json")
+        if _cmp.exists():
+            _cm = json.loads(_cmp.read_text())
+            _cap_prov["caption_dim"] = _cm.get("dim")
+            _cap_prov["caption_cache_meta_sha256"] = _hl.sha256(_cmp.read_bytes()).hexdigest()
+            _wantn = _cm.get("captions_json_name")
+            if args.texts_json_name and _wantn and _wantn != args.texts_json_name:
+                raise SystemExit(
+                    f"--texts_json_name {args.texts_json_name} != caption cache's recorded "
+                    f"corpus {_wantn}; the baked strings and vectors would disagree")
+    manifest = {prov.KEY: _PROV,
+                "caption_provenance": _cap_prov,
+                "frozen_vqvae_ckpt": str(args.frozen_vqvae_ckpt),
                 "ckpt_epoch": ck.get("epoch"), "D": D, "Q": Q, "K": K,
                 "max_coarse": ta["max_coarse"], "temporal_stride": temporal_stride,
                 "num_frames": num_frames, "T_lat": T_lat,
@@ -184,7 +272,15 @@ def main() -> int:
                 "geo_inf_sentinel": GEO_INF_SENTINEL, "splits": {}}
 
     for split in [s.strip() for s in args.splits.split(",") if s.strip()]:
-        ds = AnyTopDataset(split=split, **ds_common)
+        ds = AnyTopDataset(split=split, **(dict(ds_common, splits_dir=args.splits_dir)
+                                          if args.splits_dir else ds_common))
+        _strict = args.protocol == "unseen_topology_v1"
+        if _strict and not args.holdout_artifact:
+            raise SystemExit("--protocol unseen_topology_v1 requires --holdout_artifact")
+        guard_dataset(ds, data_root=anytop_root,
+                      artifact=args.holdout_artifact if _strict else None,
+                      expect_body_sha=args.holdout_sha, stage=f"export:{split}",
+                      allow_no_holdout=(not _strict) or args.allow_no_holdout)
         n = len(ds) if args.max_clips <= 0 else min(args.max_clips, len(ds))
         # Disjoint 1/num_shards subset of clips by dataset index (==1 -> all clips).
         # The per-clip npz keeps its dataset-index filename {i:06d}.npz, so shards
@@ -294,8 +390,22 @@ def main() -> int:
                 geo_save[torch.isinf(geo_save)] = GEO_INF_SENTINEL
                 stem = item["motion_id"]
                 npz_path = split_dir / f"{i:06d}.npz"
+                # Identity burned INTO the payload. The guard reads index.jsonl, but the
+                # trainer reads these files; if the two ever disagree — a rebuilt index, a
+                # copied directory, a partial re-export — the guard would clear a cache whose
+                # contents it never saw. `canon` lets a consumer check held-out membership from
+                # the payload alone, without trusting any sidecar.
+                # Canonical identity is computed from the parents array THIS PAYLOAD SAVES,
+                # not from a separately looked-up source. Deriving it from elsewhere would
+                # certify a topology the file does not actually contain.
+                _par = np.asarray(item["parent_indices"]).ravel().astype(int)
+                _canon = hashlib.sha256(
+                    _canonical_form(tuple(int(x) for x in _par)).encode()).hexdigest()
                 np.savez_compressed(
                     npz_path,
+                    payload_motion_id=np.array(str(stem)),
+                    payload_object_type=np.array(str(item["object_type"])),
+                    payload_canonical_sha256=np.array(_canon),
                     z_q=z_q.cpu().numpy().astype(np.float16),
                     indices=indices.cpu().numpy().astype(np.int16),
                     token_mask=token_mask.cpu().numpy(),

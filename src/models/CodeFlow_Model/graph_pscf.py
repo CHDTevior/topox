@@ -48,6 +48,7 @@ from src.models.motion_decoder import TemporalSelfAttention
 from src.models.graph_salad.denoiser import (
     SinusoidalTimestepEmbedding,
     DenseFiLM,
+    TextCrossAttention,
 )
 from src.models.CodeFlow_Model.dit_blocks import (
     DoubleStreamBlock,
@@ -247,6 +248,9 @@ class GraphPSCFFlowNet(nn.Module):
         max_T_lat: int = 75,
         mlp_ratio: float = 4.0,
         dropout: float = 0.05,
+        text_input_norm: bool = False,
+        use_sentence_token: bool = False,
+        text_slot_xattn: bool = False,
     ) -> None:
         super().__init__()
         if code_dim % n_heads != 0:
@@ -276,9 +280,38 @@ class GraphPSCFFlowNet(nn.Module):
             nn.Linear(code_dim, code_dim * 4), nn.SiLU(),
             nn.Linear(code_dim * 4, code_dim))
 
-        # ---- dual-text projections (T5-768 -> code_dim) ----
+        # ---- dual-text projections (text encoder dim -> code_dim) ----
+        # Input LayerNorms are flag-gated (Identity when off) so the legacy T5-768
+        # state_dict stays byte-identical. They exist because the LLM2Vec caption
+        # embeddings carry per-dim RMS ~2.09 against T5's ~0.12 (measured, 4096
+        # captions): `cond = t_emb + text_pooled` is a SUM, and unnormalised
+        # LLM2Vec would out-scale the timestep signal ~17x — the same failure the
+        # encoder's clip_input_norm already paid for (FACTS C17).
+        self.text_input_norm = bool(text_input_norm)
+        self.text_pooled_in_norm = (
+            nn.LayerNorm(d_text) if text_input_norm else nn.Identity())
+        self.text_token_in_norm = (
+            nn.LayerNorm(text_token_dim) if text_input_norm else nn.Identity())
         self.text_pooled_proj = nn.Linear(d_text, code_dim)
         self.text_token_proj = nn.Linear(text_token_dim, code_dim)
+        # Sentence token (flag-gated): the CFG-gated pooled projection is
+        # prepended to h_text as token 0, so the global text vector also
+        # participates in joint attention instead of only in AdaLN/FiLM. With
+        # text_input_norm on, LN(mean(tokens)) is not the mean of LN(tokens), so
+        # the token carries a genuinely distinct (scale-normalised) direction.
+        self.use_sentence_token = bool(use_sentence_token)
+        # Slot-text cross-attention (flag-gated): slots query the token stream
+        # directly, giving text a T- AND C-resolved path into the stream that
+        # produces the output. TextCrossAttention zero-inits o_proj (identity at
+        # init) and hard-zeroes rows whose text is fully masked (CFG-uncond).
+        self.text_slot_xattn = bool(text_slot_xattn)
+        if text_slot_xattn:
+            self.slot_xattn_double = nn.ModuleList(
+                [TextCrossAttention(code_dim, n_heads, dropout)
+                 for _ in range(depth_double)])
+            self.slot_xattn_single = nn.ModuleList(
+                [TextCrossAttention(code_dim, n_heads, dropout)
+                 for _ in range(depth_single)])
 
         # ---- slot input projection (z_t -> slot stream; skeleton added after) ----
         self.input_proj = nn.Linear(code_dim, code_dim)
@@ -424,7 +457,8 @@ class GraphPSCFFlowNet(nn.Module):
 
         # ---- conditioning (Q2): cond = timestep_emb + pooled_text (CFG-gated) ----
         t_emb = self.t_mlp(self.t_sin(timesteps)).to(dtype)        # [B, D]
-        text_pooled = self.text_pooled_proj(text_global)           # [B, D]
+        text_pooled = self.text_pooled_proj(
+            self.text_pooled_in_norm(text_global))                 # [B, D]
         text_pooled = text_pooled * has_text[:, None].to(dtype)    # CFG gate
         cond = t_emb + text_pooled                                 # [B, D]
 
@@ -442,8 +476,16 @@ class GraphPSCFFlowNet(nn.Module):
         h_frame = h_frame * frame_mask_lat[:, :, None].to(dtype)
 
         # ---- text stream: token projection (I3: True = valid) ----
-        h_text = self.text_token_proj(text_tokens)                 # [B, L, D]
+        h_text = self.text_token_proj(
+            self.text_token_in_norm(text_tokens))                  # [B, L, D]
         text_valid = text_token_mask & has_text[:, None]           # [B, L] True = valid
+        if self.use_sentence_token:
+            # Token 0 = the CFG-gated pooled projection (same tensor cond uses,
+            # already has_text-zeroed above). Its valid bit is has_text itself,
+            # so a CFG-dropped row masks it exactly like every other text token.
+            h_text = torch.cat([text_pooled[:, None, :], h_text], dim=1)
+            text_valid = torch.cat([has_text[:, None], text_valid], dim=1)
+            L = L + 1                                              # all L uses below see L+1
         h_text = h_text * text_valid[:, :, None].to(dtype)
 
         # ---- frame motion pos_ids over T_lat: [B,T_lat,1] (single RoPE axis) ----
@@ -457,10 +499,18 @@ class GraphPSCFFlowNet(nn.Module):
         #   (h_frame,h_text) = DoubleStreamBlock(h_frame,h_text,cond)
         #   (h_frame,h_slot) = coupling_post(h_frame,h_slot)
         #   strict mask all
-        for blk in self.double_blocks:
+        for bi, blk in enumerate(self.double_blocks):
             h_slot = blk["slot_temporal"](
                 h_slot, cond, pooled_adjacency, pooled_geodesic,
                 coarse_mask, frame_mask_lat, validate_inputs=validate_inputs)
+            if self.text_slot_xattn:
+                # Slots query the (evolving) token stream directly: the only
+                # text path that is both T- and C-resolved. key_padding_mask is
+                # True=masked, so ~text_valid; fully-masked rows (CFG-uncond)
+                # come back exactly zero from TextCrossAttention.
+                ca = self.slot_xattn_double[bi](
+                    h_slot.reshape(B, T_lat * C, D), h_text, ~text_valid)
+                h_slot = (h_slot + ca.reshape(B, T_lat, C, D)) * cm * fm4
             h_frame, h_slot = blk["coupling_pre"](
                 h_frame, h_slot, cond, coarse_mask, frame_mask_lat)
             # DiT boundary: ported DoubleStreamBlock takes True=valid directly.
@@ -490,7 +540,7 @@ class GraphPSCFFlowNet(nn.Module):
         text_pos = torch.zeros(B, L, 1, device=ref_device, dtype=torch.long)
         joint_pos = torch.cat([motion_pos_ids, text_pos], dim=1)   # [B,T_lat+L,1]
         joint_valid = torch.cat([frame_mask_lat, text_valid], dim=1)  # [B,T_lat+L]
-        for blk in self.single_blocks:
+        for bi, blk in enumerate(self.single_blocks):
             joint = torch.cat([h_frame, h_text], dim=1)            # [B,T_lat+L,D]
             joint = blk["dit"](
                 joint, cond, joint_valid, joint_pos, self.rope_axes_dims)
@@ -501,6 +551,10 @@ class GraphPSCFFlowNet(nn.Module):
             h_slot = blk["slot_temporal"](
                 h_slot, cond, pooled_adjacency, pooled_geodesic,
                 coarse_mask, frame_mask_lat, validate_inputs=validate_inputs)
+            if self.text_slot_xattn:
+                ca = self.slot_xattn_single[bi](
+                    h_slot.reshape(B, T_lat * C, D), h_text, ~text_valid)
+                h_slot = (h_slot + ca.reshape(B, T_lat, C, D)) * cm * fm4
             h_frame, h_slot = blk["coupling"](
                 h_frame, h_slot, cond, coarse_mask, frame_mask_lat)
             # strict mask

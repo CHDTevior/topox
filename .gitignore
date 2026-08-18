@@ -2,8 +2,10 @@ logs/
 runs/
 .aris/
 
-# Datasets & large artifacts (never commit)
-data/
+# Datasets & large artifacts (never commit).
+# ANCHORED: an unanchored `data/` also matches `src/data/`, which silently excluded every
+# source file under it — the same footgun that nearly shipped an unimportable release repo.
+/data/
 outside_docs/
 _qa_local/
 _qa_*/
@@ -23,3 +25,6 @@ _poll_probe.txt
 
 # Codex raw review outputs (large, reproducible). Briefs (.md) are kept.
 scripts/_codex_*.txt
+
+# rendered visual-QA outputs (large, regenerable)
+renders/

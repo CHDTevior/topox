@@ -132,6 +132,7 @@ class GraphMotionBatch:
     # De-norm stats for the 13ch view — needed by loss_mode="anytop13_world_geometry"
     # to recover raw motion (raw = norm*(std+1e-6) + mean) before differentiable
     # world recovery. Raw (un-normalized) AnyTop mean/std, padded per joint.
+    joint_semantics: Optional[torch.Tensor] = None         # [B, J_max, d_text] frozen
     anytop_mean: Optional[torch.Tensor] = None             # [B, J_max, 13] raw de-norm mean
     anytop_std: Optional[torch.Tensor] = None              # [B, J_max, 13] raw de-norm std
     caption_emb: Optional[torch.Tensor] = None             # [B, 768] T5 caption embedding
@@ -518,7 +519,12 @@ class GraphMotionBatch:
             ("anytop_graph_dist",      3, (J_max_val, J_max_val)),
             ("anytop_joint_relations", 3, (J_max_val, J_max_val)),
             ("foot_contact_per_joint", 3, (T_max_val, J_max_val)),
-            ("caption_emb",            2, (768,)),
+            # caption dim follows the text encoder (768 T5/DistilBERT, 4096 LLM2Vec);
+            # rank is pinned, the trailing dim is not (same convention as joint_semantics).
+            ("caption_emb",            2, (None,)),
+            # d_text depends on the frozen sentence encoder (768 for DistilBERT, 4096 for
+            # LLM2Vec), so the trailing dimension is not pinned; only rank and the joint axis are.
+            ("joint_semantics",        3, (J_max_val, None)),
             ("anytop_mean",            3, (J_max_val, 13)),
             ("anytop_std",             3, (J_max_val, 13)),
         )
@@ -531,10 +537,14 @@ class GraphMotionBatch:
                     f"GraphMotionBatch: optional '{key}' must be torch.Tensor, "
                     f"got {type(t).__name__}"
                 )
-            if t.dim() != expected_rank or tuple(t.shape) != (B, *tail_shape):
+            # A None entry in tail_shape means that axis is free (e.g. the sentence-encoder
+            # dimension), so it is checked for rank and for every pinned axis only.
+            want = (B, *tail_shape)
+            if t.dim() != expected_rank or any(
+                    w is not None and g != w for g, w in zip(tuple(t.shape), want)):
                 raise ValueError(
                     f"GraphMotionBatch: optional '{key}' must have shape "
-                    f"{(B, *tail_shape)}, got {tuple(t.shape)}"
+                    f"{want} (None = free), got {tuple(t.shape)}"
                 )
             if t.dtype != torch.float32:
                 raise ValueError(
@@ -595,11 +605,20 @@ class GraphMotionBatch:
                     f"GraphMotionBatch: 'caption_token_mask' must be torch.Tensor, "
                     f"got {type(tm).__name__}"
                 )
-            if te.dim() != 3 or te.shape[0] != B or te.shape[2] != 768:
+            if te.dim() != 3 or te.shape[0] != B:
                 raise ValueError(
-                    f"GraphMotionBatch: 'caption_token_emb' must be [B={B}, L, 768], "
+                    f"GraphMotionBatch: 'caption_token_emb' must be [B={B}, L, d_text], "
                     f"got {tuple(te.shape)}"
                 )
+            # The token dim is not pinned (768 T5 / 4096 LLM2Vec) but it MUST agree with
+            # the pooled caption dim when both are present — a mixed-encoder batch is a
+            # wiring error, not a configuration.
+            ce = d.get("caption_emb")
+            if isinstance(ce, torch.Tensor) and ce.dim() == 2 and te.shape[2] != ce.shape[1]:
+                raise ValueError(
+                    f"GraphMotionBatch: caption_token_emb dim {te.shape[2]} != "
+                    f"caption_emb dim {ce.shape[1]} — pooled and token captions come "
+                    f"from different encoders")
             L = te.shape[1]
             if tm.shape != (B, L):
                 raise ValueError(
@@ -656,6 +675,7 @@ class GraphMotionBatch:
             anytop_graph_dist=d.get("anytop_graph_dist"),
             anytop_joint_relations=d.get("anytop_joint_relations"),
             foot_contact_per_joint=d.get("foot_contact_per_joint"),
+            joint_semantics=d.get("joint_semantics"),
             anytop_mean=d.get("anytop_mean"),
             anytop_std=d.get("anytop_std"),
             caption_emb=d.get("caption_emb"),

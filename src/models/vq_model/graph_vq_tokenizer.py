@@ -95,7 +95,36 @@ class CoarseGraphTemporalLayer(nn.Module):
         return x * cm * fm                    # re-mask padded slots + frames
 
 
+def semantic_config_from_ckpt(ck: dict) -> dict:
+    """The semantic settings a saved checkpoint implies, for rebuilding it downstream.
+
+    The dimension is read from the SAVED WEIGHT, not from the recorded table path: the weight is
+    what `load_state_dict(strict=True)` will actually be matched against, so deriving the shape
+    from anything else can disagree with the tensor it is meant to describe. A legacy checkpoint
+    has no such weight sized for a table and yields the pre-existing `semantic_dim=0`.
+
+    Without this, every downstream loader rebuilt the tokenizer with the default 768-D projection
+    and strict-loading a 4096-D semantic checkpoint failed outright — the semantic arm could be
+    trained but never exported, evaluated or rendered.
+    """
+    sd = ck.get("model_state_dict", ck) or {}
+    w = sd.get("encoder.clip_proj.0.weight")
+    ta = ck.get("args", {}) or {}
+    if w is None or not ta.get("joint_semantics"):
+        return {"semantic_dim": 0, "semantic_enabled": False}
+    return {"semantic_dim": int(w.shape[1]),
+            "semantic_enabled": bool(ta.get("semantic_enabled", True))}
+
+
 class GraphVQTokenizer(nn.Module):
+    """Graph VQ tokenizer over AnyTop-13 motion.
+
+    Note on joint semantics: the encoder has always carried a dormant projection for per-joint
+    text embeddings, but nothing ever fed it and it was sized for a 768-D encoder. `semantic_dim`
+    turns it on and sizes it correctly. Without this, an ablation with and without semantics would
+    train two byte-identical models — the arms would be causally the same run.
+    """
+
     """Graph-aware coarse-slot RVQ tokenizer. See module docstring for the pipeline."""
 
     def __init__(
@@ -114,6 +143,21 @@ class GraphVQTokenizer(nn.Module):
         temporal_kernel: int = 9,
         dropout: float = 0.1,
         joint_feat_dim: int = 9,
+        # Per-joint semantic embeddings (frozen sentence-encoder vectors for each joint's
+        # anatomical description). 0 = off, which is the pre-existing behaviour. Non-zero turns
+        # on the encoder's dormant projection and sizes it for that encoder — LLM2Vec is 4096-D,
+        # and the projection's own default of 768 is a DistilBERT-era leftover.
+        semantic_dim: int = 0,
+        # Whether the sized projection is actually READ. This is separate from `semantic_dim` on
+        # purpose. Sizing the projection from the table changes `clip_proj`'s shape, which changes
+        # how many numbers the generator draws, which changes the initialisation of every module
+        # built after it: with one seed, an on-arm and an off-arm shared 116 same-shaped tensors
+        # that were nevertheless initialised differently. A one-seed comparison between them would
+        # then be confounded by unrelated initial weights rather than by semantics. So both arms
+        # build the SAME architecture from the same table dimension, and the ablation is this
+        # boolean alone. The control's projection is allocated, never read, and receives no
+        # gradient (the trainer already runs DDP with find_unused_parameters=True).
+        semantic_enabled: bool = True,
         # quantizer
         code_dim: int = 512,
         num_codes: int = 512,
@@ -131,6 +175,8 @@ class GraphVQTokenizer(nn.Module):
         self.temporal_stride = temporal_stride
         self.max_coarse = max_coarse
         self.num_quantizers = num_quantizers
+        self.semantic_dim = int(semantic_dim)
+        self.semantic_enabled = bool(semantic_enabled)
 
         # ---- Encoder (anytop13_split + graphormer), reused by import ----
         self.encoder = SkeletonEncoder(
@@ -143,7 +189,14 @@ class GraphVQTokenizer(nn.Module):
             dropout=dropout,
             motion_mode="anytop13_split",
             attn_mode="graphormer",
+            clip_embed_dim=(semantic_dim if semantic_dim > 0 else 768),
+            # Only when semantics are actually in play: this adds parameters, and turning it on
+            # unconditionally would stop every pre-existing checkpoint from strict-loading.
+            clip_input_norm=(semantic_dim > 0),
         )
+        # The encoder ships this projection switched off, so setting the dimension is not enough:
+        # without this line the semantic arm silently produces the control model.
+        self.encoder.use_clip = self.semantic_dim > 0 and self.semantic_enabled
         self.slot_norm = SlotNorm(d_model)
 
         # ---- EdgeSegmentPool (edge_segment), reused by import ----
@@ -183,6 +236,27 @@ class GraphVQTokenizer(nn.Module):
             "out_nonroot": nn.Linear(d_model, 13),
         })
 
+    def _semantics(self, batch):
+        """Per-joint semantic embeddings for this batch, or None when the feature is off.
+
+        Fails loudly on a dimension mismatch rather than letting a wrongly-sized table be
+        silently projected: that would train a model on noise and nothing downstream would say so.
+        """
+        if self.semantic_dim <= 0 or not self.semantic_enabled:
+            return None
+        sem = getattr(batch, "joint_semantics", None)
+        if sem is None:
+            raise ValueError(
+                "GraphVQTokenizer was built with semantic_dim>0 but the batch carries no "
+                "joint_semantics. Pass --joint_semantics to the dataset, or build the tokenizer "
+                "with semantic_dim=0. Silently running without them would make this arm "
+                "identical to the control.")
+        if sem.shape[-1] != self.semantic_dim:
+            raise ValueError(
+                f"joint_semantics has dimension {sem.shape[-1]}, tokenizer expects "
+                f"{self.semantic_dim}. A mismatched table would be projected as noise.")
+        return sem
+
     def encode(self, batch) -> dict:
         """anytop13 batch -> pooled coarse slots + pool graph metadata.
 
@@ -209,6 +283,7 @@ class GraphVQTokenizer(nn.Module):
         s_j = self.encoder.encode_skeleton(
             batch.skeleton_features, batch.adjacency, batch.geodesic_dist,
             batch.joint_mask, name_hashes=batch.name_hashes,
+            clip_embeddings=self._semantics(batch),
             graph_dist=gd, joint_relations=jr,
         )  # [B,J,D]
         h0 = self.slot_norm(h0)
@@ -438,6 +513,7 @@ class GraphVQTokenizer(nn.Module):
         s_j = self.encoder.encode_skeleton(
             batch.skeleton_features, batch.adjacency, batch.geodesic_dist,
             batch.joint_mask, name_hashes=batch.name_hashes,
+            clip_embeddings=self._semantics(batch),
             graph_dist=gd, joint_relations=jr,
         )  # [B,J,D]
         geom = self.pool.compute_assignment_and_graph(

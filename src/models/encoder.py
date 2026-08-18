@@ -266,6 +266,15 @@ class SkeletonEncoder(nn.Module):
         joint_feat_dim: int = 9,       # from SkeletonGraph.get_joint_features()
         motion_feat_dim: int = 6,      # fk6: local_pos(3)+vel(3); anytop13: 13ch
         clip_embed_dim: int = 768,     # CLIP text embedding dim
+        # Normalise the frozen text embeddings before projecting them. OFF by default so that
+        # checkpoints predating it still load with strict=True — enabling it adds parameters.
+        # Why it exists: fusion here is additive (s = geometry + semantics), so the balance
+        # between the two branches is set by the magnitude of whatever the frozen encoder emits.
+        # Measured on this corpus: LLM2Vec vectors have L2 norm 131.85, which lands the semantic
+        # branch at 3.86x the geometric one — a ratio nobody chose. A unit-norm encoder would have
+        # given 0.03 and the semantics would have been inaudible. With this on, the ratio is 1.76
+        # and it no longer depends on the encoder's arbitrary output scale.
+        clip_input_norm: bool = False,
         clip_proj_dim: int = 128,      # projected CLIP dim
         temporal_kernel: int = 9,
         dropout: float = 0.1,
@@ -308,6 +317,7 @@ class SkeletonEncoder(nn.Module):
             nn.GELU(),
             nn.Linear(clip_proj_dim, d_model),
         )
+        self.clip_in_norm = nn.LayerNorm(clip_embed_dim) if clip_input_norm else nn.Identity()
         self.use_clip = False  # Set True when CLIP embeddings are available
 
         # Learnable canonical name embedding (lightweight alternative to CLIP)
@@ -381,7 +391,7 @@ class SkeletonEncoder(nn.Module):
 
         # Add CLIP embeddings if available
         if clip_embeddings is not None and self.use_clip:
-            clip_feat = self.clip_proj(clip_embeddings)
+            clip_feat = self.clip_proj(self.clip_in_norm(clip_embeddings))
             s = s + clip_feat
 
         # Add canonical name embeddings if enabled

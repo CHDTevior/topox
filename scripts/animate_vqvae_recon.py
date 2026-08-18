@@ -50,9 +50,10 @@ from scripts.animate import animate_clip, contact_sheet  # noqa: E402  model-agn
 from src.data.anytop_dataset import (  # noqa: E402
     AnyTopDataset, collate_fn, _recover_world_positions, _STD_FLOOR,
 )
+from src.data import provenance as prov  # noqa: E402  ckpt provenance stamp reader
 from src.data.anytop_rot6d_fk import recover_from_bvh_rot_np  # noqa: E402  official rot6d FK
 from src.models.graph_salad.batch import GraphMotionBatch  # noqa: E402
-from src.models.vq_model import GraphVQTokenizer  # noqa: E402
+from src.models.vq_model import GraphVQTokenizer, semantic_config_from_ckpt  # noqa: E402
 
 
 def load_vq_tokenizer(ckpt_path: str, dev: torch.device):
@@ -69,6 +70,7 @@ def load_vq_tokenizer(ckpt_path: str, dev: torch.device):
         raise SystemExit(f"animate_vqvae_recon: ckpt {ckpt_path} missing 'args' key "
                          f"(not produced by train_graph_vqvae.py?)")
     model = GraphVQTokenizer(
+        **semantic_config_from_ckpt(ck),
         d_model=ta["d_model"], n_heads=ta["n_heads"], d_ff=ta["d_ff"],
         n_graph_layers=ta["n_graph_layers"],
         n_enc_temporal_layers=ta["n_enc_temporal_layers"],
@@ -101,6 +103,13 @@ def main():
                             "PZ_Indian_Elephant_Male,PZ_Fossa_Male",
                     help="comma-separated object_types to render")
     ap.add_argument("--n_per", type=int, default=1)
+    ap.add_argument("--min_frames", type=int, default=0,
+                    help="skip clips shorter than this, so the same clip as the "
+                         "generation render (which filters the same way) is picked")
+    ap.add_argument("--num_frames", type=int, default=None,
+                    help="dataset container length; default = the ckpt's max_frames. "
+                         "Raise it to render a clip at its full length instead of the "
+                         "training crop.")
     ap.add_argument("--stride", type=int, default=2, help="frame subsample for gif")
     ap.add_argument("--fps", type=int, default=8)
     ap.add_argument("--anytop_root", type=str, default=None,
@@ -140,18 +149,42 @@ def main():
     # Dataset: reproduce the ckpt's TRAINING split exactly (val_frac/seed/num_frames/
     # max_joints from the ckpt args, captions off — the tokenizer takes no text).
     anytop_root = args.anytop_root or ta.get("anytop_root") or ck.get("data_root")
+    num_frames = args.num_frames or ta.get("max_frames", 64)
+    # A semantic tokenizer (semantic_enabled) reads joint_semantics from every batch and
+    # refuses to run without them; resolve the table from the ckpt's own args so the render
+    # cannot silently become the control arm. Bytes are verified against the ckpt's own
+    # provenance stamp (codex review): a same-shape, same-order table with different
+    # embeddings would otherwise pass every structural check and silently render a model
+    # that is not the one that was trained.
+    _sem = (ta.get("joint_semantics")
+            if ta.get("joint_semantics") and ta.get("semantic_enabled", True) else None)
+    if _sem is not None:
+        if not Path(_sem).exists():
+            raise SystemExit(f"ckpt was trained with joint_semantics={_sem} but that file "
+                             f"does not exist")
+        _want_sha = (prov.read(ck) or {}).get("joint_semantics_sha256")
+        if _want_sha:
+            _got_sha = prov.sha256_file(_sem)
+            if _got_sha != _want_sha:
+                raise SystemExit(
+                    f"joint_semantics drift: ckpt provenance says {_want_sha[:16]}..., "
+                    f"on-disk file hashes {_got_sha[:16]}...")
+            print(f"  joint_semantics={_sem} (sha verified)")
+        else:
+            print(f"  joint_semantics={_sem} (ckpt carries no sha to verify against)")
     ds = AnyTopDataset(
         split=args.split,
-        num_frames=ta.get("max_frames", 64),
+        num_frames=num_frames,
         max_joints=ta.get("max_joints", 64),
         val_frac=ta.get("val_frac", 0.05),
         seed=ta.get("seed", 42),
         load_captions=False,
         data_root=anytop_root,
+        joint_semantics=_sem,
     )
     print(f"  dataset: root={anytop_root} split={args.split} "
-          f"num_frames={ta.get('max_frames', 64)} max_joints={ta.get('max_joints', 64)} "
-          f"val_frac={ta.get('val_frac', 0.05)} -> {len(ds)} clips")
+          f"num_frames={num_frames} max_joints={ta.get('max_joints', 64)} "
+          f"val_frac={ta.get('val_frac', 0.05)} joint_semantics={_sem} -> {len(ds)} clips")
 
     want = [s.strip() for s in args.species.split(",") if s.strip()]
     picked = {s: 0 for s in want}
@@ -162,6 +195,8 @@ def main():
             item = ds[i]
             sp = item["object_type"]
             if sp not in picked or picked[sp] >= args.n_per:
+                continue
+            if int(item["num_frames"]) < args.min_frames:
                 continue
             raw = collate_fn([item])
             raw = {k: v.to(dev) if torch.is_tensor(v) else v for k, v in raw.items()}

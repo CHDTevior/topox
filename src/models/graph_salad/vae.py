@@ -404,6 +404,7 @@ class GraphMotionVAE(nn.Module):
             batch.joint_mask,
             batch.frame_mask,
             name_hashes=batch.name_hashes,
+            clip_embeddings=getattr(batch, "joint_semantics", None),
             graph_dist=_gd, joint_relations=_jr,
         )  # [B, T, J, D]
         s_j = self.encoder.encode_skeleton(
@@ -412,6 +413,7 @@ class GraphMotionVAE(nn.Module):
             batch.geodesic_dist,
             batch.joint_mask,
             name_hashes=batch.name_hashes,
+            clip_embeddings=getattr(batch, "joint_semantics", None),
             graph_dist=_gd, joint_relations=_jr,
         )  # [B, J, D]
         h0 = self.slot_norm(h0)
@@ -555,6 +557,7 @@ class GraphMotionVAE(nn.Module):
             batch.geodesic_dist,
             batch.joint_mask,
             name_hashes=batch.name_hashes,
+            clip_embeddings=getattr(batch, "joint_semantics", None),
             graph_dist=_gd, joint_relations=_jr,
         )  # [B, J, D]
 
