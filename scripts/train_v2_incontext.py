@@ -13,12 +13,14 @@ Validation = bucket A (seen rigs, unseen clips), with a RESET RNG stream each pa
 sees the identical demo/crop choices and the numbers are comparable across epochs.
 Checkpoints are written atomically (tmp + rename); best is tracked on val flow loss.
 """
-import argparse, json, pickle, sys, time
+import argparse, json, os, pickle, sys, time
 from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.data.anytop_dataset import AnyTopDataset                               # noqa: E402
@@ -108,9 +110,25 @@ def main():
     ap.add_argument("--resume", default="")
     a = ap.parse_args()
     assert torch.cuda.is_available(), "run-1 is a GPU run; refusing to silently train on CPU"
-    dev = "cuda"
-    torch.manual_seed(a.seed); np.random.seed(a.seed)
-    out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
+    # ---- DDP is opt-in via torchrun's env; absent WORLD_SIZE keeps the single-GPU path
+    # bit-identical (run-1 and its crash-resume must not change behaviour). Cross-alloc same-node
+    # specifics (static rendezvous, NCCL_P2P/SHM disable, IB socket) live in the LAUNCHER, not here.
+    ddp = int(os.environ.get("WORLD_SIZE", "1")) > 1
+    # A stray RANK/LOCAL_RANK without WORLD_SIZE must NOT leak into seeding or is_main:
+    # single-GPU behaviour is pinned bit-identical to the pre-DDP trainer.
+    rank = int(os.environ.get("RANK", "0")) if ddp else 0
+    local_rank = int(os.environ.get("LOCAL_RANK", "0")) if ddp else 0
+    if ddp:
+        dist.init_process_group("nccl")
+        torch.cuda.set_device(local_rank)
+    dev = f"cuda:{local_rank}" if ddp else "cuda"
+    is_main = rank == 0
+    torch.manual_seed(a.seed + rank); np.random.seed(a.seed + rank)
+    out = Path(a.out)
+    if is_main:
+        out.mkdir(parents=True, exist_ok=True)
+    if ddp:
+        dist.barrier()
 
     # ---------------- data ----------------
     cond = pickle.load(open(f"{a.data_root}/_cond_normalized_J144.pkl", "rb"))
@@ -128,11 +146,17 @@ def main():
     print(f"[train] {len(ds_tr)} targets / {len(ds_tr.types)} rigs / {ds_tr.pair_count()} pairs "
           f"| bucket-A val {len(ds_va)} targets / {len(ds_va.types)} rigs", flush=True)
 
-    dl_tr = DataLoader(ds_tr, batch_size=a.batch, shuffle=True, num_workers=a.num_workers,
+    # Under DDP a DistributedSampler partitions the INDEX SPACE (734 -> ~183/rank -> 22 steps at
+    # B8, 704 global draws vs 728 single-GPU). Balanced _pick ignores the indices themselves; the
+    # sampler only meters how many batches each rank runs, and set_epoch() is a harmless no-op kept
+    # for convention.
+    tr_sampler = DistributedSampler(ds_tr, shuffle=True, drop_last=True) if ddp else None
+    dl_tr = DataLoader(ds_tr, batch_size=a.batch, shuffle=(tr_sampler is None),
+                       sampler=tr_sampler, num_workers=a.num_workers,
                        collate_fn=collate, pin_memory=True,
-                       # drop_last: an "epoch" is INTENTIONALLY 86 full batches = 688 balanced
-                       # draws, not 694 index visits -- balanced _pick ignores the index, so no
-                       # target is systematically excluded; we trade 6 draws for uniform step size.
+                       # drop_last: an "epoch" is INTENTIONALLY full batches only (734 targets ->
+                       # 91x8 = 728 draws single-GPU; 22x8x4 = 704 under 4-rank DDP). Balanced
+                       # _pick ignores the index, so no target is systematically excluded.
                        drop_last=True,
                        persistent_workers=a.num_workers > 0)
     dl_va = DataLoader(ds_va, batch_size=a.batch, shuffle=False, num_workers=0,
@@ -141,7 +165,10 @@ def main():
     # ---------------- model ----------------
     model = InContextMotionDiT(in_ch=13, dim=a.dim, depth=a.depth, n_heads=a.heads,
                                d_text=4096, d_joint_sem=4096).to(dev)
-    n_par = sum(p.numel() for p in model.parameters())
+    raw_model = model
+    if ddp:
+        model = DDP(model, device_ids=[local_rank])
+    n_par = sum(p.numel() for p in raw_model.parameters())
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=0.0)
     start_ep, best_val = 0, float("inf")
     if a.resume:
@@ -162,23 +189,40 @@ def main():
             raise SystemExit(f"[resume] config mismatch on {bad}: "
                              f"ckpt={[old_args[k] for k in bad]} vs now={[getattr(a, k) for k in bad]}"
                              f" -- refusing silent drift (change the ckpt or the flags)")
-        model.load_state_dict(ck["model"]); opt.load_state_dict(ck["opt"])
+        raw_model.load_state_dict(ck["model"]); opt.load_state_dict(ck["opt"])
         start_ep, best_val = ck["epoch"] + 1, ck.get("best_val", float("inf"))
         rng = ck.get("rng")
-        if rng is not None:
+        # Only rank 0 restores the saved RNG: the ckpt carries ONE stream, and loading it on every
+        # rank would make all ranks draw IDENTICAL noise/t after a DDP resume. Non-main ranks keep
+        # their startup seeding (a.seed + rank) -- deterministic and rank-distinct.
+        if rng is not None and (not ddp or is_main):
             torch.set_rng_state(rng["cpu"]); torch.cuda.set_rng_state_all(rng["cuda"])
             np.random.set_state(rng["np"])
-        print(f"[resume] {a.resume} -> epoch {start_ep}, best_val {best_val:.5f} "
-              f"(rng {'restored' if rng else 'fresh'})", flush=True)
-    (out / "args.json").write_text(json.dumps({**vars(a), "params": n_par,
-                                               "gammas": KIMODO_GAMMAS,
-                                               "demo_frames": DEMO_FRAMES,
-                                               "target_frames": TARGET_FRAMES}, indent=2))
-    print(f"[train] {n_par/1e6:.2f}M params | T={DEMO_FRAMES}+{TARGET_FRAMES} | "
-          f"B{a.batch} lr{a.lr} | {len(dl_tr)} steps/epoch", flush=True)
+        elif ddp and not is_main:
+            rng = None
+        if is_main:
+            print(f"[resume] {a.resume} -> epoch {start_ep}, best_val {best_val:.5f} "
+                  f"(rng {'restored' if rng else 'fresh'})", flush=True)
+    if is_main:
+        (out / "args.json").write_text(json.dumps({**vars(a), "params": n_par,
+                                                   "gammas": KIMODO_GAMMAS,
+                                                   "demo_frames": DEMO_FRAMES,
+                                                   "target_frames": TARGET_FRAMES,
+                                                   **({"world_size": int(os.environ["WORLD_SIZE"])}
+                                                      if ddp else {})},
+                                                  indent=2))
+        if ddp:
+            print(f"[train] {n_par/1e6:.2f}M params | T={DEMO_FRAMES}+{TARGET_FRAMES} | "
+                  f"B{a.batch}x{os.environ['WORLD_SIZE']} lr{a.lr} | "
+                  f"{len(dl_tr)} steps/epoch/rank", flush=True)
+        else:
+            print(f"[train] {n_par/1e6:.2f}M params | T={DEMO_FRAMES}+{TARGET_FRAMES} | "
+                  f"B{a.batch} lr{a.lr} | {len(dl_tr)} steps/epoch", flush=True)
 
     # ---------------- loop ----------------
     for ep in range(start_ep, a.epochs):
+        if tr_sampler is not None:
+            tr_sampler.set_epoch(ep)
         model.train(); t0, tot, n = time.time(), 0.0, 0
         for b in dl_tr:
             b = to_dev(b, dev)
@@ -187,10 +231,24 @@ def main():
             opt.zero_grad(set_to_none=True); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); opt.step()
             tot += float(loss.detach()); n += 1
-        print(f"=== epoch {ep} done in {time.time()-t0:.1f}s | train_flow={tot/max(n,1):.5f} ===",
-              flush=True)
+        if ddp:
+            agg = torch.tensor([tot, float(n)], device=dev)
+            dist.all_reduce(agg)
+            tot, n = float(agg[0]), int(agg[1])
+        if is_main:
+            print(f"=== epoch {ep} done in {time.time()-t0:.1f}s | train_flow={tot/max(n,1):.5f} ===",
+                  flush=True)
 
         if (ep + 1) % a.val_every == 0 or ep == a.epochs - 1:
+            # Validation, probe, and every checkpoint write are RANK-0 ONLY (cross-alloc rule 5:
+            # concurrent writers on the shared fs race). Other ranks hold at the barrier -- val is
+            # ~10 s, far inside the NCCL default timeout.
+            if ddp:
+                dist.barrier()
+            if not is_main:
+                if ddp:
+                    dist.barrier()
+                continue
             model.eval(); reset_val_stream(ds_va)
             vtot, vn = 0.0, 0
             with fixed_torch_rng(10_000 + a.seed):
@@ -203,13 +261,13 @@ def main():
                 v = vtot / max(vn, 1)
                 reset_val_stream(ds_va)
                 probe_b = to_dev(next(iter(dl_va)), dev)
-                p5 = connectivity_probe(model, probe_b)
+                p5 = connectivity_probe(raw_model, probe_b)
             print(f"  [val] flow_loss={v:.5f} | P5 demo={p5['demo']:.2e} "
                   f"text={p5['text']:.2e} sem={p5['joint_sem']:.2e}", flush=True)
             rng_state = {"cpu": torch.get_rng_state(),
                          "cuda": torch.cuda.get_rng_state_all(),
                          "np": np.random.get_state()}
-            state = {"model": model.state_dict(), "opt": opt.state_dict(),
+            state = {"model": raw_model.state_dict(), "opt": opt.state_dict(),
                      "epoch": ep, "val": v, "best_val": min(best_val, v), "args": vars(a),
                      "rng": rng_state}
             atomic_save(state, out / "last_model.pt")
@@ -217,14 +275,19 @@ def main():
                 best_val = v
                 atomic_save(state, out / "best_model.pt")
                 print(f"  [ckpt] new best val_flow={v:.5f}", flush=True)
-        if (ep + 1) % a.ckpt_every == 0:
-            atomic_save({"model": model.state_dict(), "opt": opt.state_dict(),
+            if ddp:
+                dist.barrier()
+        if (ep + 1) % a.ckpt_every == 0 and is_main:
+            atomic_save({"model": raw_model.state_dict(), "opt": opt.state_dict(),
                          "epoch": ep, "best_val": best_val, "args": vars(a),
                          "rng": {"cpu": torch.get_rng_state(),
                                  "cuda": torch.cuda.get_rng_state_all(),
                                  "np": np.random.get_state()}},
                         out / f"ep{ep+1:04d}_model.pt")
-    print("=== training loop complete ===", flush=True)
+    if is_main:
+        print("=== training loop complete ===", flush=True)
+    if ddp:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

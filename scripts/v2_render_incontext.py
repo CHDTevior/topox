@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Render [demo | generated | GT] skeleton GIFs from an in-context DiT checkpoint.
+"""Render 4-panel skeleton GIFs from an in-context DiT checkpoint.
 
-Layout per clip (user's established convention: GT is the RED rightmost panel):
-    DEMO (GT, teal)  |  GENERATED (orange)  |  TARGET GT (red)
-True-speed playback: every real frame at 20 fps, no subsampling (a 135-frame target plays 6.75 s).
-Positions come from the OFFICIAL RIC recovery (_recover_world_positions) on de-normalised 13ch --
-the preflight checks it against rot6d-FK for internal consistency (rel mean err < 0.5%). One shared scale across the
-three panels so sizes are comparable.
+Layout per clip (GT stays the RED rightmost panel, per the established convention):
+    DEMO (teal, ric) | GEN pos (orange, ric) | GEN fk (purple, rot6d-FK) | TARGET GT (red, ric)
+The GENERATED motion is drawn under BOTH recoveries on purpose: H4 measured 4-19% disagreement
+between the position family and the rotation family on generated output, and two panels make that
+disagreement visible instead of hiding it behind whichever family we pick. GT needs one panel only
+(the families agree to 0.000% on real data). One shared scale across all four panels.
+True-speed playback: every real frame at 20 fps, no subsampling.
 
-Read-only w.r.t. training state; writes GIFs + summary.txt under --out.
+Read-only w.r.t. training state; writes GIFs + summary.txt (jitter for both recoveries).
 """
 import argparse, json, pickle, sys
 from pathlib import Path
@@ -20,17 +21,49 @@ from PIL import Image, ImageDraw
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.data.anytop_dataset import (AnyTopDataset, _STD_FLOOR,                 # noqa: E402
                                      _recover_world_positions)
+from src.data.anytop_rot6d_fk import recover_from_bvh_rot_np                     # noqa: E402
 from src.data.incontext_pairs import (InContextPairs, collate, read_split,      # noqa: E402
                                       truebones_types, DEMO_FRAMES)
 from src.models.v2.dit_motion import InContextMotionDiT, sample                  # noqa: E402
 
-PANEL_W, PANEL_H, GAP, FOOT = 340, 380, 14, 66
-COLS = {"demo": (13, 110, 100), "gen": (176, 61, 8), "gt": (185, 28, 28)}
+PANEL_W, PANEL_H, GAP, FOOT = 300, 360, 12, 66
+# The GENERATED motion is drawn under BOTH recoveries: H4 measured a 4-19% disagreement between
+# the position family (RIC) and the rotation family (FK) on generated output -- two panels make
+# that disagreement visible to the eye instead of hiding it behind whichever family we pick.
+# GT needs one panel only (the two families agree to 0.000% on real data).
+COLS = {"demo": (13, 110, 100), "gen_ric": (176, 61, 8),
+        "gen_fk": (91, 44, 184), "gt": (185, 28, 28)}
 
 
-def world_of(norm_txjc, mean, std):
-    raw = norm_txjc * (std[None] + _STD_FLOOR) + mean[None]
-    return _recover_world_positions(raw.astype(np.float64))          # [T,J,3]
+def world_of(norm_txjc, mean, std, recover="ric", parents=None, offsets=None):
+    """World positions via either channel family. The two disagree exactly where the model is
+    inconsistent, so rendering BOTH localises noise: ric reads per-frame positions (ch0:3),
+    fk rebuilds them from rotations (ch3:9) over the bone chain.
+    """
+    raw = (norm_txjc * (std[None] + _STD_FLOOR) + mean[None]).astype(np.float64)
+    if recover == "fk":
+        return recover_from_bvh_rot_np(raw, parents, offsets)        # [T,J,3]
+    return _recover_world_positions(raw)                             # [T,J,3]
+
+
+def jitter_ratio(gen_w, gt_w):
+    """Second-difference acceleration ratio gen/GT -- the milestone-comparable jitter number.
+    Reported for all joints and for the root row separately (root mixes in velocity-integration
+    noise). GT is the natural denominator: ~1.0 means as smooth as real motion."""
+    def acc(w):
+        if w.shape[0] < 3:
+            return None
+        a = w[2:] - 2 * w[1:-1] + w[:-2]
+        return np.linalg.norm(a, axis=-1)
+    ga, ta = acc(gen_w), acc(gt_w)
+    if ga is None or ta is None:
+        return float("nan"), float("nan"), float("nan"), float("nan")
+    # the raw GT denominators ride along: a near-static GT makes the ratio arbitrarily large,
+    # so the ratio is only interpretable next to its denominator.
+    gt_all, gt_root = float(ta.mean()), float(ta[:, 0].mean())
+    allr = float(ga.mean() / max(gt_all, 1e-9))
+    rootr = float(ga[:, 0].mean() / max(gt_root, 1e-9))
+    return allr, rootr, gt_all, gt_root
 
 
 def draw_panel(img, xy, parents, col, x0):
@@ -62,15 +95,18 @@ def project(seqs, yaw_deg=28.0):
     return out
 
 
-def render_gif(out_path, demo_w, gen_w, gt_w, parents, caption, rig, tags):
-    seqs = project([demo_w, gen_w, gt_w])
+def render_gif(out_path, panels, parents, caption, rig):
+    """panels: list of (color_key, tag, seq [T,J,3]); shared scale across all of them."""
+    names = [c for c, _, _ in panels]
+    tags = [t for _, t, _ in panels]
+    seqs = project([w for _, _, w in panels])
     T = max(s.shape[0] for s in seqs)
-    W = PANEL_W * 3 + GAP * 2
+    W = PANEL_W * len(panels) + GAP * (len(panels) - 1)
     frames = []
     for t in range(T):
         img = Image.new("RGB", (W, PANEL_H + FOOT), (246, 248, 247))
         d = ImageDraw.Draw(img)
-        for k, (name, seq) in enumerate(zip(("demo", "gen", "gt"), seqs)):
+        for k, (name, seq) in enumerate(zip(names, seqs)):
             x0 = k * (PANEL_W + GAP)
             d.rectangle([x0, 0, x0 + PANEL_W - 1, PANEL_H - 1], outline=(216, 223, 225))
             tt = min(t, seq.shape[0] - 1)                    # shorter panels freeze on last frame
@@ -150,18 +186,32 @@ def main():
         t_item = base[ds.index[pos][1]]
         mean = np.asarray(t_item["anytop_mean"])[:J]; std = np.asarray(t_item["anytop_std"])[:J]
         parents = [int(p) for p in t_item["parent_indices"][:J]]
+        offsets = np.asarray(t_item["rest_offsets"])[:J]
+        gseg = gen[DEMO_FRAMES:DEMO_FRAMES + t_real, :J]
         demo_w = world_of(gt[:d_real, :J], mean, std)
-        gen_w = world_of(gen[DEMO_FRAMES:DEMO_FRAMES + t_real, :J], mean, std)
+        gen_ric = world_of(gseg, mean, std)
+        gen_fk = world_of(gseg, mean, std, recover="fk", parents=parents, offsets=offsets)
         gt_w = world_of(gt[DEMO_FRAMES:DEMO_FRAMES + t_real, :J], mean, std)
+        jit_all, jit_root, gt_all, gt_root = jitter_ratio(gen_ric, gt_w)
+        jfk_all, jfk_root, _, _ = jitter_ratio(gen_fk, gt_w)
+        static_warn = "  [near-static GT, ratio inflated]" if gt_all < 1e-3 else ""
 
         cap = str(t_item.get("caption", ""))
         name = f"{bucket}_{rig}__{item['motion_id'][:48]}"
-        render_gif(out / f"{name}.gif", demo_w, gen_w, gt_w, parents, cap, f"[{bucket}] {rig}",
-                   (f"DEMO {item['demo_id']}", f"GEN ep{ep} s{a.steps}", "TARGET GT"))
-        print(f"[render] {name}.gif  (demo {d_real}f | target {t_real}f, J={J})", flush=True)
-        lines.append(f"{name}\tcaption: {cap}\tdemo={item['demo_id']} target={item['motion_id']}")
+        render_gif(out / f"{name}.gif",
+                   [("demo", f"DEMO {item['demo_id']}", demo_w),
+                    ("gen_ric", f"GEN pos ep{ep} s{a.steps}", gen_ric),
+                    ("gen_fk", f"GEN fk ep{ep} s{a.steps}", gen_fk),
+                    ("gt", "TARGET GT", gt_w)],
+                   parents, cap, f"[{bucket}] {rig}")
+        print(f"[render] {name}.gif  (demo {d_real}f | target {t_real}f, J={J})  "
+              f"jitter ric {jit_all:.2f}x fk {jfk_all:.2f}x (GT {gt_all:.4f}) "
+              f"root ric {jit_root:.2f}x fk {jfk_root:.2f}x{static_warn}", flush=True)
+        lines.append(f"{name}\tjitter_ric={jit_all:.3f}x jitter_fk={jfk_all:.3f}x(gt={gt_all:.5f}) "
+                     f"root_ric={jit_root:.3f}x root_fk={jfk_root:.3f}x{static_warn}"
+                     f"\tcaption: {cap}\tdemo={item['demo_id']} target={item['motion_id']}")
     (out / "summary.txt").write_text(
-        f"ckpt={a.ckpt} epoch={ep} steps={a.steps} seed={a.seed}\n" + "\n".join(lines) + "\n")
+        f"ckpt={a.ckpt} epoch={ep} steps={a.steps} seed={a.seed} panels=demo|gen_ric|gen_fk|gt\n" + "\n".join(lines) + "\n")
     print(f"[render] DONE -> {out}", flush=True)
 
 
