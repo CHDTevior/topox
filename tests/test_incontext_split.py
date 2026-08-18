@@ -49,6 +49,45 @@ print("[3] source no longer re-derives its own split")
 check("no home-grown skeleton split remains", "def split_skeletons" not in src,
       "a split by object_type leaks: distinct object types can share one canonical topology")
 
+print("[4] pair-construction invariants (stub base, no data loading)")
+from src.data.incontext_pairs import InContextPairs
+
+class _StubBase:
+    """Only what InContextPairs.__init__ touches: .samples with object_type + path."""
+    def __init__(self, names_by_rig):
+        self.samples = [{"object_type": ot, "path": f"/x/{n}.npy"}
+                        for ot, ns in names_by_rig.items() for n in ns]
+
+rig4 = {"RigA": [f"RigA___w_{i}" for i in range(4)]}
+names4 = {f"RigA___w_{i}" for i in range(4)}
+base = _StubBase(rig4)
+
+same = InContextPairs(base, names4, names4)          # bucket-B style: same object on both sides
+check("same-object (self-demo bucket) constructs", len(same) == 4,
+      "bucket B legitimately uses one list for targets and demos; the overlap guard must not fire")
+check("every target keeps a distinct demo",
+      all(any(d != t for d in v["demos"]) for v in same.by_type.values() for t in v["targets"]),
+      "a target whose only demo is itself becomes its own clean demonstration -- identity copy")
+
+tr3 = {f"RigA___w_{i}" for i in range(3)}; va1 = {"RigA___w_3"}
+ok_ab = InContextPairs(base, va1, tr3)               # bucket-A style: disjoint lists
+check("disjoint target/demo lists construct", len(ok_ab) == 1, "bucket A must build")
+
+try:
+    InContextPairs(base, {"RigA___w_0", "RigA___w_3"}, tr3)   # 50% overlap, different objects
+    raised = False
+except ValueError:
+    raised = True
+check("PARTIAL overlap between different lists raises", raised,
+      "a 30% leaked bucket scores the model on clips its demo pool trained on -- silently")
+
+two = {"RigB": ["RigB___a_0", "RigB___b_1"]}
+names2 = {"RigB___a_0", "RigB___b_1"}
+ds2 = InContextPairs(_StubBase(two), names2, names2)
+check("2-clip rig: both targets legal, each demos the other",
+      sorted(ds2.by_type["RigB"]["targets"]) == sorted(ds2.by_type["RigB"]["demos"]) and len(ds2) == 2,
+      "the smallest rigs (Chicken: 2 clips) must remain usable under K=1")
+
 print()
 if FAILS:
     print("FAILED:"); [print("  -", f) for f in FAILS]; sys.exit(1)

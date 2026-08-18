@@ -318,9 +318,12 @@ def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=Fals
     xt = (1 - tt) * x0 + tt * x1
     xt = torch.where((~is_target)[..., None, None], x1, xt)   # demo frames stay clean
     x1_pred = model(xt, t, is_target=is_target, **cond)
-    m = is_target[..., None, None].to(x1.dtype)
-    if valid is not None:
-        m = m * valid[..., None].to(x1.dtype)
+    # `valid` is REQUIRED, not optional. Without it, padded joints (a J=9 rig in a batch whose max
+    # is 142 is 94% padding) count as legitimate zero targets and dominate every group denominator.
+    if valid is None:
+        raise ValueError("cfm_loss requires `valid` [B,T,J] = frame_valid & joint_valid; passing "
+                         "None silently trains on padding as valid zeros")
+    m = (is_target[..., None] & valid).to(x1.dtype)[..., None]
     m = m.expand_as(x1)
     err2 = (x1_pred - x1) ** 2
     if gammas is None:

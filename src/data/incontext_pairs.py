@@ -2,17 +2,23 @@
 
 WHAT ONE ITEM IS
     Two DIFFERENT clips of the SAME skeleton, concatenated along time:
-        x         = [ demo slot 64 | target slot 96 ]        T = 160
+        x         = [ demo slot 64 | target slot 240 ]       T = 304
         is_target = [ False        | True on REAL target frames only ]
     The demo supplies "how THIS rig moves"; the text supplies "which action". Because demo and
     target are the same rig, the joint axis is aligned within an item for free -- no cross-skeleton
     joint correspondence is needed anywhere. That is why an unseen rig costs nothing structurally
     at inference: it walks the identical forward pass.
 
-SLOT SIZES come from the measured length distribution of the TrueBones training pool (n=694):
-    median 90 frames, p90 199, >=64 in 70.3% of clips, >=96 in 45.0%.
-    target slot 96 -> the median clip fits whole;  demo slot 64 -> 70% of clips fill it.
-    At 20 fps that is 3.2 s of demo and 4.8 s of target.
+SLOT SIZES.
+    target 240: covers the LONGEST TrueBones clip (measured max 237, Alligator___DIe_16), so no
+    clip is ever truncated and the caption always describes exactly the frames being trained on --
+    this deletes the prefix-generation caveat outright (previously 45% of clips >=96 lost their
+    tail). The price is compute, not correctness: the median clip is 90 frames, so on average ~62%
+    of the target slot is masked padding (frame_valid False -> excluded from attention keys and
+    from every loss denominator). Length-bucketed batching can claw that back later if needed.
+    demo 64: 3.2 s of context at 20 fps, a few gait cycles; 70.3% of clips fill it fully. The demo
+    is context, not a target -- longer demos cost quadratic temporal attention for diminishing
+    information (F5-TTS clones a voice from seconds of reference for the same reason).
 
 K = 1 DEMO, and that is a data constraint, not a preference: the smallest rigs have only 2 clips
     (Chicken 2, Flamingo 3, Parrot2 3), so K=2 would drop rigs entirely. At inference the user may
@@ -36,6 +42,7 @@ canonical topology.
 """
 from __future__ import annotations
 
+import os
 import zlib
 from collections import defaultdict
 from pathlib import Path
@@ -47,7 +54,7 @@ from torch.utils.data import Dataset
 from src.data.anytop_dataset import AnyTopDataset
 
 DEMO_FRAMES = 64
-TARGET_FRAMES = 96
+TARGET_FRAMES = 240   # >= TrueBones max clip length 237: nothing truncated, caption always matches
 GEODESIC_CLIP = 8.0      # hop distances reach ~20; an unclipped bias swamps the attention logits
 PAD_BIAS = -1e4
 
@@ -85,7 +92,6 @@ class InContextPairs(Dataset):
         self.Td, self.Tt = int(demo_frames), int(target_frames)
         self.balance = bool(balance_skeletons)
         self.seed = int(seed)
-        self.rng = np.random.default_rng(seed)
         keep = set(object_types) if object_types is not None else None
 
         tgt_pool, demo_pool = defaultdict(list), defaultdict(list)
@@ -99,18 +105,37 @@ class InContextPairs(Dataset):
             if nm in demo_names:
                 demo_pool[ot].append(i)
 
-        # A rig is usable only if it can supply a demo distinct from the target.
+        # A target is usable only if SOME demo differs from it. Keeping a target whose only demo is
+        # itself would let __getitem__ fall back to demo == target: the clip becomes its own clean
+        # demonstration, an identity-copy shortcut that would also make a demo-effect gate PASS for
+        # the wrong reason. Filter per TARGET, not per rig.
         self.by_type = {}
+        self.n_dropped_self_only = 0
         for ot, tg in tgt_pool.items():
-            dm = demo_pool.get(ot, [])
+            dm = sorted(demo_pool.get(ot, []))
             if not dm:
                 continue
-            if len(dm) == 1 and len(tg) == 1 and dm[0] == tg[0]:
-                continue                      # single clip that is both -> no legal pair
-            self.by_type[ot] = {"targets": sorted(tg), "demos": sorted(dm)}
+            legal = [t for t in sorted(tg) if any(d != t for d in dm)]
+            self.n_dropped_self_only += len(tg) - len(legal)
+            if legal:
+                self.by_type[ot] = {"targets": legal, "demos": dm}
 
         self.types = sorted(self.by_type)
         self.index = [(ot, i) for ot in self.types for i in self.by_type[ot]["targets"]]
+        # base is built with split="all", which SKIPS AnyTopDataset's own train/val/held
+        # disjointness guards (anytop_dataset.py:661 takes the non-file branch). Re-assert here so a
+        # mis-specified pair of name lists cannot silently score a model on clips it trained on.
+        # ANY overlap is rejected -- a 30% leak disqualifies a bucket as surely as a 100% one. The
+        # single legal exception is passing the SAME set object for both sides (bucket B: an unseen
+        # rig's demos come from itself; that is the premise, not a leak).
+        if target_names is not demo_names:
+            overlap = set(target_names) & set(demo_names)
+            if overlap:
+                raise ValueError(
+                    f"target/demo name lists overlap on {len(overlap)} clips "
+                    f"(e.g. {sorted(overlap)[:3]}); a partially leaked bucket scores the model on "
+                    f"clips its demo pool trained on. Pass the identical set object only for "
+                    f"self-demo buckets.")
 
     # ---- introspection used by the smoke and by reports ----
     def pair_count(self):
@@ -124,14 +149,27 @@ class InContextPairs(Dataset):
         return len(self.index)
 
     def _worker_rng(self):
-        """DataLoader workers fork the object, so a shared self.rng makes every worker emit the
-        SAME demo/crop choices. Derive per-worker, per-call streams instead."""
+        """Per-(rank, worker) RNG streams, full-width.
+
+        Failure modes this replaces, in the order reviews forced them out:
+          - one shared self.rng: every forked DataLoader worker replays the SAME stream;
+          - self.seed + worker_id: repeats across DDP ranks and across restarts;
+          - xor-then-&0xFFFFFFFF: truncates to 32 bits, so distinct (seed, rank) pairs can collide.
+        np.random.default_rng accepts a SEQUENCE of ints as entropy and hashes it at full width, so
+        seed with [info.seed, rank, self.seed]: info.seed is PyTorch's base_seed + worker_id (fresh
+        per epoch for non-persistent workers), rank comes from the environment, nothing truncated.
+        With persistent_workers=True the stream simply CONTINUES across epochs -- no reset, hence no
+        repetition -- which is acceptable; pass an explicit epoch only if bit-reproducible per-epoch
+        streams are ever needed. The no-worker path folds rank too, so single-process DDP ranks
+        still differ.
+        """
+        rank = int(os.environ.get("RANK", "0"))
         info = torch.utils.data.get_worker_info()
-        if info is None:
-            return self.rng
-        if getattr(self, "_wrng_id", None) != info.id:
-            self._wrng_id = info.id
-            self._wrng = np.random.default_rng(self.seed * 1000003 + info.id)
+        key = ("main", rank) if info is None else (info.id, int(info.seed), rank)
+        if getattr(self, "_wrng_key", None) != key:
+            self._wrng_key = key
+            ent = [self.seed, rank] if info is None else [int(info.seed), rank, self.seed]
+            self._wrng = np.random.default_rng(ent)
         return self._wrng
 
     def _pick(self, i, rng):
@@ -144,16 +182,25 @@ class InContextPairs(Dataset):
         tg = self.by_type[ot]["targets"]
         return ot, int(tg[int(rng.integers(len(tg)))])
 
-    def _crop(self, x, n_valid, want, rng):
-        """Random `want`-frame window from the clip's valid region; pad at the end if shorter.
-        Random rather than always-from-zero because 12% of training clips exceed 192 frames and
-        their tails would otherwise never be seen. Returns (cropped [want,J,C], valid [want])."""
+    def _crop(self, x, n_valid, want, rng, random_window):
+        """Take `want` frames; pad at the end if the clip is shorter.
+
+        DEMO uses a random window: it only has to show how the rig moves, and 12% of training clips
+        exceed 192 frames whose tails would otherwise never be seen.
+
+        TARGET uses the HEAD (random_window=False). With the slot at 240 >= the TrueBones max
+        (237) no clip is truncated, so head-vs-random is currently moot -- the head rule is kept as
+        the fail-safe for any longer future data, because the caption describes the whole clip and
+        the head is the one window guaranteed to start where the described action starts. Temporal
+        resampling is deliberately NOT used as an alternative: ch9:12 are per-frame velocities and
+        ch12 is a binary contact flag, both corrupted by a naive resample.
+        """
         J, C = x.shape[1], x.shape[2]
         n = int(min(n_valid, x.shape[0]))
         out = np.zeros((want, J, C), dtype=np.float32)
         vm = np.zeros((want,), dtype=bool)
         if n >= want:
-            s = int(rng.integers(0, n - want + 1))
+            s = int(rng.integers(0, n - want + 1)) if random_window else 0
             out[:] = x[s:s + want]; vm[:] = True
         else:
             out[:n] = x[:n]; vm[:n] = True
@@ -169,7 +216,9 @@ class InContextPairs(Dataset):
         rng = self._worker_rng()
         ot, tgt_idx = self._pick(i, rng)
         demos = [d for d in self.by_type[ot]["demos"] if d != tgt_idx]
-        demo_idx = int(demos[int(rng.integers(len(demos)))]) if demos else tgt_idx
+        if not demos:      # cannot happen: targets without a distinct demo are dropped at build
+            raise AssertionError(f"{ot}: target {tgt_idx} has no distinct demo")
+        demo_idx = int(demos[int(rng.integers(len(demos)))])
 
         t_item, t_x, J, t_T = self._raw(tgt_idx)
         _, d_x, dJ, d_T = self._raw(demo_idx)
@@ -177,8 +226,8 @@ class InContextPairs(Dataset):
             raise ValueError(f"{ot}: demo has {dJ} joints, target {J} -- joint-count augmentation "
                              f"must be off for in-context pairs")
 
-        d_crop, d_valid = self._crop(d_x, d_T, self.Td, rng)
-        t_crop, t_valid = self._crop(t_x, t_T, self.Tt, rng)
+        d_crop, d_valid = self._crop(d_x, d_T, self.Td, rng, random_window=True)
+        t_crop, t_valid = self._crop(t_x, t_T, self.Tt, rng, random_window=False)
 
         x = np.concatenate([d_crop, t_crop], axis=0)
         # is_target marks REAL target frames only: padding must not receive the mask token, and

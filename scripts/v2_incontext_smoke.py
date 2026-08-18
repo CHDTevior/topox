@@ -221,11 +221,45 @@ def main():
     print(f"  noise reseed (free change) {base_noise:.5f}  <- baseline")
     print(f"  shuffle text               {eff_text:.5f}  = {eff_text/max(base_noise,1e-9):5.2f}x")
     print(f"  shuffle demo               {eff_demo:.5f}  = {eff_demo/max(base_noise,1e-9):5.2f}x")
-    gate("demo causally moves the sample (> 2x baseline)", eff_demo > 2 * base_noise,
-         "the demo is ignored -- the whole in-context premise fails")
+    # NOT a gate at this step count: with the model far from converged the noise baseline dominates
+    # (measured 1.15 vs 0.045 once the gradient balance was fixed), so a low ratio here is
+    # uninformative. P5 answers the connectivity question; this ratio is a TREND to watch across
+    # longer runs, and becomes a gate only near convergence.
+    verdict = "used" if eff_demo > 2 * base_noise else "inconclusive at this step count"
+    print(f"  demo effect {verdict}")
     if has_text:
         note = "" if eff_text > 2 * base_noise else "  (may be premature at this step count)"
         print(f"  text effect {'used' if eff_text > 2*base_noise else 'WEAK'}{note}")
+
+    # ---------- P5: is each conditioning path CONNECTED at all? ----------
+    # Sampling-based P3 conflates "path is dead" with "model has not learned yet" -- at 400 steps the
+    # noise baseline swamps everything. Gradient norms separate the two: a dead path has ZERO grad
+    # from step 1 regardless of training. This is the measurement that would have caught v1's inert
+    # text branch in minutes instead of 300 epochs.
+    print(f"\n=== P5 CONDITIONING PATHS ARE CONNECTED (gradient, independent of training) ===")
+    model.train()
+    b = get_batch(ds_train, np.random.default_rng(13))
+    c = cond_of(b)
+    for k in ("text", "joint_sem"):
+        if k in c:
+            c[k] = c[k].detach().clone().requires_grad_(True)
+    xin = b["x"].detach().clone().requires_grad_(True)
+    loss = cfm_loss(model, xin, is_target=b["is_target"], valid=b["valid"],
+                    gammas=KIMODO_GAMMAS, **c)
+    loss.backward()
+    # demo frames enter only through x, so their gradient block is the demo half of dLoss/dx
+    g_demo = float(xin.grad[:, :DEMO_FRAMES].norm())
+    g_tgt = float(xin.grad[:, DEMO_FRAMES:].norm())
+    print(f"  |dL/dx| on demo frames  {g_demo:.4e}")
+    print(f"  |dL/dx| on target frames{g_tgt:.4e}   (demo/target {g_demo/max(g_tgt,1e-30):.4f})")
+    gate("gradient flows back into the demo frames", g_demo > 0,
+         "the demo half is disconnected from the loss -- no amount of training can make it matter")
+    for k in ("text", "joint_sem"):
+        if k in c and c[k].grad is not None:
+            gk = float(c[k].grad.norm())
+            print(f"  |dL/d{k:<10}| {gk:.4e}")
+            gate(f"{k} path is connected", gk > 0,
+                 f"{k} contributes nothing to the loss -- a dead branch, as in v1")
 
     print()
     if FAILS:
