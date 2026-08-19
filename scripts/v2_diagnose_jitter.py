@@ -57,7 +57,9 @@ def main():
     ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)
     ca = ck["args"]
     model = InContextMotionDiT(in_ch=13, dim=ca["dim"], depth=ca["depth"], n_heads=ca["heads"],
-                               d_text=4096, d_joint_sem=4096).to(dev)
+                               d_text=4096, d_joint_sem=4096,
+                               use_struct_feats=bool(ca.get("struct_feats", False)),
+                               use_dir_bias=bool(ca.get("dir_bias", False))).to(dev)
     model.load_state_dict(ck["model"]); model.eval()
     ep = ck.get("epoch", -1)
     print(f"[diag] ckpt {a.ckpt} (epoch {ep})", flush=True)
@@ -74,12 +76,13 @@ def main():
                          random_caption=False, augment=False, joint_semantics=a.joint_sem,
                          species_whitelist=tb, splits_dir=a.splits_dir,
                          texts_json_name=a.texts_json)
+    g2 = bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False))
     dsA = InContextPairs(base, names["val"], names["train"], object_types=tb,
                          balance_skeletons=False, seed=a.seed, demo_frames=DF,
-                         target_frames=TF)
+                         target_frames=TF, emit_graph_v2=g2)
     dsB = InContextPairs(base, names["held_representative"], names["held_representative"],
                          object_types=tb, balance_skeletons=False, seed=a.seed,
-                         demo_frames=DF, target_frames=TF)
+                         demo_frames=DF, target_frames=TF, emit_graph_v2=g2)
 
     steps_sweep = [int(x) for x in a.steps_sweep.split(",")]
     onestep_ts = [float(x) for x in a.onestep_ts.split(",")]
@@ -105,6 +108,9 @@ def main():
         gt_w = world_of(gt_seg, mean, std)
         ckw = dict(joint_bias=b["joint_bias"], frame_valid=b["frame_valid"],
                    joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"])
+        for k in ("struct_feats", "updown"):        # graph-v2 ckpts only
+            if k in b:
+                ckw[k] = b[k]
         row = {"bucket": bucket, "rig": rig, "motion": str(item["motion_id"]), "J": J}
 
         # ---- H1: jitter vs ODE steps ----

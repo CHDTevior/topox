@@ -145,7 +145,9 @@ def main():
     ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)  # our own ckpt; contains numpy RNG state, rejected by 2.6's weights_only default
     ca = ck["args"]
     model = InContextMotionDiT(in_ch=13, dim=ca["dim"], depth=ca["depth"], n_heads=ca["heads"],
-                               d_text=4096, d_joint_sem=4096).to(dev)
+                               d_text=4096, d_joint_sem=4096,
+                               use_struct_feats=bool(ca.get("struct_feats", False)),
+                               use_dir_bias=bool(ca.get("dir_bias", False))).to(dev)
     model.load_state_dict(ck["model"]); model.eval()
     ep = ck.get("epoch", -1)
     print(f"[render] ckpt {a.ckpt} (epoch {ep}) on {dev}", flush=True)
@@ -158,7 +160,8 @@ def main():
                          random_caption=False, augment=False, joint_semantics=a.joint_sem,
                          species_whitelist=tb, splits_dir=a.splits_dir,
                          texts_json_name=a.texts_json)
-    PK = dict(demo_frames=a.demo_frames, target_frames=a.target_frames)
+    PK = dict(demo_frames=a.demo_frames, target_frames=a.target_frames,
+              emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)))
     dsA = InContextPairs(base, names["val"], names["train"], object_types=tb,
                          balance_skeletons=False, seed=a.seed, **PK)
     dsB = InContextPairs(base, names["held_representative"], names["held_representative"],
@@ -190,9 +193,11 @@ def main():
 
         torch.manual_seed(a.seed)
         with torch.no_grad():
+            g2kw = {k: b[k] for k in ("struct_feats", "updown") if k in b}
             gen = sample(model, b["x"], b["is_target"], a.steps,
                          joint_bias=b["joint_bias"], frame_valid=b["frame_valid"],
-                         joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"])
+                         joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"],
+                         **g2kw)
         gen = gen[0].float().cpu().numpy()
         gt = b["x"][0].float().cpu().numpy()
 

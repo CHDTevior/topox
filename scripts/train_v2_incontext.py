@@ -38,8 +38,12 @@ def to_dev(b, dev):
 
 
 def cond_of(b):
-    return dict(joint_bias=b["joint_bias"], frame_valid=b["frame_valid"],
-                joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"])
+    d = dict(joint_bias=b["joint_bias"], frame_valid=b["frame_valid"],
+             joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"])
+    for k in ("struct_feats", "updown"):     # graph-v2, present only when the dataset emits them
+        if k in b:
+            d[k] = b[k]
+    return d
 
 
 def fk_pack_of(b):
@@ -151,6 +155,12 @@ def main():
     ap.add_argument("--fk_warmup_steps", type=int, default=5000,
                     help="linear ramp of gamma_fk over the first N global steps (hy273 recipe); "
                          "only read when gamma_fk > 0")
+    ap.add_argument("--struct_feats", action="store_true",
+                    help="graph-v2 knife 1: structural joint features (rest offset/bone/depth/"
+                         "children/leaf) added to joint tokens")
+    ap.add_argument("--dir_bias", action="store_true",
+                    help="graph-v2 knife 2: learnable per-head directional (up/down LCA hop) "
+                         "attention bias added to the fixed -geodesic scalar")
     a = ap.parse_args()
     assert torch.cuda.is_available(), "run-1 is a GPU run; refusing to silently train on CPU"
     # ---- DDP is opt-in via torchrun's env; absent WORLD_SIZE keeps the single-GPU path
@@ -185,11 +195,13 @@ def main():
     ds_tr = InContextPairs(base, names["train"], names["train"], object_types=types,
                            demo_frames=a.demo_frames, target_frames=a.target_frames,
                            balance_skeletons=(a.balance == "rig"), seed=a.seed,
-                           emit_fk_fields=(a.gamma_fk > 0))
+                           emit_fk_fields=(a.gamma_fk > 0),
+                           emit_graph_v2=(a.struct_feats or a.dir_bias))
     ds_va = InContextPairs(base, names["val"], names["train"], object_types=types,
                            demo_frames=a.demo_frames, target_frames=a.target_frames,
                            balance_skeletons=False, seed=a.seed + 1,
-                           emit_fk_fields=(a.gamma_fk > 0))
+                           emit_fk_fields=(a.gamma_fk > 0),
+                           emit_graph_v2=(a.struct_feats or a.dir_bias))
     print(f"[train] {len(ds_tr)} targets / {len(ds_tr.types)} rigs / {ds_tr.pair_count()} pairs "
           f"| bucket-A val {len(ds_va)} targets / {len(ds_va.types)} rigs", flush=True)
 
@@ -198,20 +210,34 @@ def main():
     # sampler only meters how many batches each rank runs, and set_epoch() is a harmless no-op kept
     # for convention.
     tr_sampler = DistributedSampler(ds_tr, shuffle=True, drop_last=True) if ddp else None
+    # EXPLICIT loader generator (codex 01a01b1a round-2): without one, DataLoader draws its
+    # per-epoch base seed from the GLOBAL torch RNG, whose state at first iteration depends on
+    # how many parameters the model construction consumed -- so runs differing only in optional
+    # modules (gamma_fk/struct_feats/dir_bias arms) silently train on DIFFERENT shuffle and
+    # worker streams. An own generator keyed to a.seed makes the data stream arm-independent.
+    dl_gen = torch.Generator()
+    dl_gen.manual_seed(a.seed + 7777)
+    # Single-GPU path: dl_gen is RESEEDED to a.seed+7777+ep at every epoch top and workers are
+    # NON-persistent, so the loader stream is a pure function of (seed, absolute epoch) -- a
+    # resume at ANY restart boundary replays the exact uninterrupted stream (codex 01a01b1a
+    # round-3: with persistent workers + a run-scoped generator, a restarted arm replayed the
+    # epoch-0 stream and factorial arms stopped being data-paired). DDP keeps persistent workers:
+    # its shuffle already comes from DistributedSampler.set_epoch(ep).
     dl_tr = DataLoader(ds_tr, batch_size=a.batch, shuffle=(tr_sampler is None),
                        sampler=tr_sampler, num_workers=a.num_workers,
-                       collate_fn=collate, pin_memory=True,
+                       collate_fn=collate, pin_memory=True, generator=dl_gen,
                        # drop_last: an "epoch" is INTENTIONALLY full batches only (734 targets ->
                        # 91x8 = 728 draws single-GPU; 22x8x4 = 704 under 4-rank DDP). Balanced
                        # _pick ignores the index, so no target is systematically excluded.
                        drop_last=True,
-                       persistent_workers=a.num_workers > 0)
+                       persistent_workers=(a.num_workers > 0) and (tr_sampler is not None))
     dl_va = DataLoader(ds_va, batch_size=a.batch, shuffle=False, num_workers=0,
                        collate_fn=collate, pin_memory=True)
 
     # ---------------- model ----------------
     model = InContextMotionDiT(in_ch=13, dim=a.dim, depth=a.depth, n_heads=a.heads,
-                               d_text=4096, d_joint_sem=4096).to(dev)
+                               d_text=4096, d_joint_sem=4096,
+                               use_struct_feats=a.struct_feats, use_dir_bias=a.dir_bias).to(dev)
     raw_model = model
     if ddp:
         # find_unused_parameters: bp_mlp (the shelved blueprint pathway, param indices 17-20)
@@ -235,7 +261,8 @@ def main():
                 # change the objective or the data distribution under the same ckpt lineage.
                 "corpus", "balance", "random_caption", "demo_frames", "target_frames",
                 "t_sampler", "v_space", "p_drop_text", "p_drop_demo", "p_drop_both",
-                "bf16", "warmup_steps", "wd", "gamma_fk", "fk_warmup_steps")
+                "bf16", "warmup_steps", "wd", "gamma_fk", "fk_warmup_steps",
+                "struct_feats", "dir_bias")
         core = ("dim", "depth", "heads", "batch", "lr", "seed", "data_root", "splits_dir",
                 "joint_sem", "caption_cache", "texts_json")
         missing = [k for k in core if k not in old_args]
@@ -369,6 +396,9 @@ def main():
     for ep in range(start_ep, a.epochs):
         if tr_sampler is not None:
             tr_sampler.set_epoch(ep)
+        else:
+            # loader stream = f(seed, absolute ep): restart-boundary-invariant (see dl_gen note)
+            dl_gen.manual_seed(a.seed + 7777 + ep)
         model.train(); t0, tot, n = time.time(), 0.0, 0
         g_sum, g_max = 0.0, 0.0
         for b in dl_tr:

@@ -62,18 +62,26 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
 
     def forward(self, x, attn_bias=None, key_pad=None):
-        B, N, D = x.shape
-        q, k, v = self.qkv(x).reshape(B, N, 3, self.h, self.dh).permute(2, 0, 3, 1, 4)
-        bias = None
-        if attn_bias is not None:
-            bias = attn_bias if attn_bias.dim() == 4 else attn_bias.unsqueeze(1)
-            bias = bias.expand(B, self.h, N, N).clone()
-        if key_pad is not None:                       # [B,N] True = valid
-            m = torch.zeros(B, 1, 1, N, device=x.device, dtype=q.dtype)
-            m = m.masked_fill(~key_pad[:, None, None, :], torch.finfo(q.dtype).min)
+        """x [..., N, D] (any leading batch dims); attn_bias broadcastable to [..., H, N, N];
+        key_pad [..., N] True=valid, broadcastable likewise.
+
+        NOTHING is expanded or cloned (codex 01a01b1a fix A): the old path materialised the bias
+        at [B*T, H, N, N] three times over (repeat_interleave + .clone() + key-mask add) --
+        ~0.75 GiB fp32 at TrueBones scale, ~1.57 GiB at the 262M config. SDPA broadcasts the
+        mask itself; callers pass compact shapes like [B, 1, H, J, J] against x [B, T, J, D].
+        Callers must NOT pass both attn_bias and key_pad with shapes whose sum would broadcast-
+        materialise (the spatial path encodes padding inside joint_bias's PAD_BIAS instead)."""
+        N, D = x.shape[-2], x.shape[-1]
+        lead = x.shape[:-2]
+        qkv = self.qkv(x).reshape(*lead, N, 3, self.h, self.dh)
+        q, k, v = (t.transpose(-3, -2) for t in qkv.movedim(-3, 0))   # each [..., H, N, dh]
+        bias = attn_bias
+        if key_pad is not None:                       # [..., N] True = valid
+            m = torch.zeros(*key_pad.shape[:-1], 1, 1, N, device=x.device, dtype=q.dtype)
+            m = m.masked_fill(~key_pad[..., None, None, :], torch.finfo(q.dtype).min)
             bias = m if bias is None else bias + m
         o = F.scaled_dot_product_attention(q, k, v, attn_mask=bias)
-        return self.proj(o.transpose(1, 2).reshape(B, N, D))
+        return self.proj(o.transpose(-3, -2).reshape(*lead, N, D))
 
 
 class Block(nn.Module):
@@ -123,10 +131,18 @@ class Block(nn.Module):
         x = x + e(sg) * y
 
         # --- spatial: tokens are joints, batched over frames; skeleton graph enters as bias ---
-        y = modulate(self.n2(x), e(st2), e(sc2)).reshape(B * T, J, D)
-        jb = joint_bias.repeat_interleave(T, 0) if joint_bias is not None else None
-        jv = joint_valid.repeat_interleave(T, 0) if joint_valid is not None else None
-        y = self.s_attn(y, attn_bias=jb, key_pad=jv).reshape(B, T, J, D)
+        # x stays [B,T,J,D]: SDPA broadcasts the compact bias over T instead of the old
+        # repeat_interleave + clone materialisation (codex 01a01b1a fix A). Joint padding is NOT
+        # passed as key_pad here: collate already writes PAD_BIAS -1e4 into every padded row and
+        # column of joint_bias, which zeroes padded keys in softmax exactly like the old -inf
+        # mask did (exp(-1e4) underflows to 0), without a second broadcast-materialising add.
+        y = modulate(self.n2(x), e(st2), e(sc2))
+        jb = joint_bias
+        if jb is not None:
+            jb = jb[:, None, None] if jb.dim() == 3 else jb[:, None]   # -> [B,1,1|H,J,J]
+        jv = None if jb is not None else \
+            (joint_valid[:, None] if joint_valid is not None else None)  # only if no bias given
+        y = self.s_attn(y, attn_bias=jb, key_pad=jv)
         x = x + e(sg2) * y
 
         x = x + e(mg) * self.mlp(modulate(self.n3(x), e(mt), e(mc)))
@@ -142,10 +158,17 @@ class InContextMotionDiT(nn.Module):
     """
 
     def __init__(self, in_ch=13, dim=256, depth=6, n_heads=8, d_text=4096, d_blueprint=16,
-                 d_joint_sem=4096, mlp_ratio=4.0):
+                 d_joint_sem=4096, mlp_ratio=4.0, use_struct_feats=False, use_dir_bias=False):
         super().__init__()
         self.dim = dim
+        self.n_heads = n_heads
         self.x_in = nn.Linear(in_ch, dim)
+        # graph-v2 flags; the MODULES are constructed at the very END of __init__ so that their
+        # parameter initialisation consumes RNG *after* every baseline tensor is drawn -- with
+        # them here, the same seed produced different backbone weights per flag combination
+        # (codex 01a01b1a fix B), silently confounding any cross-arm comparison.
+        self.use_struct_feats = bool(use_struct_feats)
+        self.use_dir_bias = bool(use_dir_bias)
         self.mask_token = nn.Parameter(torch.zeros(dim))          # marks "this frame is to be generated"
         # TEMPORAL POSITION. Without this the model cannot tell frame 1 from frame 16, so when the
         # input is pure noise (t->0) it has no way to know what belongs at each timestep and can only
@@ -182,15 +205,55 @@ class InContextMotionDiT(nn.Module):
         nn.init.normal_(self.ada_out[-1].weight, std=0.5); nn.init.zeros_(self.ada_out[-1].bias)
         nn.init.normal_(self.out.weight, std=0.02); nn.init.zeros_(self.out.bias)
 
+        # ---- graph-v2 modules, LAST so the shared backbone init above is identical across all
+        # flag combinations under one seed (codex 01a01b1a fix B) ----
+        # Knife 1: structural joint features. j_pos is a bare SLOT table -- slot 17 of Monkey and
+        # slot 17 of Elephant share one learned vector, so unseen rigs inherit wrong priors. The
+        # 8-d structural descriptor (rest offset direction, bone length, depth, child count, leaf
+        # flag) is computed from the skeleton itself and generalises by construction. The FINAL
+        # projection is zero-initialised: every arm starts as the exact baseline function and the
+        # feature pathway ramps in by gradient, keeping E0/E1/E2/E3 causally comparable.
+        if self.use_struct_feats:
+            self.struct_mlp = nn.Sequential(nn.Linear(8, dim), nn.SiLU(), nn.Linear(dim, dim))
+            nn.init.zeros_(self.struct_mlp[-1].weight)
+            nn.init.zeros_(self.struct_mlp[-1].bias)
+        # Knife 2: directional learnable per-head attention bias (Graphormer-style). The fixed
+        # -clip(geodesic,8) scalar is symmetric (grandparent == grandchild == 2), head-shared and
+        # blind past 8 hops. Two zero-initialised tables indexed by (up,down) LCA hop counts are
+        # ADDED to the existing scalar bias: at init the model is bit-identical to baseline, and
+        # the tables learn per-head, per-direction corrections out to UPDOWN_CLIP=15 hops.
+        if self.use_dir_bias:
+            self.e_up = nn.Embedding(16, n_heads)
+            self.e_down = nn.Embedding(16, n_heads)
+            nn.init.zeros_(self.e_up.weight)
+            nn.init.zeros_(self.e_down.weight)
+
     def forward(self, x, t, *, is_target, joint_sem=None, text=None, blueprint=None,
-                joint_bias=None, frame_valid=None, joint_valid=None):
-        """x [B,T,J,C] ; t [B] in [0,1] ; is_target [B,T] bool."""
+                joint_bias=None, frame_valid=None, joint_valid=None,
+                struct_feats=None, updown=None):
+        """x [B,T,J,C] ; t [B] in [0,1] ; is_target [B,T] bool.
+        struct_feats [B,J,8] / updown [B,J,J,2] are graph-v2 inputs; both ignored (and refused)
+        unless the matching use_* flag built the module."""
         B, T, J, _ = x.shape
         h = self.x_in(x)
         h = h + self.t_pos[:, :T] + self.j_pos[:, :, :J]                        # temporal + joint position
         h = h + is_target[..., None, None].to(h.dtype) * self.mask_token       # flag frames to generate
         if joint_sem is not None:
             h = h + self.joint_sem(joint_sem)[:, None]                          # [B,1,J,D]
+        if self.use_struct_feats:
+            if struct_feats is None:
+                raise ValueError("model built with use_struct_feats=True but batch has no "
+                                 "struct_feats -- dataset must be built with emit_graph_v2=True")
+            h = h + self.struct_mlp(struct_feats)[:, None]                      # [B,1,J,D]
+        if self.use_dir_bias:
+            if updown is None:
+                raise ValueError("model built with use_dir_bias=True but batch has no updown")
+            # [B,J,J,H] -> [B,H,J,J], added ON TOP of the -clip(geo,8) scalar (zero-init tables
+            # => exact baseline at step 0). Padded pairs stay dominated by PAD_BIAS -1e4.
+            dir_b = (self.e_up(updown[..., 0]) + self.e_down(updown[..., 1])).permute(0, 3, 1, 2)
+            base = joint_bias.unsqueeze(1) if (joint_bias is not None and joint_bias.dim() == 3) \
+                else joint_bias
+            joint_bias = dir_b.to(h.dtype) if base is None else base.to(h.dtype) + dir_b.to(h.dtype)
 
         c = self.t_mlp(timestep_embedding(t * 1000.0, self.dim))
         if text is not None:

@@ -105,3 +105,79 @@ frame_mask 单次 CPU 拷贝 + index_select、诊断 float 仅 return_parts 时�
 - [ ] run-1-kimodo ep100/300/500 H4 复测(验收 4-19% → ~0)
 - [ ] run-3-kimodo 发射(今晚 alloc 续期后,满 walltime 起跑;--gamma_fk 0.25 --fk_warmup_steps 5000)
 - [ ] **user 的 hy273 式数据格式转换完成后**:用该格式再试 run-1/run-3(user 2026-08-19 预告)
+
+## 7. run-1-kimodo(run1a)判决:FAIL-混淆,已纠正重跑 run-1b(2026-08-19 ~12:30Z)
+
+**run1a(global32/lr1.2e-3/500ep)完赛读数**:H4 best@479 = Alligator 6.84 / Trex 7.77 /
+BrownBear 10.43 / Elephant 13.73 / Monkey 15.21 / Raptor 8.96%(锚:run-1 ep500 无γ₇ =
+3.12/5.24/12.35/18.38%)→ **H4 没关门,原地踏步**。同时 **H1 抖动崩 3-17×**(Alligator
+3.04→52.9、Trex 1.49→24.8 @50步)。
+
+**根因=实验设计错误(我的)**:Goyal 缩 batch/lr 但保 epoch 数 → 500ep×22步=**1.1 万步**,
+而锚点 run-1 ep500 = **4.6 万步**。run-1 自己在 ~1 万步(ep100)就是"有形状但很抖"阶段 ——
+run1a 卡在同一欠火候区,三变量混淆(γ₇/lr 区制/步数),γ₇ 疗效不可判读。
+**教训(重要,写入记忆):小数据集(TB 734 targets)收敛是步数驱动;跨 batch 配置比较必须
+step-matched,不能 epoch-matched。roadmap 里 run-2 的 350ep@global32 计划(7.7k 步)同样中招,作废。**
+另:run1a 尾段 fkdist 反弹(0.52→0.64)、last H4 劣于 best —— lr1.2e-3 区制尾段不稳的旁证。
+
+**run-1b 已发射**:run-1 逐字配方(global8=B2×4rank / lr3e-4 / 无 warmup / 500ep=46k 步)+
+唯一新变量 γ_fk=0.25(fk_warmup 1000 步≈11ep)。~40s/ep,ETA ~5.5h。监视 cron 942c1d09。
+渲染已发 user:kimodo_best 6 骨架 + run1_ep500_ref 同条件对照 6 骨架(视觉裁决权归 user)。
+run1a 产物保留 runs/v2_tb_kimodo_run1(它意外成了"γ₇ 在高 lr 大 batch 区制下也压不住欠训抖动"
+的数据点,以及 val-fkdist 1.5→0.52bl 半程下降的记录)。
+
+## 8. γ 剂量研究(run-1b/1c/1d,2026-08-19 12:30-18:30Z)— 完整曲线与判决
+
+四跑同配方(run-1 逐字:global8=B2×4rank / lr3e-4 / 500ep=46k 步),唯一变量 γ_fk。
+H4(last ckpt,ODE 10 步完整采样,GT 全 0.0000%):
+
+| 骨架 | 无γ₇ | γ0.25 | γ0.5 | γ1.0 | γ1.0 best@444 |
+|---|---|---|---|---|---|
+| Alligator(已见) | 3.12 | 3.31 | 2.72 | 1.83 | 1.86 |
+| Trex(已见) | 5.24 | 5.50 | 2.39 | 2.37 | 2.11 |
+| BrownBear(未见) | 12.35 | 10.16 | 8.19 | 7.53 | 6.19 |
+| Elephant(未见) | 18.38 | 10.11 | 8.24 | 7.49 | 8.92 |
+| Monkey(未见) | ~15带内 | 23.01 | 12.18 | 10.57 | 9.18 |
+| Raptor(未见) | — | 7.56 | 4.97 | 3.81 | 4.17 |
+| **4骨架均值** | **9.77** | 7.27 | 5.39 | **4.81** | 4.77 |
+
+判决三条:
+1. **已见骨架 H4 已进 0-2% 验收区**(γ1.0:Alligator 1.83-1.86 / Trex 2.11-2.37)——
+   γ₇ 在训练分布内把两族嘴关上了。**剩余缺口全部集中在未见骨架**(7.5-10.6%),
+   即残余问题已从"目标函数缺项"转化为"泛化缺口" —— 这正是 262M+PZ 312 骨架的用武之地。
+2. **零质量代价,多处白赚**:全 γ 档 H1 不劣化;γ1.0 下 Monkey 抖动 0.2×(远稳于 GT)、
+   Trex 1.3×;flow-only val ≈3.4-4.0 vs 无γ₇ 基线 best 4.437(**γ₇ 顺手压掉了 ep312 的
+   过拟合拐点,best 从 ep312 挪到 ep444-494**)。
+3. **收益边际递减**(4骨架均值:9.77→7.27→5.39→4.81),0.5→1.0 只再赚 0.6pp,权重轴到头;
+   未见骨架的残余靠数据/容量,不靠再加 γ。
+
+**定案:run-3-kimodo 用 γ_fk=1.0,fk_warmup_steps=5000**(1.0 在每个测量轴上 ≥0.5,无任何劣化)。
+诊断 JSON:scratch/_diag_kimodo_run1{b,c,d}_{best,last}.json;渲染四组已全部 SendUserFile
+(renders/20260819_kimodo_run1/{run1_ep500_ref,kimodo_best,kimodo_run1c_best,kimodo_run1d_best})。
+
+## 9. Graph-v2:结构化关节特征 + 方向化逐 head 偏置(2026-08-19 晚,user 指令"先做小实验,大的往后放")
+
+**代码取证(user 要求核实,全部属实)**:偏置=−clip(hops,8) 单标量(incontext_pairs.py:58/256/301,
+注释自认 hops 达 ~20);所有 head 共用(dit_motion.py:70 expand);j_pos=纯槽位表(:157-165);
+模型 forward 零静息骨架信息(rest_offsets 只进 γ₇ loss);Floyd 测地无向。
+
+**两刀(全 flag 门控,关=逐位不变)**:
+1. `--struct_feats`:每关节 8 维结构描述子(单位 offset xyz/log 骨长/跳数深度/物理深度/子数/叶旗标,
+   本骨架平均骨长为单位),小 MLP 进 token;按骨架缓存(_graph_v2_tables)。
+2. `--dir_bias`:LCA 分解 (up,down) 跳数矩阵(clip 15),两张 Embedding(16, n_heads) 零初始化表,
+   **加在** −clip(geo,8) 之上 → 步 0 与基线逐位相同,表学逐 head 方向修正。
+
+**自测 6/6 PASS**(scratch/_test_graphv2.py):LCA up+down==Floyd 全部 55 TB 骨架(建缓存内置
+assert);零初始化 dir 模型与基线逐位相同(0.00e+00);struct 改变输出+双模块梯度通;混合 J(18+83)
+pad 前向有限;特征范围合规。诊断/渲染脚本已兼容 v2 ckpt(flags 从 ckpt args 读)。
+
+**实验矩阵(codex 01a01b1a 三轮审后定案:E0-E3 四臂因果 factorial,全部 γ_fk=1.0,46k 步协议)**:
+E0=无刀因果基线(flamingo02 GPU1)/ E1=struct only(blossom01 GPU1)/ E2=dir only(flamingo02
+GPU0)/ E3=both(blossom01 GPU0)。发射器 scripts/_launch_gv2_factorial.sh(单臂单卡 B8 lr3e-4,
+flock,自动 resume 至满 500ep —— alloc 到期截断后续期补齐,四臂终点 step-matched)。
+codex 三轮修复:①偏置零物化(SDPA 广播 [B,1,H,J,J],省 0.75-1.57GiB,反快 2s/ep);②可选模块
+挪 __init__ 末 + struct 头零初始化 → 四臂共享权重逐位同、t=0 函数同一;③DataLoader 显式
+generator(a.seed+7777)→ 四臂数据流同一。E0 而非 run-1d 作因果基线(grouped_loss 按进程本地
+归一,B2×4 梯度均值≠单卡 B8;E0 同时把注意力重构本身控制住)。~4.7h/臂。
+**验收指标:B 桶(未见骨架)H4 地板 7.5-10.6% 是否被砸穿 + 深链 fkdist + H1 不劣化 + 渲染目验。**
+**大实验(run-3-kimodo)推迟至本结论出炉(user 2026-08-19 晚指令);续期守望 cron 已删。**

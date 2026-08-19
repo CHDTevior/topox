@@ -57,6 +57,75 @@ DEMO_FRAMES = 64
 TARGET_FRAMES = 240   # >= TrueBones max clip length 237: nothing truncated, caption always matches
 GEODESIC_CLIP = 8.0      # hop distances reach ~20; an unclipped bias swamps the attention logits
 PAD_BIAS = -1e4
+UPDOWN_CLIP = 15         # graph-v2 directional tables: up/down hop indices 0..15 (vs the scalar
+#                          bias's clip at 8 -- deep chains stay distinguishable twice as far)
+
+
+def _graph_v2_tables(parents, offsets, geodesic_raw):
+    """Per-rig graph-v2 statics: structural joint features [J,8] + LCA-decomposed directional
+    hop matrix [J,J,2] (up-steps to the lowest common ancestor, then down-steps).
+
+    SELF-CHECK: up + down must equal the served Floyd geodesic EXACTLY (pre-clip) -- one
+    assert catches any joint-order or parent-table mismatch at rig-cache build time instead of
+    letting a silently wrong topology signal train for 46k steps.
+
+    Feature layout (all scale-free; mean bone length of THIS rig is the unit):
+      0:3 rest offset direction (unit; zeros for root/zero-length)
+      3   log1p(bone length / mean bone)
+      4   depth from root in hops / 16 (uncapped rigs reach ~20; >1 is fine, it is a feature)
+      5   log1p(physical path length to root / mean bone) / 4
+      6   child count, clipped at 4, / 4
+      7   is-leaf flag
+    """
+    J = len(parents)
+    par = [int(p) for p in parents]
+    depth = np.zeros(J, np.int64)
+    for j in range(1, J):
+        depth[j] = depth[par[j]] + 1
+    anc = []
+    for j in range(J):
+        c, k = {}, j
+        while k >= 0:
+            c[k] = depth[j] - depth[k]      # up-steps from j to ancestor k
+            k = par[k]
+        anc.append(c)
+    ud = np.zeros((J, J, 2), np.int64)
+    for i in range(J):
+        ai = anc[i]
+        for j in range(J):
+            aj = anc[j]
+            best, up = -1, 0
+            for k, u in ai.items():         # ancestors of i, nearest first is not guaranteed --
+                if k in aj and depth[k] > best:   # pick the DEEPEST common ancestor (the LCA)
+                    best, up = depth[k], u
+            ud[i, j, 0] = up
+            ud[i, j, 1] = depth[j] - best         # down-steps = depth(j) - depth(LCA)
+    hops = ud.sum(-1)
+    geo = np.asarray(geodesic_raw, dtype=np.int64)[:J, :J]
+    if not np.array_equal(hops, geo):
+        bad = int(np.abs(hops - geo).max())
+        raise AssertionError(f"graph-v2 LCA decomposition disagrees with Floyd geodesic "
+                             f"(max |up+down - geo| = {bad}); joint order or parents corrupted")
+    off = np.asarray(offsets, dtype=np.float64)[:J]
+    blen = np.linalg.norm(off, axis=-1)
+    mean_bone = max(float(blen[1:].mean()) if J > 1 else 1.0, 1e-6)
+    unit = np.zeros((J, 3))
+    nz = blen > 1e-8
+    unit[nz] = off[nz] / blen[nz, None]
+    phys = np.zeros(J)
+    for j in range(1, J):
+        phys[j] = phys[par[j]] + blen[j]
+    n_child = np.zeros(J)
+    for j in range(1, J):
+        n_child[par[j]] += 1
+    feats = np.zeros((J, 8), np.float32)
+    feats[:, 0:3] = unit
+    feats[:, 3] = np.log1p(blen / mean_bone)
+    feats[:, 4] = depth / 16.0
+    feats[:, 5] = np.log1p(phys / mean_bone) / 4.0
+    feats[:, 6] = np.clip(n_child, 0, 4) / 4.0
+    feats[:, 7] = (n_child == 0).astype(np.float32)
+    return feats, np.clip(ud, 0, UPDOWN_CLIP)
 
 
 def read_split(splits_dir, name) -> set:
@@ -94,7 +163,7 @@ class InContextPairs(Dataset):
 
     def __init__(self, base: AnyTopDataset, target_names, demo_names, *,
                  object_types=None, demo_frames=DEMO_FRAMES, target_frames=TARGET_FRAMES,
-                 balance_skeletons=True, seed=0, emit_fk_fields=False):
+                 balance_skeletons=True, seed=0, emit_fk_fields=False, emit_graph_v2=False):
         self.base = base
         self.Td, self.Tt = int(demo_frames), int(target_frames)
         self.balance = bool(balance_skeletons)
@@ -104,6 +173,11 @@ class InContextPairs(Dataset):
         # the preflight FK gate consumes them; flag-gated so pre-gamma7 runs see a byte-identical
         # batch dict.
         self.emit_fk_fields = bool(emit_fk_fields)
+        # graph-v2 (2026-08-19): structural joint features + LCA-directional hop matrices,
+        # computed once per RIG (statics; identical for every clip of a rig) and cached. Same
+        # flag-gating contract: off = byte-identical batches.
+        self.emit_graph_v2 = bool(emit_graph_v2)
+        self._g2cache = {}
         keep = set(object_types) if object_types is not None else None
 
         tgt_pool, demo_pool = defaultdict(list), defaultdict(list)
@@ -275,6 +349,17 @@ class InContextPairs(Dataset):
             out["parents"] = torch.as_tensor(
                 np.asarray(t_item["parent_indices"][:J], dtype=np.int64))
             out["rest_offsets"] = torch.as_tensor(np.asarray(t_item["rest_offsets"])[:J]).float()
+        if self.emit_graph_v2:
+            if ot not in self._g2cache:
+                # geodesic_raw is the UN-clipped served-order Floyd matrix -- the self-check
+                # inside _graph_v2_tables pins the LCA decomposition to it exactly.
+                self._g2cache[ot] = _graph_v2_tables(
+                    np.asarray(t_item["parent_indices"][:J], dtype=np.int64),
+                    np.asarray(t_item["rest_offsets"])[:J],
+                    np.asarray(t_item["geodesic_dist"])[:J, :J])
+            feats, ud = self._g2cache[ot]
+            out["struct_feats"] = torch.from_numpy(feats)
+            out["updown"] = torch.from_numpy(ud)
         return out
 
 
@@ -327,5 +412,16 @@ def collate(batch):
             par[k, :J] = b["parents"]; ro[k, :J] = b["rest_offsets"]
         out.update(anytop_mean=am, anytop_std=asd, parents=par, rest_offsets=ro,
                    n_joints=torch.tensor([b["n_joints"] for b in batch], dtype=torch.long))
+    if "struct_feats" in batch[0]:
+        # graph-v2 fields, padded to Jm. Padded rows are zeros; padded PAIRS are irrelevant
+        # because the -1e4 PAD_BIAS already excludes them from attention, and zero-index lookups
+        # into the zero-initialised direction tables contribute exactly 0 at start anyway.
+        sf = torch.zeros(B, Jm, batch[0]["struct_feats"].shape[1])
+        ud = torch.zeros(B, Jm, Jm, 2, dtype=torch.long)
+        for k, b in enumerate(batch):
+            J = b["n_joints"]
+            sf[k, :J] = b["struct_feats"]
+            ud[k, :J, :J] = b["updown"]
+        out.update(struct_feats=sf, updown=ud)
     out["valid"] = out["frame_valid"][:, :, None] & joint_valid[:, None, :]      # [B,T,Jm]
     return out
