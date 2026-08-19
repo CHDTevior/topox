@@ -23,7 +23,7 @@ from src.data.anytop_dataset import (AnyTopDataset, _STD_FLOOR,                 
                                      _recover_world_positions)
 from src.data.anytop_rot6d_fk import recover_from_bvh_rot_np                     # noqa: E402
 from src.data.incontext_pairs import (InContextPairs, collate, read_split,      # noqa: E402
-                                      truebones_types, DEMO_FRAMES)
+                                      truebones_types, pzh_types, DEMO_FRAMES, TARGET_FRAMES)
 from src.models.v2.dit_motion import InContextMotionDiT, sample                  # noqa: E402
 
 PANEL_W, PANEL_H, GAP, FOOT = 300, 360, 12, 66
@@ -128,6 +128,11 @@ def main():
     ap.add_argument("--rigs_B", default="BrownBear,Elephant")
     ap.add_argument("--steps", type=int, default=10)
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--corpus", choices=("truebones", "pzh"), default="truebones")
+    ap.add_argument("--demo_frames", type=int, default=DEMO_FRAMES)
+    ap.add_argument("--target_frames", type=int, default=TARGET_FRAMES)
+    ap.add_argument("--all_targets", action="store_true",
+                    help="render EVERY target clip of each requested rig (default: first only)")
     ap.add_argument("--data_root", default="data/animo4d_L4TB_plus_human_v4b272neutral")
     ap.add_argument("--splits_dir", default="data/holdout_splits_v1")
     ap.add_argument("--joint_sem", default="data/joint_semantics_llm2vec_v1.npz")
@@ -146,34 +151,42 @@ def main():
     print(f"[render] ckpt {a.ckpt} (epoch {ep}) on {dev}", flush=True)
 
     cond = pickle.load(open(f"{a.data_root}/_cond_normalized_J144.pkl", "rb"))
-    tb = truebones_types(cond.keys())
+    tb = truebones_types(cond.keys()) if a.corpus == "truebones" else pzh_types(cond.keys())
     names = {k: read_split(a.splits_dir, k) for k in ("train", "val", "held_representative")}
     base = AnyTopDataset(data_root=a.data_root, split="all", num_frames=300, max_joints=144,
                          load_captions=True, caption_emb_cache=a.caption_cache,
                          random_caption=False, augment=False, joint_semantics=a.joint_sem,
                          species_whitelist=tb, splits_dir=a.splits_dir,
                          texts_json_name=a.texts_json)
+    PK = dict(demo_frames=a.demo_frames, target_frames=a.target_frames)
     dsA = InContextPairs(base, names["val"], names["train"], object_types=tb,
-                         balance_skeletons=False, seed=a.seed)
+                         balance_skeletons=False, seed=a.seed, **PK)
     dsB = InContextPairs(base, names["held_representative"], names["held_representative"],
-                         object_types=tb, balance_skeletons=False, seed=a.seed)
+                         object_types=tb, balance_skeletons=False, seed=a.seed, **PK)
 
-    jobs = [("A", r.strip(), dsA) for r in a.rigs_A.split(",") if r.strip()] + \
-           [("B", r.strip(), dsB) for r in a.rigs_B.split(",") if r.strip()]
+    jobs = []
+    for bucket, rigs, ds in (("A", a.rigs_A, dsA), ("B", a.rigs_B, dsB)):
+        for r in [x.strip() for x in rigs.split(",") if x.strip()]:
+            if r not in ds.types:
+                print(f"[render] SKIP {bucket}:{r} -- not in bucket "
+                      f"({'A held?' if bucket == 'A' else 'train?'})", flush=True)
+                continue
+            positions = [i for i, (ot, _) in enumerate(ds.index) if ot == r]
+            if not a.all_targets:
+                positions = positions[:1]                     # default: first target, as before
+            jobs += [(bucket, r, ds, pp) for pp in positions]
     lines = []
-    for bucket, rig, ds in jobs:
-        if rig not in ds.types:
-            print(f"[render] SKIP {bucket}:{rig} -- not in bucket ({'A held?' if bucket=='A' else 'train?'})",
-                  flush=True)
-            continue
-        ds._wrng_key = None                                   # deterministic demo/crop per run
-        pos = next(i for i, (ot, _) in enumerate(ds.index) if ot == rig)
+    for bucket, rig, ds, pos in jobs:
+        # Stream reset PER ITEM: each target's demo/crop draw starts from the same rng origin, so a
+        # given (rig, target) renders identically across invocations and epochs regardless of how
+        # many other targets were rendered before it.
+        ds._wrng_key = None
         item = ds[pos]
         b = {k: (v.to(dev) if torch.is_tensor(v) else v)
              for k, v in collate([item]).items()}
         J = int(item["n_joints"])
-        t_real = int(item["frame_valid"][DEMO_FRAMES:].sum())
-        d_real = int(item["frame_valid"][:DEMO_FRAMES].sum())
+        t_real = int(item["frame_valid"][a.demo_frames:].sum())
+        d_real = int(item["frame_valid"][:a.demo_frames].sum())
 
         torch.manual_seed(a.seed)
         with torch.no_grad():
@@ -187,11 +200,11 @@ def main():
         mean = np.asarray(t_item["anytop_mean"])[:J]; std = np.asarray(t_item["anytop_std"])[:J]
         parents = [int(p) for p in t_item["parent_indices"][:J]]
         offsets = np.asarray(t_item["rest_offsets"])[:J]
-        gseg = gen[DEMO_FRAMES:DEMO_FRAMES + t_real, :J]
+        gseg = gen[a.demo_frames:a.demo_frames + t_real, :J]
         demo_w = world_of(gt[:d_real, :J], mean, std)
         gen_ric = world_of(gseg, mean, std)
         gen_fk = world_of(gseg, mean, std, recover="fk", parents=parents, offsets=offsets)
-        gt_w = world_of(gt[DEMO_FRAMES:DEMO_FRAMES + t_real, :J], mean, std)
+        gt_w = world_of(gt[a.demo_frames:a.demo_frames + t_real, :J], mean, std)
         jit_all, jit_root, gt_all, gt_root = jitter_ratio(gen_ric, gt_w)
         jfk_all, jfk_root, _, _ = jitter_ratio(gen_fk, gt_w)
         static_warn = "  [near-static GT, ratio inflated]" if gt_all < 1e-3 else ""

@@ -296,7 +296,8 @@ def grouped_loss(err2, m, gammas):
     return total, parts
 
 
-def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=False, **cond):
+def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=False,
+             t_sampler="uniform", v_space=False, sigma_min=0.05, **cond):
     """Conditional flow matching with **x-prediction**: the network outputs the clean motion.
 
     `gammas=None` keeps the original single unweighted MSE (kept as the ablation baseline).
@@ -312,7 +313,12 @@ def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=Fals
       This also matches the v1 ablation, where x-prediction beat v-prediction by ~2.2x on geometry.
     """
     B, T, J, C = x1.shape
-    t = torch.rand(B, device=x1.device)
+    if t_sampler == "logitnormal":
+        # ACMDM-JiT / SD3: logit-normal(mu=-0.8, sigma=0.8) concentrates supervision where the
+        # x->v conversion is worst-conditioned, instead of spreading it uniformly.
+        t = torch.sigmoid(torch.randn(B, device=x1.device) * 0.8 - 0.8)
+    else:
+        t = torch.rand(B, device=x1.device)
     x0 = torch.randn_like(x1)
     tt = t[:, None, None, None]
     xt = (1 - tt) * x0 + tt * x1
@@ -326,6 +332,13 @@ def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=Fals
     m = (is_target[..., None] & valid).to(x1.dtype)[..., None]
     m = m.expand_as(x1)
     err2 = (x1_pred - x1) ** 2
+    if v_space:
+        # JiT (denoiser.py:58-62): the network predicts clean data, but the LOSS lives in velocity
+        # space. On the OT path x1 - xt = (1-t)(x1 - x0), so v-space MSE == x-space MSE weighted by
+        # 1/(1-t)^2 -- emphasis lands on the near-data regime where high-frequency detail (jitter)
+        # is decided. The clamp (user's ACMDM-JiT sigma_min=0.05) caps the weight at 400x.
+        w = 1.0 / torch.clamp(1.0 - t, min=sigma_min) ** 2
+        err2 = err2 * w[:, None, None, None]
     if gammas is None:
         loss, parts = (err2 * m).sum() / m.sum().clamp_min(1.0), {}
     else:
@@ -334,7 +347,7 @@ def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=Fals
 
 
 @torch.no_grad()
-def sample(model, x_ref, is_target, steps, **cond):
+def sample(model, x_ref, is_target, steps, cfg_text=1.0, cfg_demo=1.0, demo_frames=None, **cond):
     """Euler along the straight path, driven by the predicted clean motion.
 
     The update x <- x + (x1_pred - x)/(steps - i) walks the remaining distance in the remaining
@@ -342,9 +355,36 @@ def sample(model, x_ref, is_target, steps, **cond):
     which is precisely where the v1 x-prediction sampler blew up by 25x.
     """
     x = torch.where(is_target[..., None, None], torch.randn_like(x_ref), x_ref)
+
+    guided = (cfg_text != 1.0) or (cfg_demo != 1.0)
+    if guided:
+        # Compositional dual guidance on the x1-prediction (InstructPix2Pix-style):
+        #   x_hat = x_uu + cfg_demo * (x_du - x_uu) + cfg_text * (x_dt - x_du)
+        # where u/d mark dropped/kept demo and text. Requires a CFG-trained model (independent
+        # demo/text dropout); both scales at 1.0 reduce to a single forward, bit-identical to the
+        # unguided path.
+        assert demo_frames is not None, "guided sampling needs demo_frames to build the demo-drop"
+        cond_dt = cond
+        # Uncond text must be the ZERO VECTOR, exactly as training's dropout produces it: with
+        # text=None the model skips the text_mlp branch entirely, a c the network never saw.
+        cond_du = ({**cond, "text": torch.zeros_like(cond["text"])}
+                   if cond.get("text") is not None else cond)
+        fv = cond.get("frame_valid")
+        fv_u = fv.clone() if fv is not None else None
+        if fv_u is not None:
+            fv_u[:, :demo_frames] = False
+        cond_uu = {**cond_du, "frame_valid": fv_u}
+
     for i in range(steps):
         t = torch.full((x.shape[0],), i / steps, device=x.device)
-        x1_pred = model(x, t, is_target=is_target, **cond)
+        if not guided:
+            x1_pred = model(x, t, is_target=is_target, **cond)
+        else:
+            x_dt = model(x, t, is_target=is_target, **cond_dt)
+            x_du = model(x, t, is_target=is_target, **cond_du)
+            x_u = x.clone(); x_u[:, :demo_frames] = 0.0
+            x_uu = model(x_u, t, is_target=is_target, **cond_uu)
+            x1_pred = x_uu + cfg_demo * (x_du - x_uu) + cfg_text * (x_dt - x_du)
         step = (x1_pred - x) / (steps - i)
         x = torch.where(is_target[..., None, None], x + step, x_ref)
     return x

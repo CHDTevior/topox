@@ -76,6 +76,13 @@ def truebones_types(cond_keys) -> list:
     return sorted(k for k in cond_keys if not k.startswith("PZ_") and not k.startswith("HML3D"))
 
 
+def pzh_types(cond_keys) -> list:
+    """Planet-Zoo + HumanML3D object types (the run-3 scale corpus; no TrueBones).
+    Measured 2026-08-19: 311 PZ rigs + 1 human = 312 types; train side 89,543 clips
+    (PZ 71.5% / human 28.5%), every rig has >=59 clips, J max 102, clip T max 299."""
+    return sorted(k for k in cond_keys if k.startswith("PZ_") or k.startswith("HML3D"))
+
+
 class InContextPairs(Dataset):
     """Serves [demo | target] items. `base` must be an AnyTopDataset built with split="all" so both
     pools are visible; membership is decided here by the frozen name lists, never by re-splitting.

@@ -35,7 +35,7 @@ from src.data.anytop_dataset import (AnyTopDataset, _STD_FLOOR,                 
                                      _recover_world_positions)
 from src.data.anytop_rot6d_fk import recover_from_bvh_rot_np                    # noqa: E402
 from src.data.incontext_pairs import (InContextPairs, collate, read_split,      # noqa: E402
-                                      truebones_types, DEMO_FRAMES, TARGET_FRAMES)
+                                      truebones_types, pzh_types, DEMO_FRAMES, TARGET_FRAMES)
 from src.models.v2.dit_motion import (InContextMotionDiT, cfm_loss,             # noqa: E402
                                       KIMODO_GAMMAS)
 
@@ -52,6 +52,20 @@ def gate(name, ok, detail=""):
         FAILS.append(name)
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--corpus", choices=("truebones", "pzh"), default="truebones")
+    ap.add_argument("--dim", type=int, default=256)
+    ap.add_argument("--depth", type=int, default=6)
+    ap.add_argument("--heads", type=int, default=8)
+    ap.add_argument("--demo_frames", type=int, default=DEMO_FRAMES)
+    ap.add_argument("--target_frames", type=int, default=TARGET_FRAMES)
+    ap.add_argument("--bf16", action="store_true", help="run the sweep/B8 under bf16 autocast, matching training")
+    ap.add_argument("--mem_gate_gib", type=float, default=60.0)
+    ap.add_argument("--worst_batch", type=int, default=8,
+                    help="copies of the largest-J training clip in the worst-case memory gate")
+    ap.add_argument("--random_caption", action="store_true")
+    a = ap.parse_args()
     # This is a GPU LAUNCH gate: silently falling back to CPU would "verify" a configuration
     # that is not the one we launch. Refuse instead.
     assert torch.cuda.is_available(), "preflight must run on the launch GPU, not CPU"
@@ -89,29 +103,34 @@ def main():
 
     # ================= datasets =================
     cond = pickle.load(open(f"{R}/_cond_normalized_J144.pkl", "rb"))
-    tb = truebones_types(cond.keys())
+    tb = truebones_types(cond.keys()) if a.corpus == "truebones" else pzh_types(cond.keys())
+    print(f"  corpus={a.corpus}: {len(tb)} rigs | model dim{a.dim}x{a.depth}h{a.heads} | "
+          f"slots {a.demo_frames}+{a.target_frames} | bf16={a.bf16}")
     names = {k: read_split(SPLITS, k) for k in ("train", "val", "held_representative", "held_stress")}
     gate("四个 split 名单两两不相交",
          all(not (names[u] & names[v]) for u, v in itertools.combinations(names, 2)))
     base = AnyTopDataset(data_root=R, split="all", num_frames=300, max_joints=144,
-                         load_captions=True, caption_emb_cache=CAP, random_caption=False,
+                         load_captions=True, caption_emb_cache=CAP, random_caption=a.random_caption,
                          augment=False, joint_semantics=SEM, species_whitelist=tb,
                          splits_dir=SPLITS, texts_json_name=TEXTS)
+    PK = dict(demo_frames=a.demo_frames, target_frames=a.target_frames)
     dss = {k: InContextPairs(base, names[k] if k != "A" else names["val"],
                              names["train"] if k in ("train", "A") else names[k],
-                             object_types=tb, balance_skeletons=False, seed=0)
+                             object_types=tb, balance_skeletons=False, seed=0, **PK)
            for k in ("train",)}
     dss["A"] = InContextPairs(base, names["val"], names["train"], object_types=tb,
-                              balance_skeletons=False, seed=0)
+                              balance_skeletons=False, seed=0, **PK)
     dss["B"] = InContextPairs(base, names["held_representative"], names["held_representative"],
                               object_types=tb, balance_skeletons=False, seed=0)
     dss["stress"] = InContextPairs(base, names["held_stress"], names["held_stress"],
                                    object_types=tb, balance_skeletons=False, seed=0)
 
     # ================= [2] bz=1 walkthrough =================
-    print("\n=== [2] bz=1 单样本逐变量(训练桶,Alligator) ===")
     ds = dss["train"]
-    pos = next(i for i, (ot, _) in enumerate(ds.index) if ot == "Alligator")
+    want_rig = "Alligator" if a.corpus == "truebones" else "PZ_Aardvark_Female"
+    ex_rig = want_rig if want_rig in ds.types else ds.types[0]
+    print(f"\n=== [2] bz=1 单样本逐变量(训练桶,{ex_rig}) ===")
+    pos = next(i for i, (ot, _) in enumerate(ds.index) if ot == ex_rig)
     item = ds[pos]
     b = collate([item])
     ot = item["object_type"]
@@ -205,7 +224,8 @@ def main():
     jn = list(t_item["joint_names"])[:J]
     print(f"  关节名样例: {jn[:3]} …  (共 {J})")
     # 跨骨架同名关节:证明表是"名字驱动"的
-    probe_rigs = [r for r in ("Deer", "Horse", "Trex", "Raptor3") if r != ot][:3]
+    _pref = ("Deer", "Horse", "Trex", "Raptor3") if a.corpus == "truebones" else tuple(dss["train"].types[:5])
+    probe_rigs = [r for r in _pref if r != ot][:3]
     name2rows = {}
     for rig in [ot] + probe_rigs:
         it2 = base[dss["train"].by_type[rig]["demos"][0]] if rig in dss["train"].by_type else None
@@ -266,7 +286,7 @@ def main():
 
     # ================= [4] all-rigs sweep =================
     print("\n=== [4] 全骨架 bz=1 前向+反向(每骨架取其最长 clip 当 target) ===")
-    model = InContextMotionDiT(in_ch=13, dim=256, depth=6, n_heads=8,
+    model = InContextMotionDiT(in_ch=13, dim=a.dim, depth=a.depth, n_heads=a.heads,
                                d_text=4096, d_joint_sem=4096).to(dev)
     n_par = sum(p.numel() for p in model.parameters())
     lengths = {}
@@ -274,7 +294,7 @@ def main():
         T = int(np.load(s["path"], mmap_mode="r").shape[0])
         lengths.setdefault(s["object_type"], []).append((T, i))
     Tmax_corpus = max(t for v in lengths.values() for t, _ in v)
-    gate(f"语料最长 clip ({Tmax_corpus}f) <= target 槽 {TARGET_FRAMES}", Tmax_corpus <= TARGET_FRAMES)
+    gate(f"语料最长 clip ({Tmax_corpus}f) <= target 槽 {a.target_frames}", Tmax_corpus <= a.target_frames)
     rows, peak_all = [], 0.0
     all_types = sorted(set().union(*[set(d.types) for d in dss.values()]))
     for rig in all_types:
@@ -287,8 +307,9 @@ def main():
         torch.cuda.reset_peak_memory_stats() if dev == "cuda" else None
         c = dict(joint_bias=bb["joint_bias"], frame_valid=bb["frame_valid"],
                  joint_valid=bb["joint_valid"], text=bb["text"], joint_sem=bb["joint_sem"])
-        loss = cfm_loss(model, bb["x"], is_target=bb["is_target"], valid=bb["valid"],
-                        gammas=KIMODO_GAMMAS, **c)
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=a.bf16):
+            loss = cfm_loss(model, bb["x"], is_target=bb["is_target"], valid=bb["valid"],
+                            gammas=KIMODO_GAMMAS, **c)
         model.zero_grad(set_to_none=True); loss.backward()
         g = torch.sqrt(sum((p.grad ** 2).sum() for p in model.parameters() if p.grad is not None))
         mem = torch.cuda.max_memory_allocated() / 2**30 if dev == "cuda" else 0.0
@@ -317,23 +338,24 @@ def main():
     tg_pool = set(dss["train"].by_type[big_rig]["targets"])
     _, longest = max((tl, i) for tl, i in lengths[big_rig] if i in tg_pool)
     pos8 = dss["train"].index.index((big_rig, longest))
-    bb8 = collate([dss["train"][pos8] for _ in range(8)])
+    bb8 = collate([dss["train"][pos8] for _ in range(a.worst_batch)])
     bb8 = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in bb8.items()}
     torch.cuda.reset_peak_memory_stats()
-    loss8 = cfm_loss(model, bb8["x"], is_target=bb8["is_target"], valid=bb8["valid"],
-                     gammas=KIMODO_GAMMAS,
-                     **dict(joint_bias=bb8["joint_bias"], frame_valid=bb8["frame_valid"],
-                            joint_valid=bb8["joint_valid"], text=bb8["text"],
-                            joint_sem=bb8["joint_sem"]))
+    with torch.autocast("cuda", dtype=torch.bfloat16, enabled=a.bf16):
+        loss8 = cfm_loss(model, bb8["x"], is_target=bb8["is_target"], valid=bb8["valid"],
+                         gammas=KIMODO_GAMMAS,
+                         **dict(joint_bias=bb8["joint_bias"], frame_valid=bb8["frame_valid"],
+                                joint_valid=bb8["joint_valid"], text=bb8["text"],
+                                joint_sem=bb8["joint_sem"]))
     model.zero_grad(set_to_none=True); loss8.backward()
     g8 = torch.sqrt(sum((q.grad ** 2).sum() for q in model.parameters() if q.grad is not None))
-    print(f"  [4b] B8 最坏 batch = 8 x {big_rig} (训练桶最大 J): "
+    print(f"  [4b] B{a.worst_batch} 最坏 batch = {a.worst_batch} x {big_rig} (训练桶最大 J): "
           f"loss={float(loss8.detach()):.3f}, |grad|={float(g8):.3e}")
-    gate("B8 最坏情况 loss 与梯度有限", bool(torch.isfinite(loss8)) and bool(torch.isfinite(g8)))
+    gate(f"B{a.worst_batch} 最坏情况 loss 与梯度有限", bool(torch.isfinite(loss8)) and bool(torch.isfinite(g8)))
     model.zero_grad(set_to_none=True)
     mem8 = torch.cuda.max_memory_allocated() / 2**30
     print(f"       峰值显存 {mem8:.2f} GiB")
-    gate("B8 最坏情况显存 < 60 GiB(80G 卡留余量)", mem8 < 60.0, f"{mem8:.2f} GiB")
+    gate(f"B{a.worst_batch} 最坏情况显存 < {a.mem_gate_gib:.0f} GiB", mem8 < a.mem_gate_gib, f"{mem8:.2f} GiB")
 
     # ================= [5] hyperparameters =================
     print("\n=== [5] run-1 超参数(签核用) ===")
