@@ -1267,10 +1267,31 @@ class AnyTopDataset(Dataset):
         sem_padded = None
         if self._sem_path is not None:
             if self._sem is None:
+                # EAGER, MATERIALISED load with the zip handle CLOSED afterwards. The previous
+                # lazy NpzFile kept an open zip fd cached on the dataset; DataLoader worker forks
+                # inherit that fd WITH A SHARED FILE OFFSET, and concurrent per-key zip reads
+                # across processes corrupt each other (zipfile.BadZipFile "Overlapped entries" /
+                # "Bad magic number"). Harmless under persistent workers (forked before the
+                # parent's first lazy open); fatal once workers re-fork every epoch -- all four
+                # graph-v2 factorial arms died at epoch boundaries within minutes (2026-08-19).
+                # Cost: ~46MB (TB) / ~256MB (pzh) in the parent, shared copy-on-write by forks.
                 import json as _json
-                self._sem = np.load(self._sem_path, allow_pickle=False)
-                self._sem_order = _json.loads(str(self._sem["__order_hash"]))
-                self._sem_dim = int(self._sem["__dim"])
+                import time as _time
+                for attempt in (1, 2):
+                    try:
+                        with np.load(self._sem_path, allow_pickle=False) as z:
+                            self._sem_order = _json.loads(str(z["__order_hash"]))
+                            self._sem_dim = int(z["__dim"])
+                            self._sem = {k: np.asarray(z[k]) for k in z.files
+                                         if k.startswith("emb__")}
+                        break
+                    except Exception:
+                        # one retry for transient shared-fs read inconsistency; loud, then fatal
+                        if attempt == 2:
+                            raise
+                        print(f"[anytop] joint_semantics load failed (attempt {attempt}), "
+                              f"retrying in 5s", flush=True)
+                        _time.sleep(5.0)
             ot = info["object_type"]
             key = f"emb__{ot}"
             if key not in self._sem:
