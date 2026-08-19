@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 from src.data.anytop_dataset import AnyTopDataset, _STD_FLOOR, _recover_world_positions  # noqa: E402
 from src.data.anytop_rot6d_fk import recover_from_bvh_rot_np                             # noqa: E402
 from src.data.incontext_pairs import (InContextPairs, collate, read_split,               # noqa: E402
-                                      truebones_types, DEMO_FRAMES)
+                                      truebones_types, pzh_types, DEMO_FRAMES)
 from src.models.v2.dit_motion import InContextMotionDiT, sample                          # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("v2render", ROOT / "scripts/v2_render_incontext.py")
@@ -38,6 +38,8 @@ world_of, jitter_ratio = _v2r.world_of, _v2r.jitter_ratio
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--corpus", choices=("truebones", "pzh"), default="truebones",
+                    help="rig universe; MUST match the ckpt's training corpus")
     ap.add_argument("--rigs_A", default="Alligator,Trex")
     ap.add_argument("--rigs_B", default="BrownBear,Elephant")
     ap.add_argument("--steps_sweep", default="5,10,25,50")
@@ -59,9 +61,13 @@ def main():
     model.load_state_dict(ck["model"]); model.eval()
     ep = ck.get("epoch", -1)
     print(f"[diag] ckpt {a.ckpt} (epoch {ep})", flush=True)
+    DF = int(ca.get("demo_frames", DEMO_FRAMES))
+    TF = int(ca.get("target_frames", 240))
+    if DF != DEMO_FRAMES or TF != 240:
+        print(f"[diag] ckpt frame layout demo={DF} target={TF} (from ckpt args)", flush=True)
 
     cond = pickle.load(open(f"{a.data_root}/_cond_normalized_J144.pkl", "rb"))
-    tb = truebones_types(cond.keys())
+    tb = truebones_types(cond.keys()) if a.corpus == "truebones" else pzh_types(cond.keys())
     names = {k: read_split(a.splits_dir, k) for k in ("train", "val", "held_representative")}
     base = AnyTopDataset(data_root=a.data_root, split="all", num_frames=300, max_joints=144,
                          load_captions=True, caption_emb_cache=a.caption_cache,
@@ -69,9 +75,11 @@ def main():
                          species_whitelist=tb, splits_dir=a.splits_dir,
                          texts_json_name=a.texts_json)
     dsA = InContextPairs(base, names["val"], names["train"], object_types=tb,
-                         balance_skeletons=False, seed=a.seed)
+                         balance_skeletons=False, seed=a.seed, demo_frames=DF,
+                         target_frames=TF)
     dsB = InContextPairs(base, names["held_representative"], names["held_representative"],
-                         object_types=tb, balance_skeletons=False, seed=a.seed)
+                         object_types=tb, balance_skeletons=False, seed=a.seed,
+                         demo_frames=DF, target_frames=TF)
 
     steps_sweep = [int(x) for x in a.steps_sweep.split(",")]
     onestep_ts = [float(x) for x in a.onestep_ts.split(",")]
@@ -87,13 +95,13 @@ def main():
         item = ds[pos]
         b = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in collate([item]).items()}
         J = int(item["n_joints"])
-        t_real = int(item["frame_valid"][DEMO_FRAMES:].sum())
+        t_real = int(item["frame_valid"][DF:].sum())
         t_item = base[ds.index[pos][1]]
         mean = np.asarray(t_item["anytop_mean"])[:J]; std = np.asarray(t_item["anytop_std"])[:J]
         parents = [int(p) for p in t_item["parent_indices"][:J]]
         offsets = np.asarray(t_item["rest_offsets"])[:J]
         gt = b["x"][0].float().cpu().numpy()
-        gt_seg = gt[DEMO_FRAMES:DEMO_FRAMES + t_real, :J]
+        gt_seg = gt[DF:DF + t_real, :J]
         gt_w = world_of(gt_seg, mean, std)
         ckw = dict(joint_bias=b["joint_bias"], frame_valid=b["frame_valid"],
                    joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"])
@@ -105,7 +113,7 @@ def main():
             torch.manual_seed(a.seed)
             with torch.no_grad():
                 gen = sample(model, b["x"], b["is_target"], st, **ckw)
-            gseg = gen[0].float().cpu().numpy()[DEMO_FRAMES:DEMO_FRAMES + t_real, :J]
+            gseg = gen[0].float().cpu().numpy()[DF:DF + t_real, :J]
             ja, jr, _, _ = jitter_ratio(world_of(gseg, mean, std), gt_w)
             h1[st] = round(ja, 2)
         row["H1_jitter_vs_steps"] = h1
@@ -114,7 +122,7 @@ def main():
         torch.manual_seed(a.seed)
         with torch.no_grad():
             gen_ref = sample(model, b["x"], b["is_target"], 10, **ckw)
-        gen10 = gen_ref[0].float().cpu().numpy()[DEMO_FRAMES:DEMO_FRAMES + t_real, :J]
+        gen10 = gen_ref[0].float().cpu().numpy()[DF:DF + t_real, :J]
 
         # ---- H2: one-step x0 from lightly-noised GT ----
         h2 = {}
@@ -127,7 +135,7 @@ def main():
             xt = torch.where((~b["is_target"])[..., None, None], x1, xt)
             with torch.no_grad():
                 xhat = model(xt, tt, is_target=b["is_target"], **ckw)
-            xseg = xhat[0].float().cpu().numpy()[DEMO_FRAMES:DEMO_FRAMES + t_real, :J]
+            xseg = xhat[0].float().cpu().numpy()[DF:DF + t_real, :J]
             ja, _, _, _ = jitter_ratio(world_of(xseg, mean, std), gt_w)
             h2[tv] = round(ja, 2)
         row["H2_onestep_x0_jitter"] = h2

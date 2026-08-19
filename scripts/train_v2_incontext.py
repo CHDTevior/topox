@@ -31,12 +31,23 @@ from src.models.v2.dit_motion import (InContextMotionDiT, cfm_loss,             
 
 
 def to_dev(b, dev):
-    return {k: (v.to(dev, non_blocking=True) if torch.is_tensor(v) else v) for k, v in b.items()}
+    # parents/n_joints stay on CPU: the FK loss consumes them as python ints (.tolist()/int()),
+    # and a GPU round-trip would force a sync per sample per step (codex 01a01939 fix 3).
+    return {k: (v.to(dev, non_blocking=True) if torch.is_tensor(v) and k not in ("parents", "n_joints")
+                else v) for k, v in b.items()}
 
 
 def cond_of(b):
     return dict(joint_bias=b["joint_bias"], frame_valid=b["frame_valid"],
                 joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"])
+
+
+def fk_pack_of(b):
+    """gamma_fk inputs, exactly the fields InContextPairs(emit_fk_fields=True) adds to the batch.
+    _STD_FLOOR must be the SAME constant the dataset normalized with, or de-normalization drifts."""
+    from src.data.anytop_dataset import _STD_FLOOR
+    return dict(anytop_mean=b["anytop_mean"], anytop_std=b["anytop_std"], std_floor=_STD_FLOOR,
+                parents=b["parents"], rest_offsets=b["rest_offsets"], n_joints=b["n_joints"])
 
 
 def atomic_save(obj, path: Path):
@@ -133,6 +144,13 @@ def main():
     ap.add_argument("--p_drop_text", type=float, default=0.0)
     ap.add_argument("--p_drop_demo", type=float, default=0.0)
     ap.add_argument("--p_drop_both", type=float, default=0.0)
+    ap.add_argument("--gamma_fk", type=float, default=0.0,
+                    help="Kimodo Eq.1 gamma7 FK<->RIC consistency weight on the bone-scaled "
+                         "residual (0.25 = slope-equivalent of Kimodo's raw-unit 5.0, the "
+                         "calibrated launch value; 0 = off, the pre-2026-08-19 objective)")
+    ap.add_argument("--fk_warmup_steps", type=int, default=5000,
+                    help="linear ramp of gamma_fk over the first N global steps (hy273 recipe); "
+                         "only read when gamma_fk > 0")
     a = ap.parse_args()
     assert torch.cuda.is_available(), "run-1 is a GPU run; refusing to silently train on CPU"
     # ---- DDP is opt-in via torchrun's env; absent WORLD_SIZE keeps the single-GPU path
@@ -166,10 +184,12 @@ def main():
                          texts_json_name=a.texts_json)
     ds_tr = InContextPairs(base, names["train"], names["train"], object_types=types,
                            demo_frames=a.demo_frames, target_frames=a.target_frames,
-                           balance_skeletons=(a.balance == "rig"), seed=a.seed)
+                           balance_skeletons=(a.balance == "rig"), seed=a.seed,
+                           emit_fk_fields=(a.gamma_fk > 0))
     ds_va = InContextPairs(base, names["val"], names["train"], object_types=types,
                            demo_frames=a.demo_frames, target_frames=a.target_frames,
-                           balance_skeletons=False, seed=a.seed + 1)
+                           balance_skeletons=False, seed=a.seed + 1,
+                           emit_fk_fields=(a.gamma_fk > 0))
     print(f"[train] {len(ds_tr)} targets / {len(ds_tr.types)} rigs / {ds_tr.pair_count()} pairs "
           f"| bucket-A val {len(ds_va)} targets / {len(ds_va.types)} rigs", flush=True)
 
@@ -215,7 +235,7 @@ def main():
                 # change the objective or the data distribution under the same ckpt lineage.
                 "corpus", "balance", "random_caption", "demo_frames", "target_frames",
                 "t_sampler", "v_space", "p_drop_text", "p_drop_demo", "p_drop_both",
-                "bf16", "warmup_steps", "wd")
+                "bf16", "warmup_steps", "wd", "gamma_fk", "fk_warmup_steps")
         core = ("dim", "depth", "heads", "batch", "lr", "seed", "data_root", "splits_dir",
                 "joint_sem", "caption_cache", "texts_json")
         missing = [k for k in core if k not in old_args]
@@ -296,7 +316,7 @@ def main():
         # ds_va shares `base`; the toggle is safe because the val loader is num_workers=0.
         rc_saved = base.random_caption
         base.random_caption = False
-        vtot, vn = 0.0, 0
+        vtot, vn, vfk, vfkd = 0.0, 0, 0.0, 0.0
         with fixed_torch_rng(10_000 + a.seed):
             with torch.no_grad():
                 for vb in dl_va:
@@ -304,9 +324,21 @@ def main():
                     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=a.bf16):
                         # Same objective as training (t_sampler/v_space) so val tracks what is
                         # optimized; fixed_torch_rng keeps the draws identical across passes.
-                        vloss = cfm_loss(model, vb["x"], is_target=vb["is_target"], valid=vb["valid"],
-                                         gammas=KIMODO_GAMMAS, t_sampler=a.t_sampler,
-                                         v_space=a.v_space, **cond_of(vb))
+                        # gamma_fk enters at FULL weight (no warmup ramp): val measures the
+                        # objective being approached, and a step-dependent val is not comparable
+                        # across the run.
+                        if a.gamma_fk > 0:
+                            vloss, vp = cfm_loss(model, vb["x"], is_target=vb["is_target"],
+                                                 valid=vb["valid"], gammas=KIMODO_GAMMAS,
+                                                 t_sampler=a.t_sampler, v_space=a.v_space,
+                                                 gamma_fk=a.gamma_fk, fk_pack=fk_pack_of(vb),
+                                                 return_parts=True, **cond_of(vb))
+                            vfk += vp["fk_consist"]; vfkd += vp["fk_dist"]
+                        else:
+                            vloss = cfm_loss(model, vb["x"], is_target=vb["is_target"],
+                                             valid=vb["valid"], gammas=KIMODO_GAMMAS,
+                                             t_sampler=a.t_sampler, v_space=a.v_space,
+                                             **cond_of(vb))
                     vtot += float(vloss); vn += 1
                     if a.val_max_batches and vn >= a.val_max_batches:
                         break
@@ -315,7 +347,9 @@ def main():
             probe_b = to_dev(next(iter(dl_va)), dev)
             p5 = connectivity_probe(raw_model, probe_b, a.demo_frames)
         base.random_caption = rc_saved
-        print(f"  [val] flow_loss={v:.5f} | g{gstep} | P5 demo={p5['demo']:.2e} "
+        fk_str = (f" | fk={vfk / max(vn, 1):.4f} fkdist={vfkd / max(vn, 1):.3f}bl"
+                  if a.gamma_fk > 0 else "")
+        print(f"  [val] flow_loss={v:.5f}{fk_str} | g{gstep} | P5 demo={p5['demo']:.2e} "
               f"text={p5['text']:.2e} sem={p5['joint_sem']:.2e}", flush=True)
         rng_state = {"cpu": torch.get_rng_state(), "cuda": torch.cuda.get_rng_state_all(),
                      "np": np.random.get_state()}
@@ -344,10 +378,17 @@ def main():
                 lr_now = a.lr * min(1.0, (gstep + 1) / a.warmup_steps)
                 for pg in opt.param_groups:
                     pg["lr"] = lr_now
+            fk_kw = {}
+            if a.gamma_fk > 0:
+                # hy273 recipe: linear warmup of the consistency weight -- full-strength FK
+                # penalties on the garbage x1_pred of the first steps destabilize more than they
+                # teach. gstep-based, so a resume continues the ramp exactly where it stopped.
+                ramp = min(1.0, (gstep + 1) / max(a.fk_warmup_steps, 1))
+                fk_kw = dict(gamma_fk=a.gamma_fk * ramp, fk_pack=fk_pack_of(b))
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=a.bf16):
                 loss = cfm_loss(model, b["x"], is_target=b["is_target"], valid=b["valid"],
                                 gammas=KIMODO_GAMMAS, t_sampler=a.t_sampler, v_space=a.v_space,
-                                **cond_of(b))
+                                **fk_kw, **cond_of(b))
             bad = (~torch.isfinite(loss.detach())).float()
             if ddp:
                 # The skip decision must be COLLECTIVE: one rank skipping backward while its peers

@@ -94,11 +94,16 @@ class InContextPairs(Dataset):
 
     def __init__(self, base: AnyTopDataset, target_names, demo_names, *,
                  object_types=None, demo_frames=DEMO_FRAMES, target_frames=TARGET_FRAMES,
-                 balance_skeletons=True, seed=0):
+                 balance_skeletons=True, seed=0, emit_fk_fields=False):
         self.base = base
         self.Td, self.Tt = int(demo_frames), int(target_frames)
         self.balance = bool(balance_skeletons)
         self.seed = int(seed)
+        # gamma_fk (Kimodo Eq.1 term 7) needs the target rig's de-normalization stats + FK
+        # skeleton in the SERVED joint order. The base item already carries all four exactly as
+        # the preflight FK gate consumes them; flag-gated so pre-gamma7 runs see a byte-identical
+        # batch dict.
+        self.emit_fk_fields = bool(emit_fk_fields)
         keep = set(object_types) if object_types is not None else None
 
         tgt_pool, demo_pool = defaultdict(list), defaultdict(list)
@@ -261,6 +266,15 @@ class InContextPairs(Dataset):
         sem = t_item.get("joint_semantics")          # order-hash checked inside the dataset
         if sem is not None:
             out["joint_sem"] = torch.as_tensor(np.asarray(sem))[:J].float()
+        if self.emit_fk_fields:
+            # Same fields, same [:J] slice, same source item as scripts/v2_preflight_bz1.py's
+            # FK==RIC gate -- i.e. already in the served (permuted) joint order. Only the TARGET
+            # item's rig matters: gamma_fk applies to target frames, and demo shares the rig.
+            out["anytop_mean"] = torch.as_tensor(np.asarray(t_item["anytop_mean"])[:J]).float()
+            out["anytop_std"] = torch.as_tensor(np.asarray(t_item["anytop_std"])[:J]).float()
+            out["parents"] = torch.as_tensor(
+                np.asarray(t_item["parent_indices"][:J], dtype=np.int64))
+            out["rest_offsets"] = torch.as_tensor(np.asarray(t_item["rest_offsets"])[:J]).float()
         return out
 
 
@@ -302,5 +316,16 @@ def collate(batch):
         out["joint_sem"] = sem
     if "text" in batch[0]:
         out["text"] = torch.stack([b["text"] for b in batch])
+    if "anytop_mean" in batch[0]:
+        # gamma_fk fields, padded to Jm. Padded joints never reach the FK chain (the loss slices
+        # [:n_joints] per sample), so zero mean/std/offsets and parent -1 are inert placeholders.
+        am = torch.zeros(B, Jm, 13); asd = torch.zeros(B, Jm, 13)
+        par = torch.full((B, Jm), -1, dtype=torch.long); ro = torch.zeros(B, Jm, 3)
+        for k, b in enumerate(batch):
+            J = b["n_joints"]
+            am[k, :J] = b["anytop_mean"]; asd[k, :J] = b["anytop_std"]
+            par[k, :J] = b["parents"]; ro[k, :J] = b["rest_offsets"]
+        out.update(anytop_mean=am, anytop_std=asd, parents=par, rest_offsets=ro,
+                   n_joints=torch.tensor([b["n_joints"] for b in batch], dtype=torch.long))
     out["valid"] = out["frame_valid"][:, :, None] & joint_valid[:, None, :]      # [B,T,Jm]
     return out

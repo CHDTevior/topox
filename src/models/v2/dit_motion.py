@@ -222,8 +222,17 @@ class InContextMotionDiT(nn.Module):
 #
 # gammas follow Kimodo Eq.1 (gamma1=gamma3=gamma5=10.0, gamma2=2.0, gamma4=3.0, gamma6=4.0). They
 # are a STARTING POINT, not settled: Kimodo trains one human skeleton on 700h of mocap, we train 64
-# heterogeneous skeletons on ~1k clips. Kimodo's FK-consistency term (gamma7=5.0) is deliberately
-# not included in this first version.
+# heterogeneous skeletons on ~1k clips. Kimodo's FK-consistency term (gamma7=5.0) was deliberately
+# not included in the first version (run-1 / run-3, to save one differentiable-FK pass per step).
+# HISTORY: the 1000-epoch run-1 diagnosis then showed exactly the failure this term exists to
+# prevent -- H4 FK<->RIC inconsistency at 4-19% on unseen rigs, monotonically worsening, untouched
+# by more training -- and on 2026-08-19 the user directed full Eq.1 alignment ("kimodo有的你都得
+# 加"). gamma7 now ships via cfm_loss(gamma_fk=..., fk_pack=...) + src/models/v2/fk_torch.py. The
+# launch weight is 0.25, NOT the paper's 5.0: our residual is divided by 0.15 x mean bone length
+# (~0.05m on a human), so 0.25 == the SAME physical-unit slope Kimodo's 5.0 applies (5.0 x 0.15 x
+# 0.33m), and the measured grad share on real predictions is 0.14-0.35 of the grouped loss
+# (calibrated on run-1 ep1000, codex thread 01a01939). The trainer default stays 0.0 so
+# pre-alignment checkpoints resume bit-identically.
 #
 # gamma_root_rot IS THE FIRST ABLATION AXIS, and the one gamma we have positive reason to distrust.
 # Measured shares on 300 real TrueBones clips (err2 = x^2, the initial gradient landscape):
@@ -297,7 +306,8 @@ def grouped_loss(err2, m, gammas):
 
 
 def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=False,
-             t_sampler="uniform", v_space=False, sigma_min=0.05, **cond):
+             t_sampler="uniform", v_space=False, sigma_min=0.05,
+             gamma_fk=0.0, fk_pack=None, **cond):
     """Conditional flow matching with **x-prediction**: the network outputs the clean motion.
 
     `gammas=None` keeps the original single unweighted MSE (kept as the ablation baseline).
@@ -343,6 +353,29 @@ def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=Fals
         loss, parts = (err2 * m).sum() / m.sum().clamp_min(1.0), {}
     else:
         loss, parts = grouped_loss(err2, m, gammas)
+    if gamma_fk > 0.0:
+        # Kimodo Eq.1 term 7 (gamma7=5.0): FK(pred rotations) vs RIC(pred positions) consistency.
+        # Added 2026-08-19 (user: "kimodo有的你都得加") after the 1000-epoch run-1 verdict that the
+        # FK<->RIC split (H4, 4-19% on unseen rigs) does not train away without being penalized.
+        # The caller passes gamma_fk ALREADY warmup-ramped (hy273 recipe: linear over
+        # fk_warmup_steps); NOT weighted by the v_space 1/(1-t)^2 factor -- consistency is a
+        # property of x1_pred at every t, and both references apply it unweighted.
+        if fk_pack is None:
+            raise ValueError("gamma_fk > 0 requires fk_pack (mean/std/parents/offsets/n_joints); "
+                             "build the dataset with emit_fk_fields=True")
+        from src.models.graph_salad.world_recovery import recover_world_positions_torch
+        from src.models.v2.fk_torch import fk_ric_consistency_loss
+        fk_term, fk_dist = fk_ric_consistency_loss(
+            x1_pred, fk_pack["anytop_mean"], fk_pack["anytop_std"], fk_pack["std_floor"],
+            fk_pack["parents"], fk_pack["rest_offsets"], fk_pack["n_joints"],
+            frame_mask=is_target, ric_world_fn=recover_world_positions_torch,
+            want_diag=return_parts)
+        loss = loss + gamma_fk * fk_term
+        if return_parts:
+            # scalar conversions sync; keep them off the per-step train path (return_parts=False)
+            parts = dict(parts)
+            parts["fk_consist"] = float(fk_term.detach())
+            parts["fk_dist"] = fk_dist   # mean |FK-RIC| in bone-length units, weight-0 diagnostic
     return (loss, parts) if return_parts else loss
 
 
