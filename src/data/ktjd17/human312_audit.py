@@ -40,6 +40,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
@@ -72,7 +73,7 @@ from .source_parser import (
 )
 
 
-HUMAN312_AUDIT_VERSION = "ktjd17-human1-exhaustive-source-audit-v2"
+HUMAN312_AUDIT_VERSION = "ktjd17-human1-exhaustive-source-audit-v3"
 HUMAN312_APPROVAL_VERSION = "ktjd17-human1-source-audit-approval-v2"
 HUMAN312_INDEPENDENT_DECODER = "numpy-independent-motionstreamer272-v1"
 HUMAN_AUDIT_GENERATION_DIRECTORY = ".ktjd17_human_source_audit_generations"
@@ -108,6 +109,16 @@ HUMAN_ANOMALY_POLICY = (
     "content-hashed per-clip numeric, schema, rotation, or FK anomalies; "
     "source mutation or missing content identity aborts the audit; never "
     "silently drop the Human rig"
+)
+TRANSIENT_ENOENT_RETRY_DELAYS_SECONDS = (
+    0.0,
+    0.05,
+    0.1,
+    0.2,
+    0.4,
+    0.8,
+    1.6,
+    3.2,
 )
 EXPECTED_PARENT_MANIFEST_FILES = frozenset(
     {
@@ -298,9 +309,32 @@ def _canonical_json(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _retry_transient_enoent(operation: Any, *, label: str) -> Any:
+    """Retry only the observed GPFS transient ENOENT, then fail closed."""
+    last_error: FileNotFoundError | None = None
+    for delay in TRANSIENT_ENOENT_RETRY_DELAYS_SECONDS:
+        if delay:
+            time.sleep(delay)
+        try:
+            return operation()
+        except FileNotFoundError as exc:
+            last_error = exc
+    if last_error is None:  # pragma: no cover - the loop is statically non-empty
+        raise Human312AuditError(f"{label} retry schedule is empty")
+    last_error.add_note(
+        f"{label} remained unavailable after "
+        f"{len(TRANSIENT_ENOENT_RETRY_DELAYS_SECONDS)} attempts"
+    )
+    raise last_error
+
+
 def _load_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        text = _retry_transient_enoent(
+            lambda: path.read_text(encoding="utf-8"),
+            label=f"JSON read {path}",
+        )
+        return json.loads(text)
     except Exception as exc:  # noqa: BLE001
         raise Human312AuditError(f"cannot read JSON {path}: {exc}") from exc
 
@@ -335,7 +369,10 @@ def _write_bytes_atomic(path: Path, payload: bytes, *, mode: int = 0o644) -> Non
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(payload)
             handle.flush()
-            os.fsync(handle.fileno())
+            _retry_transient_enoent(
+                lambda: os.fsync(handle.fileno()),
+                label=f"file fsync {temporary}",
+            )
         os.chmod(temporary, mode)
         os.replace(temporary, path)
         _fsync_directory(path.parent)
@@ -372,7 +409,10 @@ def _write_npz_atomic(path: Path, payload: Mapping[str, np.ndarray]) -> str:
     try:
         np.savez_compressed(temporary, **payload)
         with temporary.open("rb") as handle:
-            os.fsync(handle.fileno())
+            _retry_transient_enoent(
+                lambda: os.fsync(handle.fileno()),
+                label=f"NPZ fsync {temporary}",
+            )
         os.replace(temporary, path)
         _fsync_directory(path.parent)
         return _sha256_file(path)
@@ -446,11 +486,14 @@ def _read_stable_source_bytes(path: Path) -> tuple[bytes, str, dict[str, int]]:
 
 
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    def sync_once() -> None:
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    _retry_transient_enoent(sync_once, label=f"directory fsync {path}")
 
 
 def _ensure_canonical_directory(path: Path, *, label: str) -> Path:

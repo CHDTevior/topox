@@ -196,6 +196,93 @@ def _write_fixture_task(root: Path) -> tuple[dict[str, object], np.ndarray, np.n
 
 
 class Human312AuditTests(unittest.TestCase):
+    def test_transient_enoent_retry_is_bounded_and_specific(self) -> None:
+        attempts = 0
+
+        def eventually_visible() -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise FileNotFoundError("injected transient visibility failure")
+            return "visible"
+
+        with mock.patch.object(human_audit.time, "sleep") as sleep:
+            self.assertEqual(
+                human_audit._retry_transient_enoent(
+                    eventually_visible, label="fixture visibility"
+                ),
+                "visible",
+            )
+        self.assertEqual(attempts, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+        permanent_attempts = 0
+
+        def permanently_absent() -> None:
+            nonlocal permanent_attempts
+            permanent_attempts += 1
+            raise FileNotFoundError("injected permanent absence")
+
+        with mock.patch.object(human_audit.time, "sleep"):
+            with self.assertRaisesRegex(FileNotFoundError, "permanent absence"):
+                human_audit._retry_transient_enoent(
+                    permanently_absent, label="fixture absence"
+                )
+        self.assertEqual(
+            permanent_attempts,
+            len(human_audit.TRANSIENT_ENOENT_RETRY_DELAYS_SECONDS),
+        )
+
+        other_attempts = 0
+
+        def other_io_failure() -> None:
+            nonlocal other_attempts
+            other_attempts += 1
+            raise PermissionError("injected permission failure")
+
+        with self.assertRaisesRegex(PermissionError, "permission failure"):
+            human_audit._retry_transient_enoent(
+                other_io_failure, label="fixture permission"
+            )
+        self.assertEqual(other_attempts, 1)
+
+    def test_atomic_write_and_json_read_retry_transient_enoent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "fixture.json"
+            real_fsync = os.fsync
+            fsync_calls = 0
+
+            def transient_fsync(descriptor: int) -> None:
+                nonlocal fsync_calls
+                fsync_calls += 1
+                if fsync_calls == 1:
+                    raise FileNotFoundError("injected transient fsync failure")
+                real_fsync(descriptor)
+
+            with (
+                mock.patch.object(human_audit.os, "fsync", side_effect=transient_fsync),
+                mock.patch.object(human_audit.time, "sleep"),
+            ):
+                _write_json(path, {"status": "pass"})
+            self.assertGreaterEqual(fsync_calls, 3)
+
+            real_read_text = Path.read_text
+            read_calls = 0
+
+            def transient_read_text(observed: Path, *args: object, **kwargs: object) -> str:
+                nonlocal read_calls
+                read_calls += 1
+                if observed == path and read_calls == 1:
+                    raise FileNotFoundError("injected transient read failure")
+                return real_read_text(observed, *args, **kwargs)
+
+            with (
+                mock.patch.object(Path, "read_text", new=transient_read_text),
+                mock.patch.object(human_audit.time, "sleep"),
+            ):
+                self.assertEqual(human_audit._load_json(path), {"status": "pass"})
+            self.assertEqual(read_calls, 2)
+
     def test_fixed_neutral_primary_parser_matches_independent_decoder(self) -> None:
         data = _fixture()
         offsets = np.zeros((22, 3), dtype=np.float64)
