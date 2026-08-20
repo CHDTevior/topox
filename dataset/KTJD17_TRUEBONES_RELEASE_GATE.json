@@ -1,0 +1,126 @@
+{
+  "artifact_kind": "ktjd17_truebones_external_release_gate",
+  "compatibility_link": "dataset/ktjd17_truebones",
+  "coordinate_contract": "right-handed; +Y is screen-up; +Z points out of the screen toward the viewer",
+  "created_at_utc": "2026-08-19T22:19:05Z",
+  "documentation": {
+    "path": "dataset/KTJD17_TRUEBONES_README.md",
+    "sha256": "65c86aecfdaf5b98d70a24af8035599a6769b9f7584b092294f4075e03b8a4cf",
+    "usage_smoke_status": "pass"
+  },
+  "external_gate_scope": "testing readiness for the exact pinned generation only; it does not mutate or relabel the immutable generation",
+  "fixed_qa": {
+    "J_phys_max": 142,
+    "T_max_observed": 237,
+    "clip_count": 986,
+    "fail_count": 0,
+    "maxima": {
+      "contact_mismatch_count": 0,
+      "direct_vs_fk_max_norm": 2.4561493797115403e-07,
+      "heading_max_abs": 2.980215096926031e-08,
+      "mask_mismatch_count": 0,
+      "rigid_edge_max_norm": 2.165012556871316e-07,
+      "source_global_rotation_geodesic_max_rad": 6.322027276634106e-08,
+      "source_parser_fk_max_norm": 5.8320295398326056e-15,
+      "source_position_roundtrip_max_norm": 5.249070890132429e-07,
+      "velocity_max_norm_fps": 1.0171465092459365e-06
+    },
+    "pass_count": 986,
+    "path": "dataset/validation_reports/ktjd17_truebones_fixed_qa_20260819T215405576671Z-2d04a8d85638.json",
+    "sha256": "fcf6fb1ce9ede7e1db035dd7c617631e8f729532d35e1ce79e6694029129f1ae",
+    "skeleton_count": 66,
+    "status": "pass"
+  },
+  "generation": {
+    "conversion_complete": true,
+    "full_conversion_authorized": true,
+    "generation_id": "20260819T215405576671Z-2d04a8d85638",
+    "generation_json_sha256": "46a0d011a47e09fc5451aa97de5fe9d01a561465a8a09ae8bec75e36a9fd6484",
+    "immutable_internal_flags": {
+      "postbuild_fixed_qa_complete": false,
+      "postbuild_visual_regression_complete": false,
+      "ready_for_training": false,
+      "status": "numeric_pass_visual_regression_pending"
+    },
+    "legacy_btjd_motion_channels_used": false,
+    "path": "dataset/.ktjd17_truebones_generations/20260819T215405576671Z-2d04a8d85638",
+    "rotation_authority": "original_bvh_declared_rotation_channels_only",
+    "source_plan_commit": "9181f5cccbad23e941bf94c2874daf36e7f288cf"
+  },
+  "ready_for_training": false,
+  "ready_to_test": true,
+  "reviews": {
+    "final_data_release": {
+      "backend": "codex exec",
+      "blocking_findings": [],
+      "major_findings": [],
+      "minor_findings": [],
+      "model": "gpt-5.5",
+      "model_reasoning_effort": "xhigh",
+      "path": "scratch/_codex_ktjd17_final_release_review.md",
+      "release_decision": "safe to create ready_to_test=true for this exact generation",
+      "sha256": "ad65addd7ae644261cb87a849d6540408ad81d958785c792436adead884fb553",
+      "thread_id": "01a01c14-9e8b-71b3-a766-14390edf3d3b",
+      "verdict": "pass"
+    },
+    "full_build_code": {
+      "backend": "codex exec",
+      "blocking_findings": [],
+      "major_findings": [],
+      "minor_findings": [],
+      "model": "gpt-5.5",
+      "model_reasoning_effort": "xhigh",
+      "path": "scratch/_codex_ktjd17_full_build_code_rereview.md",
+      "sha256": "0d4e60b6a30122bbd65172031d5b1c64459e00fdc8827b911529f2ef1c304d5f",
+      "thread_id": "01a01bf0-af23-7120-a455-3f152b74013a",
+      "verdict": "pass"
+    }
+  },
+  "schema_version": 1,
+  "scope": {
+    "accepted_clip_count": 986,
+    "available_rig_count": 66,
+    "conversion_reject_count": 0,
+    "parent_clip_count": 1070,
+    "parent_rig_count": 70,
+    "split_counts": {
+      "held_representative": 149,
+      "held_stress": 115,
+      "train": 671,
+      "val": 51
+    },
+    "topology_family_counts": {
+      "dragon_or_deep_topology": 42,
+      "other": 303,
+      "quadruped": 375,
+      "snake": 30,
+      "spider_crab": 119,
+      "winged": 117
+    },
+    "unavailable_rig_count": 4,
+    "unavailable_rigs": [
+      "Ant",
+      "Crab",
+      "Deer",
+      "Jaguar"
+    ],
+    "upstream_reject_count": 84
+  },
+  "verdict": "pass",
+  "visual_qa": {
+    "coordinate_contract": "right-handed; +Y is screen-up; +Z points out of the screen toward the viewer",
+    "file_count": 198,
+    "gif_count": 66,
+    "postbuild_generation_id": "20260819T215929053759Z-faf7ba07b6f5",
+    "postbuild_generation_json_sha256": "cb3d9e2bfeffa76717bcb49564f67824c36f8584e8eae81d7dc374a7fc5413e7",
+    "postbuild_visual_index_sha256": "6754c9d8f909fe11f04c44e3499c69f49c1c524eade9e4634c9a3827755b3992",
+    "postbuild_visual_path": "dataset/ktjd17_truebones_visual/.ktjd17_visual_qa_generations/20260819T215929053759Z-faf7ba07b6f5",
+    "prebuild_signed_gate_path": "dataset/ktjd17_truebones_forward_visual_gate.json",
+    "prebuild_signed_gate_sha256": "506b177ba2ec9df6bdcc479fbe9606a5d2acf9001dcd63580ace011e443f1bd8",
+    "prebuild_to_postbuild_byte_identity_count": 198,
+    "sha256sum_stream_sha256_newline_sorted": "47cb1948c4b34b2a2f5bfbd1f24d8e722c0b8ee13eff6c6d1d71af022e20abdc",
+    "status": "pass",
+    "visual_equivalence_path": "dataset/ktjd17_truebones_visual_equivalence_20260819T215929053759Z-faf7ba07b6f5.json",
+    "visual_equivalence_sha256": "73e29dd5039c110df41a1b8f1939458ef9570a403589b8024340cf26fa8df4ba"
+  }
+}
