@@ -181,3 +181,26 @@ generator(a.seed+7777)→ 四臂数据流同一。E0 而非 run-1d 作因果基�
 归一,B2×4 梯度均值≠单卡 B8;E0 同时把注意力重构本身控制住)。~4.7h/臂。
 **验收指标:B 桶(未见骨架)H4 地板 7.5-10.6% 是否被砸穿 + 深链 fkdist + H1 不劣化 + 渲染目验。**
 **大实验(run-3-kimodo)推迟至本结论出炉(user 2026-08-19 晚指令);续期守望 cron 已删。**
+
+## 10. 夜航指令 2026-08-20 ~04:1xZ(user 睡前)
+
+**User 原话要点**:"今晚训一版本大的,用我们最新接受了改进的大模型,训一次到 50epoch,看看效果,
+明天看看如果还是烂我们就换数据(我做了一版 kimodo-like 的数据)和方法(有一点新的基于参考的 idea)"
++ "你把训练安排好,我先去睡觉了"。→ 明天的岔路口:效果不行 → user 的 kimodo-like 数据 + 新参考式方法。
+
+**大跑配置(runs/v2_pzh_262m_gv2)**:262M × PZ+human,run-3 全配方(JiT v-空间 + logitnormal +
+CFG 三路 drop)+ **今天全部过审改进:γ_fk=1.0(fk_warmup 5000)+ struct_feats + dir_bias**。
+资源:blossom01 到期,只有 flamingo02 续的 2×H200(2.5 天)→ 单节点双卡 torchrun standalone
+(新 launcher scripts/_launch_v2_ddp_1node.sh),global8(B4×2),**lr 5e-5**(Goyal 半档 vs
+global16 的 1e-4),EPOCHS=50。发射前:PZ 279 训练骨架 graph-v2 缓存 assert 全绿;40 步 smoke。
+morning 对表点:老大跑停点 g36000(=ep6.5,无γ₇ 无 graph-v2)—— 双卡过夜约到 ep4-5(半吞吐),
+用同步数 val + H4 诊断 + capswap 对照。
+
+**四臂判决电池**(E0-E3 各 500ep 完赛)在大跑发射前占双卡跑:4×渲染(终版渲染器:地板+world
+能量选择+train 桶)+ 8×诊断 → 四组渲染发 user + 判决表并入晨报。
+
+**caption-swap 战果(今晚新证据)**:TB 小模型(E0)文本效应比 14-46%(弱推力,非死);大模型
+停点 ep6 裸 cfg=1 仅 ~7%,**cfg_text=4 放大到 24.7%(Cheetah)/26.7%(人)= CFG 放大器实证
+有效**,"练久+CFG"是文本控制的活路线;Fossa 顽固(5%)。⚠cfg1/cfg4 两组选 clip 的能量尺
+不同代(picker 中途修了两轮:归一化空间→raw→world),严格配对版明天用终版 picker 重跑。
+渲染套件(地板/world 能量选择/rigs_T/capswap 脚本)codex 全 PASS(thread 01a01b1a)。

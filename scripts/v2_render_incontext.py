@@ -79,12 +79,22 @@ def draw_panel(img, xy, parents, col, x0):
 
 def project(seqs, yaw_deg=28.0):
     """Shared orthographic projection: x' = x cosA + z sinA, y' = y (up). One bbox over ALL
-    sequences so panels share scale; returns list of [T,J,2] pixel coords."""
+    sequences so panels share scale; returns (list of [T,J,2] pixel coords, ground_row_px).
+
+    The bbox is FORCED to include world y=0: with a pure-yaw projection the whole ground plane
+    maps to one horizontal pixel row, so returning that row lets the caller draw a ground line --
+    the reference the eye needs to see root-height drift ("每个物种有点飘", user 2026-08-20).
+    The line is the ABSOLUTE world y=0 reference, not a promise that GT touches it: recovered
+    rest-pose minima vary by rig (Pteranodon +1.31 aloft, Dragon -0.25 below zero; codex probe),
+    so read it as a fixed altitude datum shared by all four panels -- GEN drifting relative to
+    the GT panel's height above the line is the signal."""
     a = np.radians(yaw_deg)
     flat = [np.stack([s[..., 0] * np.cos(a) + s[..., 2] * np.sin(a), s[..., 1]], axis=-1)
             for s in seqs]
     allp = np.concatenate([f.reshape(-1, 2) for f in flat], axis=0)
     lo, hi = allp.min(0), allp.max(0)
+    lo[1] = min(lo[1], 0.0)            # ground always in frame
+    hi[1] = max(hi[1], 0.0)
     span = float(max(hi[0] - lo[0], hi[1] - lo[1], 1e-6))
     sc = (min(PANEL_W, PANEL_H) - 46) / span
     out = []
@@ -92,14 +102,15 @@ def project(seqs, yaw_deg=28.0):
         px = (f[..., 0] - (lo[0] + hi[0]) / 2) * sc + PANEL_W / 2
         py = PANEL_H - ((f[..., 1] - (lo[1] + hi[1]) / 2) * sc + PANEL_H / 2)
         out.append(np.stack([px, py], axis=-1))
-    return out
+    ground_px = PANEL_H - ((0.0 - (lo[1] + hi[1]) / 2) * sc + PANEL_H / 2)
+    return out, float(ground_px)
 
 
 def render_gif(out_path, panels, parents, caption, rig):
     """panels: list of (color_key, tag, seq [T,J,3]); shared scale across all of them."""
     names = [c for c, _, _ in panels]
     tags = [t for _, t, _ in panels]
-    seqs = project([w for _, _, w in panels])
+    seqs, ground_px = project([w for _, _, w in panels])
     T = max(s.shape[0] for s in seqs)
     W = PANEL_W * len(panels) + GAP * (len(panels) - 1)
     frames = []
@@ -108,6 +119,12 @@ def render_gif(out_path, panels, parents, caption, rig):
         d = ImageDraw.Draw(img)
         for k, (name, seq) in enumerate(zip(names, seqs)):
             x0 = k * (PANEL_W + GAP)
+            # ground: shaded underground band + line at world y=0, drawn UNDER the skeleton
+            gy = min(max(ground_px, 0), PANEL_H - 1)
+            d.rectangle([x0, gy, x0 + PANEL_W - 1, PANEL_H - 1], fill=(236, 240, 238))
+            d.line([x0, gy, x0 + PANEL_W - 1, gy], fill=(170, 186, 178), width=2)
+            for tx in range(x0 + 10, x0 + PANEL_W - 4, 28):   # sparse ticks: reads as a floor
+                d.line([tx, gy, tx - 6, gy + 5], fill=(198, 210, 202), width=1)
             d.rectangle([x0, 0, x0 + PANEL_W - 1, PANEL_H - 1], outline=(216, 223, 225))
             tt = min(t, seq.shape[0] - 1)                    # shorter panels freeze on last frame
             draw_panel(img, seq[tt], parents, COLS[name], x0)
@@ -131,6 +148,12 @@ def main():
     ap.add_argument("--corpus", choices=("truebones", "pzh"), default="truebones")
     ap.add_argument("--demo_frames", type=int, default=DEMO_FRAMES)
     ap.add_argument("--target_frames", type=int, default=TARGET_FRAMES)
+    ap.add_argument("--rigs_T", default="",
+                    help="rigs rendered from the TRAIN bucket (seen rigs, SEEN clips -- the "
+                         "memorisation upper bound; user 2026-08-20)")
+    ap.add_argument("--pick", choices=("first", "energetic"), default="first",
+                    help="which target clip per rig: first (legacy) or the max-GT-motion-energy "
+                         "one (user 2026-08-20: big actions read text-adherence best)")
     ap.add_argument("--all_targets", action="store_true",
                     help="render EVERY target clip of each requested rig (default: first only)")
     ap.add_argument("--data_root", default="data/animo4d_L4TB_plus_human_v4b272neutral")
@@ -166,9 +189,11 @@ def main():
                          balance_skeletons=False, seed=a.seed, **PK)
     dsB = InContextPairs(base, names["held_representative"], names["held_representative"],
                          object_types=tb, balance_skeletons=False, seed=a.seed, **PK)
+    dsT = InContextPairs(base, names["train"], names["train"], object_types=tb,
+                         balance_skeletons=False, seed=a.seed, **PK)
 
     jobs = []
-    for bucket, rigs, ds in (("A", a.rigs_A, dsA), ("B", a.rigs_B, dsB)):
+    for bucket, rigs, ds in (("A", a.rigs_A, dsA), ("B", a.rigs_B, dsB), ("T", a.rigs_T, dsT)):
         for r in [x.strip() for x in rigs.split(",") if x.strip()]:
             if r not in ds.types:
                 print(f"[render] SKIP {bucket}:{r} -- not in bucket "
@@ -176,7 +201,26 @@ def main():
                 continue
             positions = [i for i, (ot, _) in enumerate(ds.index) if ot == r]
             if not a.all_targets:
-                positions = positions[:1]                     # default: first target, as before
+                if a.pick == "energetic" and len(positions) > 1:
+                    # GT motion energy = mean frame-to-frame displacement of the DE-NORMALIZED
+                    # RIC positions over the head window (codex 01a01b1a: measuring in the
+                    # per-rig-normalized space distorts the ranking -- the winner changed for
+                    # Horse/Anaconda/Monkey/Raptor). Physical space, GT-only, no RNG involved.
+                    def _energy(ix):
+                        gt_it = base[ds.index[ix][1]]
+                        Jn = int(gt_it["num_joints"])
+                        Tn = min(int(gt_it["num_frames"]), ds.Tt)
+                        if Tn < 2:
+                            return 0.0
+                        xn = np.asarray(gt_it["anytop_x"])[:Jn, :, :Tn].transpose(2, 0, 1)
+                        mn = np.asarray(gt_it["anytop_mean"])[:Jn]
+                        sd = np.asarray(gt_it["anytop_std"])[:Jn]
+                        raw = (xn * (sd[None] + _STD_FLOOR) + mn[None]).astype(np.float64)
+                        xw = _recover_world_positions(raw)     # WORLD, incl. root translation
+                        return float(np.linalg.norm(np.diff(xw, axis=0), axis=-1).mean())
+                    positions = [max(positions, key=_energy)]
+                else:
+                    positions = positions[:1]                 # legacy: first target
             jobs += [(bucket, r, ds, pp) for pp in positions]
     lines = []
     for bucket, rig, ds, pos in jobs:
