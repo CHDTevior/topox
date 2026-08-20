@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import dataclasses
+import os
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,12 +28,31 @@ from src.data.ktjd17.source_parser import (  # noqa: E402
     require_source_fk_pass,
     source_fk_metrics,
 )
+from src.data.ktjd17.bvh_inventory import parse_bvh_header  # noqa: E402
+from src.data.ktjd17.encoder import (  # noqa: E402
+    EncoderConfig,
+    Ktjd17EncoderError,
+    encode_prepared_motion,
+    load_skeleton,
+    prepare_manifest_clip,
+    write_npz_atomic,
+)
+from src.data.ktjd17.codec import SmootherConfig  # noqa: E402
+from src.data.ktjd17.fixed_qa import (  # noqa: E402
+    SOURCE_FK_MAX_NORM,
+    _validate_motion,
+)
+from src.data.ktjd17.planetzoo_fixed_rig import (  # noqa: E402
+    PlanetzooFixedRigError,
+    build_planetzoo_fixed_rig,
+)
 from src.data.ktjd17.source_fk import _build_summary  # noqa: E402
 from src.data.ktjd17.source_fk_validation import (  # noqa: E402
     SourceFkValidationError,
     write_source_fk_validation_report,
 )
 from src.data.ktjd17.truebones_fixed_rig import (  # noqa: E402
+    ACTIVE_COND_SHA256,
     TRUEBONES_BTJD_MEAN_EDGE_TARGET,
     FixedRigGeometry,
     ForwardSpec,
@@ -81,6 +103,47 @@ Frame Time: 0.03333333333333333
 
 def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
+
+
+def _pz_bvh(*, chest_offset_z: float = 1.0) -> str:
+    return f"""HIERARCHY
+ROOT def_c_root_joint
+{{
+  OFFSET 0 1 0
+  CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation
+  JOINT def_c_hips_joint
+  {{
+    OFFSET 0 -0.5 0
+    CHANNELS 3 Zrotation Xrotation Yrotation
+    JOINT def_c_chest_joint
+    {{
+      OFFSET 0 0 {chest_offset_z}
+      CHANNELS 3 Zrotation Xrotation Yrotation
+    }}
+  }}
+}}
+MOTION
+Frames: 2
+Frame Time: 0.041667
+0 1 0 0 0 0 0 0 0 0 0 0
+0.2 1 0.3 0 0 15 0 5 0 0 0 0
+"""
+
+
+class _NoTposeConditioning(Mapping[str, object]):
+    def __init__(self, payload: dict[str, object]):
+        self._payload = payload
+
+    def __getitem__(self, key: str) -> object:
+        if key == "tpos_first_frame":
+            raise AssertionError("forbidden tpos_first_frame access")
+        return self._payload[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter((*self._payload, "tpos_first_frame"))
+
+    def __len__(self) -> int:
+        return len(self._payload) + 1
 
 
 class SourceRow6dTests(unittest.TestCase):
@@ -288,6 +351,284 @@ class TruebonesFixedRigTests(unittest.TestCase):
         np.testing.assert_array_equal(first.rest_positions, second.rest_positions)
         np.testing.assert_array_equal(first.offsets, second.offsets)
         self.assertNotEqual(first.payload_sha256, second.payload_sha256)
+
+
+class PlanetzooFixedRigTests(unittest.TestCase):
+    @staticmethod
+    def _rig(path: Path) -> dict[str, object]:
+        header = parse_bvh_header(path)
+        names = list(header.joint_names)
+        parents = list(header.parents)
+        return {
+            "rig_id": "PZ_Fixture",
+            "source_family": "planetzoo",
+            "topology_family": "quadruped",
+            "rest_pose": {
+                "source_path": str(path),
+                "selection_method": "first_sorted_processed_clip",
+                "rest_layout_sha256": header.rest_layout_sha256(),
+            },
+            "joint_map": {
+                "source_joint_names": names,
+                "source_parents": parents,
+                "source_node_kinds": ["joint"] * 3,
+                "source_rotation_layout_sha256": header.rotation_layout_sha256(),
+                "source_root_index_for_btjd_root": 0,
+                "btjd_joint_names": names,
+                "btjd_parents": parents,
+                "btjd_to_source": [0, 1, 2],
+                "rotation_source_kind": ["animated_dof"] * 3,
+                "direct_source_edge_count": 2,
+                "source_skipping_edge_count": 0,
+                "animated_dof_count": 3,
+                "fixed_dof_count": 0,
+                "mapping_kind": "exact_joint_name_with_source_ancestry_check",
+                "joint_map_sha256": "fixture",
+            },
+        }
+
+    @staticmethod
+    def _cond() -> _NoTposeConditioning:
+        return _NoTposeConditioning(
+            {
+                "joints_names": np.asarray(
+                    [
+                        "def_c_root_joint",
+                        "def_c_hips_joint",
+                        "def_c_chest_joint",
+                    ]
+                ),
+                "parents": np.asarray([-1, 0, 1], dtype=np.int64),
+                "offsets": np.asarray(
+                    [[0.0, 1.0, 0.0], [0.0, -0.5, 0.0], [0.0, 0.0, 1.0]],
+                    dtype=np.float32,
+                ),
+            }
+        )
+
+    def test_stage2_builder_never_reads_cond_tpose_and_encoder_closes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "PZ_Fixture_motion.bvh"
+            _write(source, _pz_bvh())
+            rig = self._rig(source)
+            fixed = build_planetzoo_fixed_rig(
+                rig_record=rig,
+                representative_bvh_path=source,
+                pinned_source_root=root,
+                cond_entry=self._cond(),
+                active_cond_sha256=ACTIVE_COND_SHA256,
+            )
+            skeleton_path = root / "PZ_Fixture.npz"
+            write_npz_atomic(skeleton_path, fixed.payload)
+            skeleton = load_skeleton(skeleton_path)
+            clip = {
+                "clip_id": source.stem,
+                "rig_id": "PZ_Fixture",
+                "source": {
+                    "family": "planetzoo",
+                    "path": str(source),
+                    "slice_frames": [0, 2],
+                },
+            }
+            prepared = prepare_manifest_clip(
+                clip, rig, skeleton, conditioning_catalog=None
+            )
+            self.assertEqual(prepared.root_positions.shape, (2, 3))
+            self.assertLess(
+                prepared.source_parser_metrics[
+                    "planetzoo_fixed_fk_source_position_max_norm"
+                ],
+                1e-12,
+            )
+            self.assertFalse(
+                skeleton.metadata["position_geometry_provenance"][
+                    "cond_tpos_first_frame_used"
+                ]
+            )
+
+    def test_full_fixed_qa_planetzoo_path_passes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "PZ_Fixture_motion.bvh"
+            _write(source, _pz_bvh())
+            rig = self._rig(source)
+            fixed = build_planetzoo_fixed_rig(
+                rig_record=rig,
+                representative_bvh_path=source,
+                pinned_source_root=root,
+                cond_entry=self._cond(),
+                active_cond_sha256=ACTIVE_COND_SHA256,
+            )
+            skeleton_path = root / "PZ_Fixture.npz"
+            write_npz_atomic(skeleton_path, fixed.payload)
+            skeleton = load_skeleton(skeleton_path)
+            clip = {
+                "clip_id": source.stem,
+                "rig_id": "PZ_Fixture",
+                "topology_distance_bucket": "train_seen_topology",
+                "source": {
+                    "family": "planetzoo",
+                    "path": str(source),
+                    "slice_frames": [0, 2],
+                },
+            }
+            prepared = prepare_manifest_clip(
+                clip, rig, skeleton, conditioning_catalog=None
+            )
+            config = EncoderConfig(
+                fps_target=prepared.fps_src,
+                smoother=SmootherConfig(),
+                contact_tau_h=0.1,
+                contact_tau_v=1.0,
+                heading_eps_h=1e-6,
+            )
+            encoded = encode_prepared_motion(prepared, skeleton, config)
+            motion_path = root / "motions" / f"{source.stem}.npz"
+            motion_sha = write_npz_atomic(motion_path, encoded.artifact_payload())
+            manifest = {
+                "clip_id": source.stem,
+                "rig_id": "PZ_Fixture",
+                "motion_relpath": f"motions/{source.stem}.npz",
+                "motion_sha256": motion_sha,
+                "T_target": int(encoded.motion_float32.shape[0]),
+                "J_phys": int(encoded.motion_float32.shape[1]),
+                "source_family": "planetzoo",
+                "resample_mode": encoded.resample_mode,
+                "topology_family": "quadruped",
+                "topology_distance_bucket": "train_seen_topology",
+                "family_role": "prototype",
+                "split": "train",
+                "calibration_eligible": False,
+            }
+            result = _validate_motion(
+                root=root,
+                manifest=manifest,
+                qa={
+                    "motion_sha256": motion_sha,
+                    "topology_distance_bucket": "train_seen_topology",
+                },
+                parent_clip=clip,
+                parent_rig=rig,
+                skeleton=skeleton,
+                encoder_config=config.as_record(),
+                rest_cache={},
+            )
+            self.assertEqual(result["status"], "pass")
+            self.assertEqual(SOURCE_FK_MAX_NORM["planetzoo"], 1e-10)
+
+    def test_loaded_planetzoo_semantic_drift_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "PZ_Fixture_motion.bvh"
+            _write(source, _pz_bvh())
+            rig = self._rig(source)
+            fixed = build_planetzoo_fixed_rig(
+                rig_record=rig,
+                representative_bvh_path=source,
+                pinned_source_root=root,
+                cond_entry=self._cond(),
+                active_cond_sha256=ACTIVE_COND_SHA256,
+            )
+            skeleton_path = root / "PZ_Fixture.npz"
+            write_npz_atomic(skeleton_path, fixed.payload)
+            skeleton = load_skeleton(skeleton_path)
+            clip = {
+                "clip_id": source.stem,
+                "rig_id": "PZ_Fixture",
+                "source": {
+                    "family": "planetzoo",
+                    "path": str(source),
+                    "slice_frames": [0, 2],
+                },
+            }
+            global_rest = skeleton.R_rest_global.copy()
+            global_rest[0] = Rotation.from_euler("Y", 5.0, degrees=True).as_matrix()
+            local_rest = skeleton.R_rest_local.copy()
+            local_rest[1] = Rotation.from_euler("Y", 5.0, degrees=True).as_matrix()
+            mutations = {
+                "source_family": {"source_family": "truebones"},
+                "artifact_status": {"artifact_status": "unreviewed"},
+                "global_rest": {"R_rest_global": global_rest},
+                "local_rest": {"R_rest_local": local_rest},
+                "heading_carrier": {"heading_carrier_joint": 1},
+                "forward_axis": {
+                    "u_forward_local": np.asarray(
+                        [0.0, 0.0, -1.0], dtype=np.float64
+                    )
+                },
+            }
+            for name, changes in mutations.items():
+                with self.subTest(name=name):
+                    drifted = dataclasses.replace(skeleton, **changes)
+                    with self.assertRaises(
+                        (PlanetzooFixedRigError, Ktjd17EncoderError)
+                    ):
+                        prepare_manifest_clip(
+                            clip, rig, drifted, conditioning_catalog=None
+                        )
+
+    def test_per_clip_offset_drift_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "PZ_Fixture_reference.bvh"
+            drifted = root / "PZ_Fixture_drifted.bvh"
+            _write(reference, _pz_bvh())
+            _write(drifted, _pz_bvh(chest_offset_z=1.1))
+            rig = self._rig(reference)
+            fixed = build_planetzoo_fixed_rig(
+                rig_record=rig,
+                representative_bvh_path=reference,
+                pinned_source_root=root,
+                cond_entry=self._cond(),
+                active_cond_sha256=ACTIVE_COND_SHA256,
+            )
+            skeleton_path = root / "PZ_Fixture.npz"
+            write_npz_atomic(skeleton_path, fixed.payload)
+            skeleton = load_skeleton(skeleton_path)
+            clip = {
+                "clip_id": drifted.stem,
+                "rig_id": "PZ_Fixture",
+                "source": {
+                    "family": "planetzoo",
+                    "path": str(drifted),
+                    "slice_frames": [0, 2],
+                },
+            }
+            with self.assertRaisesRegex(
+                PlanetzooFixedRigError, "rest_layout_sha256 drifted"
+            ):
+                prepare_manifest_clip(clip, rig, skeleton, conditioning_catalog=None)
+
+    def test_stage2_builder_rejects_symlink_or_out_of_root_representative(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            pinned = root / "pinned"
+            pinned.mkdir()
+            target = pinned / "PZ_Fixture_target.bvh"
+            link = pinned / "PZ_Fixture_link.bvh"
+            _write(target, _pz_bvh())
+            os.symlink(target.name, link)
+            rig = self._rig(link)
+            with self.assertRaisesRegex(PlanetzooFixedRigError, "symlink"):
+                build_planetzoo_fixed_rig(
+                    rig_record=rig,
+                    representative_bvh_path=link,
+                    pinned_source_root=pinned,
+                    cond_entry=self._cond(),
+                    active_cond_sha256=ACTIVE_COND_SHA256,
+                )
+            outside = root / "PZ_Fixture_outside.bvh"
+            _write(outside, _pz_bvh())
+            rig = self._rig(outside)
+            with self.assertRaisesRegex(PlanetzooFixedRigError, "direct child"):
+                build_planetzoo_fixed_rig(
+                    rig_record=rig,
+                    representative_bvh_path=outside,
+                    pinned_source_root=pinned,
+                    cond_entry=self._cond(),
+                    active_cond_sha256=ACTIVE_COND_SHA256,
+                )
 
 
 class MotionStreamerParserTests(unittest.TestCase):

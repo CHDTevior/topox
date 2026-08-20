@@ -62,6 +62,19 @@ class CalibrationPrimitiveTests(unittest.TestCase):
         np.testing.assert_allclose(derived, [[1.0, 0.0], [1.0, 0.0]])
         self.assertTrue(np.all(valid))
 
+    def test_hips_to_chest_heading_uses_reviewed_two_anchor_axis(self):
+        positions = np.zeros((2, 2, 3), dtype=np.float64)
+        positions[:, 1, 2] = 2.0
+        derived, valid, horizontal = derive_position_anchor_heading(
+            positions,
+            method="hips_to_chest",
+            anchor_indices=[0, 1],
+            s_rig=2.0,
+        )
+        np.testing.assert_allclose(derived, [[1.0, 0.0], [1.0, 0.0]])
+        np.testing.assert_allclose(horizontal, [1.0, 1.0])
+        self.assertTrue(np.all(valid))
+
     def test_distribution_rejects_nonfinite(self):
         summary = summarize_distribution([1.0, 2.0, 3.0])
         self.assertEqual(summary["count"], 3)

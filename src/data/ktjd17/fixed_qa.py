@@ -21,6 +21,10 @@ from scipy.signal import butter, filtfilt
 from scipy.spatial.transform import Rotation, Slerp
 
 from .encoder import SkeletonData, load_skeleton
+from .planetzoo_fixed_rig import (
+    PLANETZOO_REST_MODE,
+    validate_planetzoo_parsed_against_skeleton,
+)
 from .codec import encode_column_cont6d
 from .loader import derive_masks, load_motion_npz, yaw_augment
 from .source_parser import (
@@ -33,7 +37,11 @@ from .source_parser import (
 
 
 FIXED_QA_VERSION = "ktjd17-fixed-qa-v2"
-SOURCE_FK_MAX_NORM = {"truebones": 1e-10, "motionstreamer272": 1e-6}
+SOURCE_FK_MAX_NORM = {
+    "truebones": 1e-10,
+    "planetzoo": 1e-10,
+    "motionstreamer272": 1e-6,
+}
 FORBIDDEN_VIRTUAL_NAMES = {"WORLD", "WORLD_NODE", "__WORLD__", "CONTROL"}
 
 
@@ -447,6 +455,11 @@ def _acceleration_rms(positions: np.ndarray, fps: float, scale: float) -> float:
 
 
 def _rest_mode(rig: Mapping[str, Any]) -> str:
+    if rig.get("source_family") == "planetzoo":
+        method = rig.get("rest_pose", {}).get("selection_method")
+        if method != "first_sorted_processed_clip":
+            raise FixedQaError(f"unsupported PlanetZoo rest mode {method!r}")
+        return PLANETZOO_REST_MODE
     method = rig.get("rest_pose", {}).get("selection_method")
     if method == "explicit_tpose_filename":
         return "explicit_tpose_frame"
@@ -473,6 +486,24 @@ def _source_reference(
         return SourceReference(
             parsed=parsed,
             root_positions=np.asarray(parsed.source_positions[:, 0], dtype=np.float64),
+            local_rotations=np.asarray(parsed.local_rotations, dtype=np.float64),
+        )
+    if family == "planetzoo":
+        source_path = str(Path(clip["source"]["path"]).expanduser().resolve())
+        parsed = parse_bvh_source(
+            source_path,
+            retained_names=rig["joint_map"]["btjd_joint_names"],
+            retained_parents=rig["joint_map"]["btjd_parents"],
+            expected_rotation_kinds=rig["joint_map"]["rotation_source_kind"],
+            frame_slice=clip["source"]["slice_frames"],
+            rest_path=source_path,
+            rest_mode=_rest_mode(rig),
+            family="planetzoo",
+        )
+        validate_planetzoo_parsed_against_skeleton(parsed, skeleton)
+        return SourceReference(
+            parsed=parsed,
+            root_positions=np.asarray(parsed.root_translation, dtype=np.float64),
             local_rotations=np.asarray(parsed.local_rotations, dtype=np.float64),
         )
     if family != "truebones":

@@ -199,9 +199,9 @@ def derive_position_anchor_heading(
         forward = np.cross(
             np.broadcast_to(np.asarray([0.0, 1.0, 0.0]), across.shape), across
         )
-    elif method == "root_to_head":
+    elif method in {"root_to_head", "hips_to_chest"}:
         if len(indices) != 2:
-            raise CalibrationError("root_to_head requires two anchors")
+            raise CalibrationError(f"{method} requires two anchors")
         forward = points[:, indices[1]] - points[:, indices[0]]
     elif method == "declared_plus_z":
         if indices:

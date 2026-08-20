@@ -60,6 +60,8 @@ class ParsedBvhMotion:
     local_rotations: np.ndarray
     global_positions: np.ndarray
     global_rotations: np.ndarray
+    rotation_layout_sha256: str
+    rest_layout_sha256: str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -81,6 +83,7 @@ class ParsedSourceMotion:
     source_positions: np.ndarray
     fk_positions: np.ndarray
     rest_local_positions: np.ndarray
+    rest_declared_offsets: np.ndarray
     rest_local_rotations: np.ndarray
     rest_global_positions: np.ndarray
     rest_global_rotations: np.ndarray
@@ -412,6 +415,8 @@ def parse_bvh_numeric(path: str | Path) -> ParsedBvhMotion:
         local_rotations=local_rotations,
         global_positions=reference_positions,
         global_rotations=global_rotations,
+        rotation_layout_sha256=header.rotation_layout_sha256(),
+        rest_layout_sha256=header.rest_layout_sha256(),
     )
 
 
@@ -565,14 +570,16 @@ def _rest_from_bvh(
         )
         return {
             "local_positions": mapped["local_positions"][0],
+            "declared_offsets": rest_motion.offsets[mapped["source_indices"]].copy(),
             "local_rotations": mapped["local_rotations"][0],
             "global_positions": mapped["positions"][0],
             "global_rotations": mapped["rotations"][0],
         }
 
-    # Processed PlanetZoo has no local raw rest file.  Hierarchy offsets remain
-    # useful scale/topology evidence, but identity rotations are explicitly a
-    # review-only candidate and not accepted as the final T04 rest.
+    # Processed PlanetZoo has no local raw-game rest file.  In the explicitly
+    # scoped stage-2 contract, the processed hierarchy offsets and identity
+    # rotations are the already-rebased rest basis.  The older ``*_review``
+    # mode remains accepted so frozen T03 evidence can still be read.
     frame_count = rest_motion.local_positions.shape[0]
     identity_local_positions = np.broadcast_to(
         rest_motion.offsets[None], (frame_count, len(rest_motion.offsets), 3)
@@ -600,6 +607,7 @@ def _rest_from_bvh(
     )
     return {
         "local_positions": mapped["local_positions"][0],
+        "declared_offsets": rest_motion.offsets[mapped["source_indices"]].copy(),
         "local_rotations": mapped["local_rotations"][0],
         "global_positions": mapped["positions"][0],
         "global_rotations": mapped["rotations"][0],
@@ -625,6 +633,7 @@ def parse_bvh_source(
         "explicit_tpose_frame",
         "legacy_idle_fallback_review",
         "processed_hierarchy_only_review",
+        "processed_hierarchy_stage2_fixed",
     }:
         raise SourceParserError(f"unsupported BVH rest_mode {rest_mode!r}")
     motion = parse_bvh_numeric(path)
@@ -635,7 +644,16 @@ def parse_bvh_source(
         expected_rotation_kinds=expected_rotation_kinds,
         frame_slice=frame_slice,
     )
-    rest_source = parsed_rest or parse_bvh_numeric(rest_path)
+    resolved_rest_path = Path(rest_path).expanduser().resolve()
+    if parsed_rest is not None:
+        rest_source = parsed_rest
+    elif resolved_rest_path == Path(motion.path):
+        # PlanetZoo uses the clip's own hash-checked hierarchy as its stage-2
+        # rest authority.  Reusing the parsed payload avoids a second 25-GiB
+        # corpus read during exhaustive conversion.
+        rest_source = motion
+    else:
+        rest_source = parse_bvh_numeric(resolved_rest_path)
     rest = _rest_from_bvh(
         rest_source,
         retained_names=retained_names,
@@ -694,6 +712,10 @@ def parse_bvh_source(
             ),
             "position_channel_semantics": "xyz_channels_replace_offset",
             "euler_semantics": "active_intrinsic_declared_order",
+            "source_rotation_layout_sha256": motion.rotation_layout_sha256,
+            "source_rest_layout_sha256": motion.rest_layout_sha256,
+            "rest_rotation_layout_sha256": rest_source.rotation_layout_sha256,
+            "rest_layout_sha256": rest_source.rest_layout_sha256,
         }
     )
     return ParsedSourceMotion(
@@ -712,11 +734,12 @@ def parse_bvh_source(
         source_positions=mapped["positions"].copy(),
         fk_positions=mapped["fk_positions"],
         rest_local_positions=rest["local_positions"],
+        rest_declared_offsets=rest["declared_offsets"],
         rest_local_rotations=rest["local_rotations"],
         rest_global_positions=rest["global_positions"],
         rest_global_rotations=rest["global_rotations"],
         rest_status=rest_mode,
-        rest_path=str(Path(rest_path).expanduser().resolve()),
+        rest_path=str(resolved_rest_path),
         diagnostics=diagnostics,
     )
 
@@ -920,6 +943,7 @@ def parse_motionstreamer272_source(
         source_positions=source_positions,
         fk_positions=fk_positions,
         rest_local_positions=neutral_offsets,
+        rest_declared_offsets=neutral_offsets.copy(),
         rest_local_rotations=rest_local_rotations,
         rest_global_positions=neutral_positions,
         rest_global_rotations=rest_local_rotations.copy(),

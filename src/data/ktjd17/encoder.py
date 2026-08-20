@@ -31,6 +31,10 @@ from .codec import (
 )
 from .decoder import decode_ktjd17
 from .human_fixed_rig import HumanFixedRig
+from .planetzoo_fixed_rig import (
+    PLANETZOO_REST_MODE,
+    validate_planetzoo_parsed_against_skeleton,
+)
 from .source_parser import (
     ParsedBvhMotion,
     ParsedSourceMotion,
@@ -342,6 +346,25 @@ def _parse_truebones(
     )
 
 
+def _parse_planetzoo(
+    clip_record: Mapping[str, Any], rig_record: Mapping[str, Any]
+) -> ParsedSourceMotion:
+    """Parse one processed PZ clip using its own stage-2 hierarchy as rest."""
+    source = clip_record["source"]
+    joint_map = rig_record["joint_map"]
+    source_path = str(Path(source["path"]).expanduser().resolve())
+    return parse_bvh_source(
+        source_path,
+        retained_names=joint_map["btjd_joint_names"],
+        retained_parents=joint_map["btjd_parents"],
+        expected_rotation_kinds=joint_map["rotation_source_kind"],
+        frame_slice=source["slice_frames"],
+        rest_path=source_path,
+        rest_mode=PLANETZOO_REST_MODE,
+        family="planetzoo",
+    )
+
+
 def prepare_manifest_clip(
     clip_record: Mapping[str, Any],
     rig_record: Mapping[str, Any],
@@ -437,6 +460,64 @@ def prepare_manifest_clip(
                 "position_authority": "current_btjd_fixed_cond_geometry_plus_raw_root",
                 "raw_nonroot_xyz_role": "diagnostic_only",
                 "skeleton_rebuild_max_abs": comparisons,
+            },
+        )
+    if source_family == "planetzoo":
+        if skeleton.artifact_status != "planetzoo_stage2_fixed_rig_pass":
+            raise Ktjd17EncoderError(
+                f"{clip_id}: PlanetZoo requires the reviewed stage-2 fixed-rig artifact"
+            )
+        if (
+            not np.array_equal(
+                skeleton.source_to_canonical_C, np.eye(3, dtype=np.float64)
+            )
+            or skeleton.source_to_canonical_alpha != 1.0
+            or not np.array_equal(
+                skeleton.source_to_canonical_o, np.zeros(3, dtype=np.float64)
+            )
+        ):
+            raise Ktjd17EncoderError(
+                f"{clip_id}: PlanetZoo stage-2 transform must be C=I, alpha=1, o=0"
+            )
+        parsed = _parse_planetzoo(clip_record, rig_record)
+        closure = validate_planetzoo_parsed_against_skeleton(parsed, skeleton)
+        return PreparedMotion(
+            clip_id=clip_id,
+            rig_id=rig_id,
+            source_family=source_family,
+            topology_family=skeleton.topology_family,
+            fps_src=float(parsed.fps),
+            root_positions=np.asarray(parsed.root_translation, dtype=np.float64),
+            local_rotations=np.asarray(parsed.local_rotations, dtype=np.float64),
+            source_positions_diagnostic=np.asarray(
+                parsed.source_positions, dtype=np.float64
+            ),
+            source_global_rotations=np.asarray(
+                parsed.global_rotations, dtype=np.float64
+            ),
+            source_parser_metrics={**source_fk_metrics(parsed), **closure},
+            provenance={
+                "source_path": parsed.path,
+                "source_sha256": _sha256_file(Path(parsed.path)),
+                "source_rest_path": parsed.rest_path,
+                "source_rest_sha256": _sha256_file(Path(str(parsed.rest_path))),
+                "source_frame_slice": list(clip_record["source"]["slice_frames"]),
+                "claim_boundary": (
+                    "processed_planetzoo_stage2_coordinates_only_not_native_raw_game_bvh"
+                ),
+                "rotation_authority": (
+                    "stage2_bvh_real_declared_euler_rotation_channels"
+                ),
+                "position_authority": (
+                    "stage2_bvh_numeric_root_translation_plus_fixed_hierarchy_offsets_fk"
+                ),
+                "source_to_canonical": "identity_stage2_basis",
+                "legacy_btjd13_motion_used": False,
+                "legacy_btjd13_rotation_used": False,
+                "cond_tpos_first_frame_used": False,
+                "ktjd_position_ik_used": False,
+                "upstream_static_tpose_position_ik_may_exist": True,
+                "per_clip_fixed_rig_closure": closure,
             },
         )
     if source_family == "motionstreamer272":
