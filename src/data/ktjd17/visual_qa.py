@@ -10,6 +10,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import tempfile
 import uuid
 from collections.abc import Mapping, Sequence
@@ -145,6 +146,19 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _freeze_tree(root: Path) -> None:
+    entries = sorted(root.rglob("*"), key=lambda path: len(path.parts), reverse=True)
+    for path in entries:
+        observed = path.lstat()
+        if stat.S_ISREG(observed.st_mode) or stat.S_ISDIR(observed.st_mode):
+            os.chmod(path, int(observed.st_mode) & ~0o222)
+        else:
+            raise VisualQaError(f"cannot freeze non-regular visual entry: {path}")
+    observed_root = root.lstat()
+    os.chmod(root, int(observed_root.st_mode) & ~0o222)
+    _fsync_directory(root.parent)
 
 
 def _resolve_generation_path(root: Path, relpath: Any, *, label: str) -> Path:
@@ -636,15 +650,35 @@ def _verify_input_generation(root: Path, *, label: str) -> dict[str, Any]:
 
 def verify_parent_manifest_authority(
     selection_record: Mapping[str, Any],
+    *,
+    dataset_root: Path | None = None,
 ) -> tuple[Path, dict[str, str]]:
     """Resolve and hash-check both parent inputs used by the source route."""
     authority = selection_record.get("selection_authority")
     if not isinstance(authority, Mapping):
         raise VisualQaError("selection authority is absent")
-    parent_value = authority.get("parent_manifest_root")
-    if not isinstance(parent_value, str) or not parent_value:
-        raise VisualQaError("parent manifest root is absent")
-    parent_root = Path(parent_value).expanduser().resolve()
+    if authority.get("parent_manifest_base") == "dataset_root":
+        if dataset_root is None:
+            raise VisualQaError(
+                "dataset_root is required for relative parent manifest authority"
+            )
+        base = dataset_root.expanduser().resolve()
+        parent_value = authority.get("parent_manifest_relpath")
+        if not isinstance(parent_value, str) or not parent_value:
+            raise VisualQaError("relative parent manifest path is absent")
+        relative = Path(parent_value)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise VisualQaError("relative parent manifest path is unsafe")
+        parent_root = (base / relative).resolve()
+        if not parent_root.is_relative_to(base):
+            raise VisualQaError("relative parent manifest path escapes dataset root")
+    else:
+        # Compatibility for already-published historical generations.  New
+        # producers use the dataset-root-relative branch above.
+        parent_value = authority.get("parent_manifest_root")
+        if not isinstance(parent_value, str) or not parent_value:
+            raise VisualQaError("parent manifest root is absent")
+        parent_root = Path(parent_value).expanduser().resolve()
     if not parent_root.is_dir():
         raise VisualQaError(f"parent manifest root is unavailable: {parent_root}")
     verified: dict[str, str] = {}
@@ -693,6 +727,11 @@ def render_prototype_visual_qa(
     root = Path(prototype_root).expanduser().resolve()
     output = Path(output_root).expanduser().absolute()
     prototype_generation = _verify_input_generation(root, label="prototype")
+    prototype_generation_sha256 = _sha256_file(root / "generation.json")
+    freeze_binding = prototype_generation.get("freeze_binding")
+    if not isinstance(freeze_binding, Mapping) or not freeze_binding:
+        raise VisualQaError("prototype frozen-encoder binding is absent")
+    dataset_root = root.parent.parent.resolve()
     if calibration_root is None:
         if not clip_ids:
             raise VisualQaError(
@@ -733,7 +772,8 @@ def render_prototype_visual_qa(
         raise VisualQaError("visual selection contains duplicate clip ids")
     selection_authority = _load_json(root / "manifests/prototype_selection.json")
     parent_root, verified_parent_hashes = verify_parent_manifest_authority(
-        selection_authority
+        selection_authority,
+        dataset_root=dataset_root,
     )
     parent_clip_records = _load_jsonl(parent_root / "clips.jsonl")
     parent_rig_records = _load_jsonl(parent_root / "rigs.jsonl")
@@ -744,13 +784,28 @@ def render_prototype_visual_qa(
     if len(parent_rigs) != len(parent_rig_records):
         raise VisualQaError("duplicate parent manifest rig ids")
     post_load_parent_root, post_load_hashes = verify_parent_manifest_authority(
-        selection_authority
+        selection_authority,
+        dataset_root=dataset_root,
     )
     if (
         post_load_parent_root != parent_root
         or post_load_hashes != verified_parent_hashes
     ):
         raise VisualQaError("parent manifest authority changed while loading")
+    raw_authority = selection_authority.get("selection_authority")
+    if (
+        isinstance(raw_authority, Mapping)
+        and raw_authority.get("parent_manifest_base") == "dataset_root"
+    ):
+        parent_manifest_reference = {
+            "base": "dataset_root",
+            "relpath": str(raw_authority["parent_manifest_relpath"]),
+        }
+    else:
+        parent_manifest_reference = {
+            "base": "legacy_generation_id",
+            "generation_id": parent_root.name,
+        }
     encoder_config = _load_json(root / "config/encoder_candidate.json")
     generation_id = (
         _datetime.datetime.now(_datetime.UTC).strftime("%Y%m%dT%H%M%S%fZ")
@@ -1103,6 +1158,8 @@ def render_prototype_visual_qa(
             "visual_qa_version": VISUAL_QA_VERSION,
             "status": "pending_human_and_codex_visual_review",
             "prototype_generation_id": prototype_generation["generation_id"],
+            "prototype_generation_sha256": prototype_generation_sha256,
+            "freeze_binding": dict(freeze_binding),
             "calibration_generation_id": calibration_generation["generation_id"],
             "source_plan_commit": prototype_generation["source_plan_commit"],
             "coordinate_contract": COORDINATE_CONTRACT,
@@ -1112,7 +1169,7 @@ def render_prototype_visual_qa(
             "frame_recenter_applied": False,
             "ground_changed": False,
             "face_direction_changed": False,
-            "verified_parent_manifest_root": str(parent_root),
+            "verified_parent_manifest_reference": parent_manifest_reference,
             "verified_parent_manifest_hashes": verified_parent_hashes,
             "legend": {
                 "root_trajectory": "gray",
@@ -1134,9 +1191,11 @@ def render_prototype_visual_qa(
             "generation_id": generation_id,
             "created_at_utc": _datetime.datetime.now(_datetime.UTC).isoformat(),
             "prototype_generation_id": prototype_generation["generation_id"],
+            "prototype_generation_sha256": prototype_generation_sha256,
+            "freeze_binding": dict(freeze_binding),
             "calibration_generation_id": calibration_generation["generation_id"],
             "status": visual_index["status"],
-            "verified_parent_manifest_root": str(parent_root),
+            "verified_parent_manifest_reference": parent_manifest_reference,
             "verified_parent_manifest_hashes": verified_parent_hashes,
             "files": files,
             "freeze_authorized": False,
@@ -1156,6 +1215,8 @@ def render_prototype_visual_qa(
             raise VisualQaError(f"visual generation already exists: {final}")
         os.replace(staging, final)
         _fsync_directory(generations)
+        verify_visual_generation(final)
+        _freeze_tree(final)
         verify_visual_generation(final)
         if update_link:
             _replace_symlink(output / VISUAL_LINK_NAME, final)

@@ -22,7 +22,7 @@ from src.data.ktjd17.human312_audit import (  # noqa: E402
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo-root", type=Path, default=ROOT)
+    parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--workers", type=int, default=24)
     parser.add_argument("--chunk-size", type=int, default=32)
     parser.add_argument(

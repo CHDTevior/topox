@@ -23,10 +23,18 @@ from src.data.ktjd17.pz312_audit import (  # noqa: E402
 def main() -> None:
     defaults = default_pz_audit_config(REPO_ROOT)
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest-root", type=Path, default=defaults.manifest_root)
-    parser.add_argument("--pz-bvh-root", type=Path, default=defaults.pz_bvh_root)
-    parser.add_argument("--active-cond", type=Path, default=defaults.active_cond_path)
-    parser.add_argument("--output-root", type=Path, default=defaults.output_root)
+    parser.add_argument(
+        "--manifest-root", type=Path, default=Path("dataset/manifests")
+    )
+    parser.add_argument(
+        "--pz-bvh-root", type=Path, default=Path("data/animo4d_anytop/bvhs")
+    )
+    parser.add_argument(
+        "--active-cond",
+        type=Path,
+        default=Path("data/animo4d_L4TB_plus_human_v4b272neutral/cond.npy"),
+    )
+    parser.add_argument("--output-root", type=Path, default=Path("dataset"))
     parser.add_argument("--workers", type=int, default=defaults.workers)
     parser.add_argument("--chunk-size", type=int, default=defaults.chunk_size)
     parser.add_argument("--no-update-link", action="store_true")
