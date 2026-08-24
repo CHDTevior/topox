@@ -7,7 +7,8 @@ The GENERATED motion is drawn under BOTH recoveries on purpose: H4 measured 4-19
 between the position family and the rotation family on generated output, and two panels make that
 disagreement visible instead of hiding it behind whichever family we pick. GT needs one panel only
 (the families agree to 0.000% on real data). One shared scale across all four panels.
-True-speed playback: every real frame at 20 fps, no subsampling.
+True-speed playback: every real frame at the CORPUS's own rate (13ch 20 fps, KTJD-17 30 fps),
+no subsampling.
 
 Read-only w.r.t. training state; writes GIFs + summary.txt (jitter for both recoveries).
 """
@@ -40,10 +41,41 @@ def world_of(norm_txjc, mean, std, recover="ric", parents=None, offsets=None):
     inconsistent, so rendering BOTH localises noise: ric reads per-frame positions (ch0:3),
     fk rebuilds them from rotations (ch3:9) over the bone chain.
     """
+    if norm_txjc.shape[-1] != 13:
+        # S0c contract guard: the legacy AnyTop/RIFKE recovery must never consume KTJD tensors
+        # (17/18 channels) -- that path would silently misread the channel layout.
+        raise ValueError(f"legacy world_of expects 13 channels, got {norm_txjc.shape[-1]} -- "
+                         f"KTJD tensors must go through world_of_ktjd")
     raw = (norm_txjc * (std[None] + _STD_FLOOR) + mean[None]).astype(np.float64)
     if recover == "fk":
         return recover_from_bvh_rot_np(raw, parents, offsets)        # [T,J,3]
     return _recover_world_positions(raw)                             # [T,J,3]
+
+
+def world_of_ktjd(norm_seg18, base, rig, strict_gt):
+    """KTJD-17 world positions via the OFFICIAL codec, both paths at once.
+
+    norm_seg18 [T,J,18] normalized (plane 17 = heading flag, sliced off); de-normalized with the
+    adapter's exact std trick, then decode_ktjd17 (direct + FK, NO temporal integration --
+    velocity channels are never integrated, per the KTJD contract). strict_gt=False for model
+    output (degenerate predicted 6D tolerated and reported by the codec).
+    Returns (direct [T,J,3], fk [T,J,3]).
+    """
+    from src.data.ktjd17.decoder import decode_ktjd17
+    sk = base._skeleton(rig)
+    J = norm_seg18.shape[1]
+    # per-cell mean/std (2026-08-21): the served/predicted tensor is standardized per
+    # (rig, joint, channel), so de-normalization is the repo convention x*(std+floor)+mean with
+    # BOTH taken from the stats artifact (codex round-S7 blocker 2: this used the superseded
+    # scale-only path and called a function that no longer exists).
+    mu_r, sd_r = base._pc[rig]
+    mean, std = mu_r[:J, :17], sd_r[:J, :17]
+    raw = (norm_seg18[..., :17] * (std[None] + _STD_FLOOR) + mean[None]).astype(np.float64)
+    dec = decode_ktjd17(raw, parents=sk["parents"], R_rest_global=sk["R_rest_global"],
+                        R_rest_local=sk["R_rest_local"],
+                        offset_parent_local=sk["offset_parent_local"],
+                        rotation_source_kind=sk["rotation_source_kind"], strict_gt=strict_gt)
+    return dec.positions_direct, dec.positions_fk
 
 
 def jitter_ratio(gen_w, gt_w):
@@ -106,7 +138,7 @@ def project(seqs, yaw_deg=28.0):
     return out, float(ground_px)
 
 
-def render_gif(out_path, panels, parents, caption, rig):
+def render_gif(out_path, panels, parents, caption, rig, fps=20):
     """panels: list of (color_key, tag, seq [T,J,3]); shared scale across all of them."""
     names = [c for c, _, _ in panels]
     tags = [t for _, t, _ in panels]
@@ -134,7 +166,10 @@ def render_gif(out_path, panels, parents, caption, rig):
         for li, line in enumerate([caption[i:i + 96] for i in range(0, min(len(caption), 192), 96)]):
             d.text((8, PANEL_H + 26 + 16 * li), line, fill=(64, 80, 94))
         frames.append(img)
-    frames[0].save(out_path, save_all=True, append_images=frames[1:], duration=50, loop=0)
+    # true speed = the CORPUS's own frame rate (13ch AnyTop 20fps, KTJD-17 30fps). Playing 30fps
+    # data at 20fps is a 2/3 slow-motion that makes low-amplitude motion read as frozen.
+    frames[0].save(out_path, save_all=True, append_images=frames[1:],
+                   duration=round(1000.0 / fps), loop=0)
 
 
 def main():
@@ -145,13 +180,20 @@ def main():
     ap.add_argument("--rigs_B", default="BrownBear,Elephant")
     ap.add_argument("--steps", type=int, default=10)
     ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--corpus", choices=("truebones", "pzh"), default="truebones")
+    ap.add_argument("--corpus", choices=("truebones", "pzh", "ktjd17"), default="truebones")
+    ap.add_argument("--ktjd_root", default="dataset/ktjd17_truebones")
     ap.add_argument("--demo_frames", type=int, default=DEMO_FRAMES)
     ap.add_argument("--target_frames", type=int, default=TARGET_FRAMES)
     ap.add_argument("--rigs_T", default="",
                     help="rigs rendered from the TRAIN bucket (seen rigs, SEEN clips -- the "
                          "memorisation upper bound; user 2026-08-20)")
-    ap.add_argument("--pick", choices=("first", "energetic"), default="first",
+    ap.add_argument("--caption_re", default="",
+                    help="with --pick caption: python regex matched (case-insensitive) against "
+                         "the target's caption; picks the FIRST matching clip per rig. The "
+                         "turning-motion acceptance probe uses "
+                         r"'turn|around|left|right|rotat|spin|circle'.")
+    ap.add_argument("--pick", choices=("first", "energetic", "caption", "longest"),
+                    default="first",
                     help="which target clip per rig: first (legacy) or the max-GT-motion-energy "
                          "one (user 2026-08-20: big actions read text-adherence best)")
     ap.add_argument("--all_targets", action="store_true",
@@ -162,28 +204,89 @@ def main():
     ap.add_argument("--caption_cache", default="data/anytop_caption_llm2vec_v4b272neutral_multi")
     ap.add_argument("--texts_json", default="motion_texts_by_file_clean_v1.json")
     a = ap.parse_args()
+    if a.corpus == "ktjd17" and a.joint_sem == ap.get_default("joint_sem"):
+        # the legacy AnyTop table fails the KTJD order hash on the first rig (same defect codex
+        # round-S0 found in the trainer); select the KTJD table when none was chosen explicitly
+        a.joint_sem = "data/joint_semantics_llm2vec_ktjd17_v1.npz"
+    if a.pick == "caption" and not a.caption_re:
+        raise SystemExit("--pick caption requires --caption_re")
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
 
     ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)  # our own ckpt; contains numpy RNG state, rejected by 2.6's weights_only default
     ca = ck["args"]
-    model = InContextMotionDiT(in_ch=13, dim=ca["dim"], depth=ca["depth"], n_heads=ca["heads"],
-                               d_text=4096, d_joint_sem=4096,
-                               use_struct_feats=bool(ca.get("struct_feats", False)),
-                               use_dir_bias=bool(ca.get("dir_bias", False))).to(dev)
+    # The model width comes from the ckpt, so the CORPUS must too -- a default --corpus of
+    # truebones against a KTJD ckpt would build the right width and then feed it the wrong
+    # decode semantics (codex round-2). Refuse the mismatch instead of silently rendering.
+    if str(ca.get("corpus", "truebones")) != a.corpus:
+        raise SystemExit(f"[refuse] ckpt was trained on corpus {ca.get('corpus')!r} but "
+                         f"--corpus is {a.corpus!r}; pass the matching corpus")
+    mkw = dict(in_ch=17 if ca.get("corpus") == "ktjd17" else 13,
+               dim=ca["dim"], depth=ca["depth"], n_heads=ca["heads"],
+               d_text=4096, d_joint_sem=4096,
+               use_struct_feats=bool(ca.get("struct_feats", False)),
+               use_dir_bias=bool(ca.get("dir_bias", False)),
+               use_ref_text=bool(ca.get("ref_text", False)))
+    if bool(ca.get("two_stage", False)):
+        from src.models.v2.dit_motion import TwoStageInContextDiT
+        model = TwoStageInContextDiT(root_dim=int(ca.get("root_dim", 192)), root_depth=4,
+                                     **mkw).to(dev)
+    else:
+        model = InContextMotionDiT(**mkw).to(dev)
     model.load_state_dict(ck["model"]); model.eval()
     ep = ck.get("epoch", -1)
     print(f"[render] ckpt {a.ckpt} (epoch {ep}) on {dev}", flush=True)
 
-    cond = pickle.load(open(f"{a.data_root}/_cond_normalized_J144.pkl", "rb"))
-    tb = truebones_types(cond.keys()) if a.corpus == "truebones" else pzh_types(cond.keys())
-    names = {k: read_split(a.splits_dir, k) for k in ("train", "val", "held_representative")}
-    base = AnyTopDataset(data_root=a.data_root, split="all", num_frames=300, max_joints=144,
-                         load_captions=True, caption_emb_cache=a.caption_cache,
-                         random_caption=False, augment=False, joint_semantics=a.joint_sem,
-                         species_whitelist=tb, splits_dir=a.splits_dir,
-                         texts_json_name=a.texts_json)
-    PK = dict(demo_frames=a.demo_frames, target_frames=a.target_frames,
+    if a.corpus == "ktjd17":
+        from src.data.ktjd17_incontext import Ktjd17Base, ktjd17_split_names
+        pins_ck = ck.get("ktjd_pins") or {}
+        base = Ktjd17Base(a.ktjd_root, caption_emb_cache=a.caption_cache,
+                          joint_semantics=a.joint_sem, texts_json=a.texts_json,
+                          percell_stats=ca.get("ktjd_percell_stats",
+                                               "data/ktjd17_percell_stats_v1.npz"),
+                          # the cut comes from the CKPT, never a render-time default: rendering a
+                          # model against data it was not trained on is the drift this refuses.
+                          exclude_clips=(ca.get("exclude_clips") or None))
+        # `exclusion` is NOT in base.provenance -- it lives on base.provenance_exclusion -- so a
+        # key-intersection drift check silently misses a swapped cut file at the same path, which
+        # changes render/eval membership under an unchanged checkpoint (codex 2026-08-21 (A)4).
+        live = {**base.provenance, "exclusion": base.provenance_exclusion}
+        drift = sorted(k for k, v in pins_ck.items()
+                       if k in live and live[k] != v)
+        if drift:
+            raise SystemExit(f"[refuse] render-time data does not match what this checkpoint was "
+                             f"trained on: {drift}. Rendering a model against replaced artifacts "
+                             f"produces a picture of nothing.")
+        names = ktjd17_split_names(a.ktjd_root, exclude=(ca.get("exclude_clips") or None))
+        tb = None
+    else:
+        cond = pickle.load(open(f"{a.data_root}/_cond_normalized_J144.pkl", "rb"))
+        tb = truebones_types(cond.keys()) if a.corpus == "truebones" else pzh_types(cond.keys())
+        names = {k: read_split(a.splits_dir, k) for k in ("train", "val", "held_representative")}
+        base = AnyTopDataset(data_root=a.data_root, split="all", num_frames=300, max_joints=144,
+                             load_captions=True, caption_emb_cache=a.caption_cache,
+                             random_caption=False, augment=False, joint_semantics=a.joint_sem,
+                             species_whitelist=tb, splits_dir=a.splits_dir,
+                             texts_json_name=a.texts_json)
+    # rest-demo runs must be rendered the way they were trained, and the checkpoint is the
+    # authority -- deriving it from the ckpt stops a silent 64-frame-demo render of a 1-frame arm.
+    # EVERY window-defining knob comes from the CHECKPOINT (codex round-S8 blocker 2): rendering a
+    # different target window, corpus root or conditioning surface than the run was trained on
+    # makes the visual acceptance meaningless, and visual acceptance is this project's only
+    # quality gate.
+    for k_ in ("target_frames", "ktjd_root"):
+        if k_ in ca and getattr(a, k_) != ca[k_]:
+            print(f"[render] {k_}: {getattr(a, k_)!r} -> {ca[k_]!r} (from ckpt)", flush=True)
+            setattr(a, k_, ca[k_])
+    ck_rest = bool(ca.get("demo_rest", False))
+    if ck_rest:
+        if int(ca.get("demo_frames", 0)) != 1:
+            raise SystemExit(f"[refuse] ckpt has demo_rest with demo_frames="
+                             f"{ca.get('demo_frames')}; expected 1")
+        a.demo_frames = 1
+        print("[render] ckpt trained with --demo_rest: 1-frame rest demo", flush=True)
+    PK = dict(demo_rest=ck_rest, emit_ref_text=bool(ca.get("ref_text", False)),
+              demo_frames=a.demo_frames, target_frames=a.target_frames,
               emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)))
     dsA = InContextPairs(base, names["val"], names["train"], object_types=tb,
                          balance_skeletons=False, seed=a.seed, **PK)
@@ -201,7 +304,29 @@ def main():
                 continue
             positions = [i for i, (ot, _) in enumerate(ds.index) if ot == r]
             if not a.all_targets:
-                if a.pick == "energetic" and len(positions) > 1:
+                if a.pick == "caption":
+                    # Turning-motion acceptance probe: heading is the one axis with neither an
+                    # augmentation nor a condition backing it (user 2026-08-20: no yaw aug; no
+                    # c_dir), so the QA set must deliberately contain clips whose captions
+                    # DESCRIBE a turn -- otherwise the known exposure goes unexamined.
+                    import re
+                    rx = re.compile(a.caption_re, re.I)
+                    hit = [i for i in positions
+                           if rx.search(str(base[ds.index[i][1]].get("caption", "")))]
+                    if not hit:
+                        print(f"[render] SKIP {bucket}:{r} -- no caption matches "
+                              f"{a.caption_re!r}", flush=True)
+                        continue
+                    positions = hit[:1]
+                elif a.pick == "longest" and len(positions) > 1:
+                    # Short clips hide the failure modes that only appear over time (drift,
+                    # accumulating jitter, a pose that is fine for a second then decays). `first`
+                    # picked 28-51 frame clips (~1-1.7 s) while this corpus holds up to 374.
+                    # Ranked on the GT's own length, capped by the model's target window.
+                    def _len(ix):
+                        return min(int(base[ds.index[ix][1]]["num_frames"]), ds.Tt)
+                    positions = [max(positions, key=_len)]
+                elif a.pick == "energetic" and len(positions) > 1:
                     # GT motion energy = mean frame-to-frame displacement of the DE-NORMALIZED
                     # RIC positions over the head window (codex 01a01b1a: measuring in the
                     # per-rig-normalized space distorts the ranking -- the winner changed for
@@ -213,10 +338,13 @@ def main():
                         if Tn < 2:
                             return 0.0
                         xn = np.asarray(gt_it["anytop_x"])[:Jn, :, :Tn].transpose(2, 0, 1)
-                        mn = np.asarray(gt_it["anytop_mean"])[:Jn]
-                        sd = np.asarray(gt_it["anytop_std"])[:Jn]
-                        raw = (xn * (sd[None] + _STD_FLOOR) + mn[None]).astype(np.float64)
-                        xw = _recover_world_positions(raw)     # WORLD, incl. root translation
+                        if a.corpus == "ktjd17":
+                            xw, _ = world_of_ktjd(xn, base, ds.index[ix][0], strict_gt=True)
+                        else:
+                            mn = np.asarray(gt_it["anytop_mean"])[:Jn]
+                            sd = np.asarray(gt_it["anytop_std"])[:Jn]
+                            raw = (xn * (sd[None] + _STD_FLOOR) + mn[None]).astype(np.float64)
+                            xw = _recover_world_positions(raw)   # WORLD, incl. root translation
                         return float(np.linalg.norm(np.diff(xw, axis=0), axis=-1).mean())
                     positions = [max(positions, key=_energy)]
                 else:
@@ -238,7 +366,27 @@ def main():
         torch.manual_seed(a.seed)
         with torch.no_grad():
             g2kw = {k: b[k] for k in ("struct_feats", "updown") if k in b}
-            gen = sample(model, b["x"], b["is_target"], a.steps,
+            if a.corpus == "ktjd17":
+                cvj = torch.from_numpy(base.static_masks(rig)["channel_valid"]).to(dev)
+                cv = torch.zeros(1, b["x"].shape[2], 17, dtype=torch.bool, device=dev)
+                cv[0, :cvj.shape[0]] = cvj
+                x_in = b["x"][..., :17].contiguous()
+                g2kw["channel_valid"] = cv
+                # demo-side heading validity (plane 17); sample() ignores it on target frames
+                g2kw["heading_valid"] = b["x"][:, :, 0, 17] > 0.5
+                if "demo_text" in b:
+                    g2kw["demo_text"] = b["demo_text"]
+                # anchored ckpts sample from anchor + N(0,I) -- rendering without the anchor
+                # would sample from the WRONG base distribution
+                anc_mode = str(ca.get("anchor", "none"))
+                if anc_mode != "none":
+                    from scripts.train_v2_incontext import ktjd_anchor
+                    rest_lut = ({rig: torch.from_numpy(base.rest_anchor_frame(rig))}
+                                if anc_mode == "rest" else None)
+                    g2kw["anchor"] = ktjd_anchor(b, x_in, anc_mode, rest_lut, a.demo_frames)
+            else:
+                x_in = b["x"]
+            gen = sample(model, x_in, b["is_target"], a.steps,
                          joint_bias=b["joint_bias"], frame_valid=b["frame_valid"],
                          joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"],
                          **g2kw)
@@ -246,14 +394,21 @@ def main():
         gt = b["x"][0].float().cpu().numpy()
 
         t_item = base[ds.index[pos][1]]
-        mean = np.asarray(t_item["anytop_mean"])[:J]; std = np.asarray(t_item["anytop_std"])[:J]
         parents = [int(p) for p in t_item["parent_indices"][:J]]
-        offsets = np.asarray(t_item["rest_offsets"])[:J]
         gseg = gen[a.demo_frames:a.demo_frames + t_real, :J]
-        demo_w = world_of(gt[:d_real, :J], mean, std)
-        gen_ric = world_of(gseg, mean, std)
-        gen_fk = world_of(gseg, mean, std, recover="fk", parents=parents, offsets=offsets)
-        gt_w = world_of(gt[a.demo_frames:a.demo_frames + t_real, :J], mean, std)
+        gtseg = gt[a.demo_frames:a.demo_frames + t_real, :J]
+        if a.corpus == "ktjd17":
+            demo_w, _ = world_of_ktjd(gt[:d_real, :J], base, rig, strict_gt=True)
+            gen_ric, gen_fk = world_of_ktjd(gseg, base, rig, strict_gt=False)
+            gt_w, _ = world_of_ktjd(gtseg, base, rig, strict_gt=True)
+        else:
+            mean = np.asarray(t_item["anytop_mean"])[:J]
+            std = np.asarray(t_item["anytop_std"])[:J]
+            offsets = np.asarray(t_item["rest_offsets"])[:J]
+            demo_w = world_of(gt[:d_real, :J], mean, std)
+            gen_ric = world_of(gseg, mean, std)
+            gen_fk = world_of(gseg, mean, std, recover="fk", parents=parents, offsets=offsets)
+            gt_w = world_of(gtseg, mean, std)
         jit_all, jit_root, gt_all, gt_root = jitter_ratio(gen_ric, gt_w)
         jfk_all, jfk_root, _, _ = jitter_ratio(gen_fk, gt_w)
         static_warn = "  [near-static GT, ratio inflated]" if gt_all < 1e-3 else ""
@@ -265,7 +420,8 @@ def main():
                     ("gen_ric", f"GEN pos ep{ep} s{a.steps}", gen_ric),
                     ("gen_fk", f"GEN fk ep{ep} s{a.steps}", gen_fk),
                     ("gt", "TARGET GT", gt_w)],
-                   parents, cap, f"[{bucket}] {rig}")
+                   parents, cap, f"[{bucket}] {rig}",
+                   fps=30 if a.corpus == "ktjd17" else 20)
         print(f"[render] {name}.gif  (demo {d_real}f | target {t_real}f, J={J})  "
               f"jitter ric {jit_all:.2f}x fk {jfk_all:.2f}x (GT {gt_all:.4f}) "
               f"root ric {jit_root:.2f}x fk {jfk_root:.2f}x{static_warn}", flush=True)

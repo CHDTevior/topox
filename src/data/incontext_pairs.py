@@ -54,6 +54,7 @@ from torch.utils.data import Dataset
 from src.data.anytop_dataset import AnyTopDataset
 
 DEMO_FRAMES = 64
+REST_DEMO_CLAMP = 5.0     # rest-demo input clamp (codex 2026-08-21 (b))
 TARGET_FRAMES = 240   # >= TrueBones max clip length 237: nothing truncated, caption always matches
 GEODESIC_CLIP = 8.0      # hop distances reach ~20; an unclipped bias swamps the attention logits
 PAD_BIAS = -1e4
@@ -163,7 +164,8 @@ class InContextPairs(Dataset):
 
     def __init__(self, base: AnyTopDataset, target_names, demo_names, *,
                  object_types=None, demo_frames=DEMO_FRAMES, target_frames=TARGET_FRAMES,
-                 balance_skeletons=True, seed=0, emit_fk_fields=False, emit_graph_v2=False):
+                 balance_skeletons=True, seed=0, emit_fk_fields=False, emit_graph_v2=False,
+                 identity_p=0.0, emit_ref_text=False, demo_rest=False):
         self.base = base
         self.Td, self.Tt = int(demo_frames), int(target_frames)
         self.balance = bool(balance_skeletons)
@@ -178,6 +180,27 @@ class InContextPairs(Dataset):
         # flag-gating contract: off = byte-identical batches.
         self.emit_graph_v2 = bool(emit_graph_v2)
         self._g2cache = {}
+        # UMO SOURCE_IDENTITY analogue (manifest_dataset.py:289-304 mechanism): with prob p the
+        # target IS the demo clip (different windows of the same clip) and the caption embedding
+        # is ZEROED -- teaches "the demo/anchor carries content" without the (demo+text-demo)
+        # guidance collapse. Off by default; the anti-shortcut demo!=target rule stays intact for
+        # the normal branch (identity samples are explicit, flagged via is_identity).
+        self.identity_p = float(identity_p)
+        # F5-TTS reference-transcript analogue; flag-gated so an unset run is byte-identical.
+        self.emit_ref_text = bool(emit_ref_text)
+        # 1-FRAME REST DEMO (user 2026-08-21): the demo slot carries the rig's rest pose instead of
+        # a window of another clip. The demo then holds NO motion content, so the run isolates
+        # "can the raw-space DiT generate coherent motion from text + skeleton", with the
+        # demo-interpretation variable removed. Requires demo_frames=1 and a base exposing
+        # rest_frame_normalized().
+        self.demo_rest = bool(demo_rest)
+        if self.demo_rest and int(demo_frames) != 1:
+            raise ValueError(f"demo_rest needs demo_frames=1, got {demo_frames}")
+        # Corpus-specific post-crop hook (KTJD-17 crop contract, codex round-S0): KTJD requires
+        # smooth-root XZ to be re-based at EVERY crop boundary (loader.py:99-122 is the normative
+        # crop; generic _crop only slices). A base dataset that needs window-level fixups exposes
+        # `postcrop_window(window, valid_mask) -> window`; absent hook = byte-identical batches.
+        self._postcrop = getattr(base, "postcrop_window", None)
         keep = set(object_types) if object_types is not None else None
 
         tgt_pool, demo_pool = defaultdict(list), defaultdict(list)
@@ -225,10 +248,13 @@ class InContextPairs(Dataset):
 
     # ---- introspection used by the smoke and by reports ----
     def pair_count(self):
+        # |targets| x |demos| minus the self-pairs, counted directly: the nested form was
+        # O(targets x demos), which on a 89.5k-clip corpus with one rig holding ~2e4 human clips
+        # is ~4e8 Python iterations -- minutes of pure reporting before training starts.
         n = 0
         for v in self.by_type.values():
-            for t in v["targets"]:
-                n += sum(1 for d in v["demos"] if d != t)
+            dm = set(v["demos"])
+            n += len(v["targets"]) * len(v["demos"]) - sum(1 for t in v["targets"] if t in dm)
         return n
 
     def __len__(self):
@@ -305,15 +331,52 @@ class InContextPairs(Dataset):
         if not demos:      # cannot happen: targets without a distinct demo are dropped at build
             raise AssertionError(f"{ot}: target {tgt_idx} has no distinct demo")
         demo_idx = int(demos[int(rng.integers(len(demos)))])
+        is_identity = self.identity_p > 0 and float(rng.random()) < self.identity_p
+        if is_identity:
+            demo_idx = tgt_idx          # same clip: demo window (random) vs target head window
 
         t_item, t_x, J, t_T = self._raw(tgt_idx)
-        _, d_x, dJ, d_T = self._raw(demo_idx)
-        if dJ != J:
-            raise ValueError(f"{ot}: demo has {dJ} joints, target {J} -- joint-count augmentation "
-                             f"must be off for in-context pairs")
+        if (self.demo_rest and not self.emit_ref_text
+                and not getattr(self.base, "random_caption", False)):
+            # The demo slot carries the rig's REST POSE; the demo clip's motion is loaded and then
+            # thrown away three lines down. That doubled this dataset's npz traffic -- a full pass
+            # over the 89.5k-clip corpus paid for 89.5k reads nobody consumed -- to buy a
+            # joint-count check that same-rig clips satisfy by construction (joint-count
+            # augmentation is off for in-context pairs, and the check would still fire for the
+            # non-rest path). d_item is only needed for the reference-transcript branch.
+            # random_caption guard (codex 2026-08-21 (d)): Ktjd17Base.__getitem__ advances its own
+            # caption RNG, so skipping the read is NOT stream-neutral when captions are drawn at
+            # random -- my "_raw consumes no RNG" claim held only for this run's settings.
+            d_item = t_item if is_identity else None
+        else:
+            d_item, d_x, dJ, d_T = self._raw(demo_idx)
+            if dJ != J:
+                raise ValueError(f"{ot}: demo has {dJ} joints, target {J} -- joint-count "
+                                 f"augmentation must be off for in-context pairs")
 
-        d_crop, d_valid = self._crop(d_x, d_T, self.Td, rng, random_window=True)
+        if self.demo_rest:
+            d_crop = np.asarray(self.base.rest_frame_normalized(ot),
+                                dtype=np.float32)[None, :J]           # [1,J,C]
+            # The rest pose is a REFERENCE, not a motion sample, so it need not lie inside the
+            # motion distribution its statistics describe. Four rigs have a root rot6d component
+            # that is numerically zero on every stored frame, so the analytic rest identity
+            # (ch3 = 1) normalized to 1/std -- 10,000 under the old 1e-4 floor, ~20 under 0.05.
+            # The demo slot is pure context (cfm_loss masks it out of every term), so clamping it
+            # costs no supervision, and it keeps an out-of-distribution token from dominating the
+            # gradient of x_in, which is a bare nn.Linear with no preceding LayerNorm.
+            # Range and placement per codex gpt-5.6-terra/xhigh 2026-08-21 (b).
+            np.clip(d_crop, -REST_DEMO_CLAMP, REST_DEMO_CLAMP, out=d_crop)
+            d_valid = np.ones(1, dtype=bool)
+        else:
+            d_crop, d_valid = self._crop(d_x, d_T, self.Td, rng, random_window=True)
         t_crop, t_valid = self._crop(t_x, t_T, self.Tt, rng, random_window=False)
+        if self._postcrop is not None:
+            # Each window is its own crop under the corpus contract (demo and target re-based
+            # INDEPENDENTLY -- they are different clips, and even identity pairs use different
+            # windows). The target head window is a no-op re-base today (full view is built with
+            # crop_start=0), kept unconditional as the fail-safe for any future window policy.
+            d_crop = self._postcrop(d_crop, d_valid, ot)
+            t_crop = self._postcrop(t_crop, t_valid, ot)
 
         x = np.concatenate([d_crop, t_crop], axis=0)
         # is_target marks REAL target frames only: padding must not receive the mask token, and
@@ -333,10 +396,24 @@ class InContextPairs(Dataset):
             "demo_id": str(demo_idx),
             "n_joints": J,
         }
-        # text is the TARGET's caption only; feeding the demo's caption would let the text pathway
-        # learn to describe the demo instead of the request.
+        # TARGET caption -> the global AdaLN text condition (unchanged).
         if t_item.get("caption_emb") is not None:
-            out["text"] = torch.as_tensor(np.asarray(t_item["caption_emb"])).float()
+            emb = torch.as_tensor(np.asarray(t_item["caption_emb"])).float()
+            out["text"] = torch.zeros_like(emb) if is_identity else emb
+        # DEMO caption -> the F5-TTS reference-transcript analogue (2026-08-20, user: "和它对齐").
+        # F5/E2 feed [ref_text + gen_text] alongside [ref_mel + masked span]: the model is TOLD what
+        # the reference is saying, which is how it factors the reference's CONTENT out and keeps
+        # only its STYLE (timbre). We had deliberately withheld this -- the old comment here feared
+        # the text pathway would start describing the demo -- but F5 prevents exactly that by
+        # POSITION, not by withholding: ref text sits over the reference frames, gen text over the
+        # span to fill. The model consumes it per-frame on that layout (see InContextMotionDiT
+        # ref_text), so the two captions can never be confused for one another.
+        if self.emit_ref_text and d_item is not None and d_item.get("caption_emb") is not None:
+            demb = torch.as_tensor(np.asarray(d_item["caption_emb"])).float()
+            # an identity sample IS the target clip, so its "reference caption" is the request --
+            # zero it with the target's, or the dropped text leaks back in through this door.
+            out["demo_text"] = torch.zeros_like(demb) if is_identity else demb
+        out["is_identity"] = bool(is_identity)
         sem = t_item.get("joint_semantics")          # order-hash checked inside the dataset
         if sem is not None:
             out["joint_sem"] = torch.as_tensor(np.asarray(sem))[:J].float()
@@ -349,6 +426,11 @@ class InContextPairs(Dataset):
             out["parents"] = torch.as_tensor(
                 np.asarray(t_item["parent_indices"][:J], dtype=np.int64))
             out["rest_offsets"] = torch.as_tensor(np.asarray(t_item["rest_offsets"])[:J]).float()
+            if "R_rest_global" in t_item:
+                # KTJD-17 gamma7: the FK path composes cont6d deltas with the rig's global rest
+                # rotations (decoder.py:70); the 13ch corpus has no such field, so flag-free.
+                out["R_rest_global"] = torch.as_tensor(
+                    np.asarray(t_item["R_rest_global"])[:J]).float()
         if self.emit_graph_v2:
             if ot not in self._g2cache:
                 # geodesic_raw is the UN-clipped served-order Floyd matrix -- the self-check
@@ -401,10 +483,14 @@ def collate(batch):
         out["joint_sem"] = sem
     if "text" in batch[0]:
         out["text"] = torch.stack([b["text"] for b in batch])
+    if "demo_text" in batch[0]:
+        out["demo_text"] = torch.stack([b["demo_text"] for b in batch])
     if "anytop_mean" in batch[0]:
         # gamma_fk fields, padded to Jm. Padded joints never reach the FK chain (the loss slices
         # [:n_joints] per sample), so zero mean/std/offsets and parent -1 are inert placeholders.
-        am = torch.zeros(B, Jm, 13); asd = torch.zeros(B, Jm, 13)
+        # Channel count follows the corpus (13 for AnyTop, 18 for KTJD's plane-carrying stats).
+        Cs = batch[0]["anytop_mean"].shape[1]
+        am = torch.zeros(B, Jm, Cs); asd = torch.zeros(B, Jm, Cs)
         par = torch.full((B, Jm), -1, dtype=torch.long); ro = torch.zeros(B, Jm, 3)
         for k, b in enumerate(batch):
             J = b["n_joints"]
@@ -412,6 +498,11 @@ def collate(batch):
             par[k, :J] = b["parents"]; ro[k, :J] = b["rest_offsets"]
         out.update(anytop_mean=am, anytop_std=asd, parents=par, rest_offsets=ro,
                    n_joints=torch.tensor([b["n_joints"] for b in batch], dtype=torch.long))
+        if "R_rest_global" in batch[0]:
+            rr = torch.zeros(B, Jm, 3, 3)
+            for k, b in enumerate(batch):
+                rr[k, :b["n_joints"]] = b["R_rest_global"]
+            out["R_rest_global"] = rr
     if "struct_feats" in batch[0]:
         # graph-v2 fields, padded to Jm. Padded rows are zeros; padded PAIRS are irrelevant
         # because the -1e4 PAD_BIAS already excludes them from attention, and zero-index lookups

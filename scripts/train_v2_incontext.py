@@ -13,7 +13,7 @@ Validation = bucket A (seen rigs, unseen clips), with a RESET RNG stream each pa
 sees the identical demo/crop choices and the numbers are comparable across epochs.
 Checkpoints are written atomically (tmp + rename); best is tracked on val flow loss.
 """
-import argparse, json, os, pickle, sys, time
+import argparse, hashlib, json, math, os, pickle, sys, time
 from pathlib import Path
 
 import numpy as np
@@ -27,7 +27,8 @@ from src.data.anytop_dataset import AnyTopDataset                               
 from src.data.incontext_pairs import (InContextPairs, collate, read_split,      # noqa: E402
                                       truebones_types, pzh_types, DEMO_FRAMES, TARGET_FRAMES)
 from src.models.v2.dit_motion import (InContextMotionDiT, cfm_loss,             # noqa: E402
-                                      KIMODO_GAMMAS)
+                                      KIMODO_GAMMAS, KTJD17_MASK_POLICY,
+                                      _GROUP_SPEC_KTJD17)
 
 
 def to_dev(b, dev):
@@ -40,6 +41,8 @@ def to_dev(b, dev):
 def cond_of(b):
     d = dict(joint_bias=b["joint_bias"], frame_valid=b["frame_valid"],
              joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"])
+    if "demo_text" in b:                     # F5 reference-transcript analogue
+        d["demo_text"] = b["demo_text"]
     for k in ("struct_feats", "updown"):     # graph-v2, present only when the dataset emits them
         if k in b:
             d[k] = b[k]
@@ -48,10 +51,65 @@ def cond_of(b):
 
 def fk_pack_of(b):
     """gamma_fk inputs, exactly the fields InContextPairs(emit_fk_fields=True) adds to the batch.
-    _STD_FLOOR must be the SAME constant the dataset normalized with, or de-normalization drifts."""
+    _STD_FLOOR must be the SAME constant the dataset normalized with, or de-normalization drifts.
+    An R_rest_global field marks a KTJD batch: cfm_loss then dispatches to the KTJD FK term
+    (official decoder semantics) instead of the 13ch RIFKE recovery."""
     from src.data.anytop_dataset import _STD_FLOOR
-    return dict(anytop_mean=b["anytop_mean"], anytop_std=b["anytop_std"], std_floor=_STD_FLOOR,
+    pack = dict(anytop_mean=b["anytop_mean"], anytop_std=b["anytop_std"], std_floor=_STD_FLOOR,
                 parents=b["parents"], rest_offsets=b["rest_offsets"], n_joints=b["n_joints"])
+    if "R_rest_global" in b:
+        pack["kind"] = "ktjd17"
+        pack["R_rest_global"] = b["R_rest_global"]
+    return pack
+
+
+# A validation this much worse than the best seen means the run has blown up, not merely
+# regressed: healthy epoch-to-epoch movement here is a few percent, while a blow-up is 50-100x.
+HEALTH_RATIO = 5.0
+
+
+def ktjd_channel_lut(base):
+    """{rig: bool[J,17]} static channel-validity, assembled once (KTJD-17 only)."""
+    rigs = {s["object_type"] for s in base.samples}
+    return {r: torch.from_numpy(base.static_masks(r)["channel_valid"]) for r in rigs}
+
+
+def ktjd_anchor(b, x17, mode, rest_lut, demo_frames):
+    """[B,T,J,17] flow anchor. rest: per-rig frame broadcast over T. demo: the demo window's
+    REAL frames tiled across the whole T axis (content prior; alignment-free by design)."""
+    B, T, Jm, C = x17.shape
+    if mode == "rest":
+        a = torch.zeros(B, Jm, C, dtype=x17.dtype, device=x17.device)
+        for k, ot in enumerate(b["object_type"]):
+            r = rest_lut[ot]
+            a[k, :r.shape[0]] = r.to(x17.device, x17.dtype)
+        return a[:, None].expand(B, T, Jm, C)
+    # demo: tile per sample by its real demo length
+    anc = torch.zeros_like(x17)
+    for k in range(B):
+        d_real = int(b["frame_valid"][k, :demo_frames].sum())
+        if d_real < 1:
+            continue
+        idx = torch.arange(T, device=x17.device) % d_real
+        anc[k] = x17[k, idx]
+    return anc
+
+
+def ktjd_prep(b, lut, gammas):
+    """Split the 18-plane KTJD batch: model sees x[...,:17]; plane 17 is the heading flag.
+    Returns (x17, kwargs-for-cfm_loss). channel_valid is padded per batch from the rig LUT.
+    gammas come from the versioned calibration artifact, never from in-code placeholders
+    (codex round-S0); the trainer refuses to start without the artifact."""
+    x = b["x"]
+    x17 = x[..., :17].contiguous()
+    heading = x[:, :, 0, 17] > 0.5                                  # [B,T]
+    B, Jm = x.shape[0], x.shape[2]
+    cv = torch.zeros(B, Jm, 17, dtype=torch.bool, device=x.device)
+    for k, ot in enumerate(b["object_type"]):
+        m = lut[ot]
+        cv[k, :m.shape[0]] = m.to(x.device)
+    return x17, dict(channel_valid=cv, heading_valid=heading,
+                     gammas=gammas, group_spec=_GROUP_SPEC_KTJD17)
 
 
 def atomic_save(obj, path: Path):
@@ -84,17 +142,27 @@ class fixed_torch_rng:
             torch.cuda.set_rng_state_all(self.gpu)
 
 
-def connectivity_probe(model, b, demo_frames=DEMO_FRAMES):
+def connectivity_probe(model, b, demo_frames=DEMO_FRAMES, ktjd_lut=None, ktjd_gammas=None,
+                       obj=None):
     """P5: |dLoss/d input| per conditioning path. Zero = dead branch (v1's undetected failure).
-    Magnitudes are comparable only against earlier probes of THIS run."""
+    Magnitudes are comparable only against earlier probes of THIS run.
+
+    `obj` carries the objective knobs (v_space/sigma_min/huber_delta) so the probe differentiates
+    the loss the run is ACTUALLY training, not an unweighted MSE stand-in (codex 2026-08-22): with
+    v_space on, an unweighted probe reports connectivity through a different objective than the
+    optimizer sees, and the numbers would not be comparable across a sigma_min change either."""
     was_training = model.training
     model.train()
     c = cond_of(b)
     for k in ("text", "joint_sem"):
         c[k] = c[k].detach().clone().requires_grad_(True)
-    xin = b["x"].detach().clone().requires_grad_(True)
+    if ktjd_lut is not None:
+        x_src, kt = ktjd_prep(b, ktjd_lut, ktjd_gammas)
+    else:
+        x_src, kt = b["x"], dict(gammas=KIMODO_GAMMAS)
+    xin = x_src.detach().clone().requires_grad_(True)
     loss = cfm_loss(model, xin, is_target=b["is_target"], valid=b["valid"],
-                    gammas=KIMODO_GAMMAS, **c)
+                    **(obj or {}), **kt, **c)
     g_x, g_t, g_s = torch.autograd.grad(loss, [xin, c["text"], c["joint_sem"]])
     model.zero_grad(set_to_none=True)
     if not was_training:
@@ -124,7 +192,7 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--resume", default="")
     # ---- run-3 scale knobs (all defaults preserve run-1 behaviour bit-for-bit) ----
-    ap.add_argument("--corpus", choices=("truebones", "pzh"), default="truebones",
+    ap.add_argument("--corpus", choices=("truebones", "pzh", "ktjd17"), default="truebones",
                     help="pzh = Planet-Zoo + HumanML3D, no TrueBones (312 rigs / 89.5k train clips)")
     ap.add_argument("--balance", choices=("rig", "clip"), default="rig",
                     help="rig = uniform-skeleton draws (run-1); clip = natural source proportions")
@@ -134,13 +202,22 @@ def main():
     ap.add_argument("--target_frames", type=int, default=TARGET_FRAMES)
     ap.add_argument("--bf16", action="store_true")
     ap.add_argument("--wd", type=float, default=0.0)
-    ap.add_argument("--warmup_steps", type=int, default=0,
-                    help="linear lr warmup over N optimizer steps (big-model stability)")
+    ap.add_argument("--warmup_steps", type=int, default=2000,
+                    help="linear lr warmup over N optimizer steps. DEFAULT RAISED FROM 0 to 2000 "
+                         "(2026-08-21): every run so far started at full lr, and the user's "
+                         "requirement for this run is a stable, monotonically falling early loss. "
+                         "Warmup is the standard, cheap way to get it and costs ~0.2 epochs on the "
+                         "312-rig corpus.")
     ap.add_argument("--val_max_batches", type=int, default=0,
                     help=">0: cap validation at N batches (fixed deterministic subset) so peer "
                          "ranks are not parked behind a long rank-0 val")
     ap.add_argument("--val_every_steps", type=int, default=0,
                     help=">0: validate/checkpoint every N steps INSTEAD of every val_every epochs")
+    ap.add_argument("--allow_unhealthy_resume", action="store_true",
+                    help="continue from a checkpoint written after a blow-up (refused by default)")
+    ap.add_argument("--ckpt_snapshot_keep", type=int, default=20,
+                    help="how many step snapshots to retain; older ones are deleted. They carry "
+                         "optimizer state (~1 GB each), so an unbounded series fills the disk.")
     ap.add_argument("--ckpt_snapshot_steps", type=int, default=0,
                     help=">0: periodic epNNN-style snapshots every N steps instead of ckpt_every epochs")
     ap.add_argument("--t_sampler", choices=("uniform", "logitnormal"), default="uniform")
@@ -161,7 +238,163 @@ def main():
     ap.add_argument("--dir_bias", action="store_true",
                     help="graph-v2 knife 2: learnable per-head directional (up/down LCA hop) "
                          "attention bias added to the fixed -geodesic scalar")
+    ap.add_argument("--ktjd_root", default="dataset/ktjd17_truebones",
+                    help="ktjd17 corpus root (only read when --corpus ktjd17)")
+    ap.add_argument("--anchor", choices=("none", "rest", "demo"), default="none",
+                    help="flow base = anchor + N(0,I) (UMO source-centered). rest = per-rig "
+                         "rest-pose frame (variant A); demo = tiled demo window (variant B). "
+                         "ktjd17 only.")
+    ap.add_argument("--identity_p", type=float, default=0.0,
+                    help="variant-B identity branch: prob that target IS the demo clip with a "
+                         "ZEROED caption (UMO SOURCE_IDENTITY analogue)")
+    ap.add_argument("--ktjd_training_authorized", action="store_true",
+                    help="the KTJD release gate currently says ready_for_training=false; this "
+                         "flag records an EXPLICIT user authorization to train anyway (user "
+                         "2026-08-20: gate override (b), data artifact untouched). Without it, "
+                         "ktjd17 training refuses to start.")
+    ap.add_argument("--ktjd_gamma_calib", default="configs/ktjd17_gamma_calibration_v5.json",
+                    help="versioned KTJD gamma calibration artifact (energies + gammas + hashes); "
+                         "ktjd17 training REFUSES to start without it (codex round-S0)")
+    ap.add_argument("--ktjd_auth_generation",
+                    default="20260819T215405576671Z-2d04a8d85638",
+                    help="the generation --ktjd_training_authorized was granted for (user "
+                         "2026-08-20); a different corpus needs a fresh authorization")
+    ap.add_argument("--allow_calib_code_drift", action="store_true",
+                    help="proceed even though the loss code changed since gamma calibration "
+                         "(recorded in args.json; use only when the change provably cannot move "
+                         "group shares)")
+    ap.add_argument("--grad_spike_reject", type=float, default=0.0,
+                    help="skip (not clip) any post-warmup step whose PRE-clip gradient norm "
+                         "exceeds this; 0 disables. Clipping keeps a garbage direction at full "
+                         "step size, which is how six runs died.")
+    ap.add_argument("--grad_clip", type=float, default=1.0,
+                    help="clip_grad_norm_ threshold. NOTE the Kimodo gammas put the raw grad norm "
+                         "around 150-400 on this objective, so the historical 1.0 renormalizes "
+                         "EVERY step to unit length rather than clipping outliers -- which cancels "
+                         "Adam's scale-invariance and makes every step the same size regardless of "
+                         "how sharp the local landscape is. Set it above the norm distribution to "
+                         "clip only genuine spikes.")
+    ap.add_argument("--artic_min", type=float, default=0.30,
+                    help="anti-collapse floor on the pose-relative articulation ratio (codex "
+                         "round-S8): below this the body is effectively frozen. A checkpoint under "
+                         "the floor can never be recorded as BEST, and N consecutive validations "
+                         "under it abort the run. 0 disables (not recommended).")
+    ap.add_argument("--artic_gate_after", type=int, default=30,
+                    help="epoch from which the artic floor is enforced (an untrained model is "
+                         "legitimately below it)")
+    ap.add_argument("--artic_gate_strikes", type=int, default=3,
+                    help="consecutive sub-floor validations that abort the run")
+    ap.add_argument("--limit_train_clips", type=int, default=0,
+                    help="OVERFIT RUNG (user 2026-08-21: 'at least it must be able to overfit'): "
+                         ">0 restricts training to the first N train clips, deterministically. A "
+                         "model that cannot drive the loss toward zero on a handful of clips has "
+                         "an architecture or plumbing fault, and no amount of data will fix it -- "
+                         "so this runs BEFORE any long run. Val is left untouched.")
+    ap.add_argument("--demo_rest", action="store_true",
+                    help="1-frame REST-POSE demo (user 2026-08-21): the demo slot carries the "
+                         "rig's rest pose instead of a window of another clip, so it holds no "
+                         "motion content. Requires --demo_frames 1. ktjd17 only.")
+    ap.add_argument("--lr_scheduler", choices=("half_cosine", "none"), default="none",
+                    help="PORTED from this project's locked CodeFlow recipe "
+                         "(scripts/train_graph_codeflow.py:845): linear warmup -> half-cosine "
+                         "decay to eta_min_ratio*lr, computed from the OPTIMIZER step so a resume "
+                         "reproduces it exactly without storing scheduler state. Default 'none' "
+                         "preserves the flat-lr behaviour of runs 1-5 -- which is what made every "
+                         "one of them diverge: lr stayed at its peak forever, so as the model "
+                         "sharpened, the fixed step size eventually exceeded what its accuracy "
+                         "could tolerate. That is why crash time scaled with 1/lr and why wd and "
+                         "sigma_min only postponed it.")
+    ap.add_argument("--eta_min_ratio", type=float, default=0.01,
+                    help="floor of the cosine decay as a fraction of --lr (CodeFlow default 0.01)")
+    ap.add_argument("--lr_decay_epochs", type=int, default=0,
+                    help="length of the cosine decay in EPOCHS; 0 = the full --epochs budget. "
+                         "Decoupled from --epochs because a 500-epoch cosine is effectively FLAT "
+                         "where this model actually fails: at epoch 18 (run5's death) it has "
+                         "covered 3.6%% of the horizon and lr has fallen 0.27%% -- it cannot test "
+                         "the hypothesis it exists to test (codex 2026-08-23 blocker 2). A shorter "
+                         "horizon front-loads the decay; lr then holds at eta_min_ratio*lr for the "
+                         "remainder, so pick eta_min_ratio high enough to keep learning after it.")
+    ap.add_argument("--compile", action="store_true",
+                    help="torch.compile(dynamic=True) on the model. MEASURED on this objective "
+                         "(88M dim512/depth12, real varied-J batches, single H200): 11.9 -> 19.5 "
+                         "items/s (+64%%), which more than repays activation checkpointing's 27%% "
+                         "cost. dynamic=True is REQUIRED -- J varies per batch (87..96 observed in "
+                         "one shuffled stream) and static compilation would re-trigger on every "
+                         "new shape. First few batches cost ~76 s of compilation.")
+    ap.add_argument("--grad_ckpt", action="store_true",
+                    help="activation checkpointing on the transformer blocks: ~60-70%% less "
+                         "activation memory for ~30%% more compute. Needed to raise dim/depth "
+                         "while KEEPING global batch 32 -- shrinking the batch instead would "
+                         "worsen the very tail-sample-count problem that drives the instability.")
+    ap.add_argument("--sigma_min", type=float, default=0.05,
+                    help="floor on (1-t) inside the v_space weight 1/(1-t)^2, i.e. the cap on how "
+                         "much the near-data timesteps outweigh the rest. MEASURED on this "
+                         "objective (run4 ep9, healthy): gradient norm by t-bin is 0.64 at "
+                         "t in [0.2,0.5] but 34.66 at t in [0.95,1.0] -- a 54x concentration, of "
+                         "which ~10x is this weight (capped at 400, unit-mean-normalized by "
+                         "2/sigma_min-1 = 39) and ~5x is the higher parameter-sensitivity of the "
+                         "near-data region itself. That concentration grows as the model improves "
+                         "(the mid-range residual shrinks while t->1 does not), which is why all "
+                         "four runs diverged at the same VAL level rather than at an lr threshold. "
+                         "0.2 caps the weight at 25 (2.8x after normalization).")
+    ap.add_argument("--huber_delta", type=float, default=0.0,
+                    help="knee of a Huber on the per-cell target error, in normalized units. 0 "
+                         "keeps the plain squared error. Below the knee the term is IDENTICAL to "
+                         "the squared error, so calibrated gammas still describe the objective; "
+                         "above it the per-cell gradient saturates at 2*delta, which is what stops "
+                         "undetected source-data contamination from dominating a step. Measured "
+                         "|normalized target| over 4.63e8 supervised cells: p99.9=6.65, "
+                         "p99.99=11.45, p99.999=19.95.")
+    ap.add_argument("--exclude_clips", default="",
+                    help="JSON artifact listing clip_ids removed from every split (the frozen, "
+                         "sha-pinned corpus cannot be edited, so the cut is applied at load time "
+                         "and its sha is recorded in ktjd_pins). User 2026-08-21: source-animation "
+                         "teleports are not to be trained on.")
+    ap.add_argument("--ktjd_percell_stats", default="data/ktjd17_percell_stats_v1.npz",
+                    help="old-style per-(rig,joint,channel) mean/std artifact")
+    ap.add_argument("--ref_text", action="store_true",
+                    help="F5-TTS reference-transcript analogue: feed the DEMO's caption too, "
+                         "injected PER FRAME (demo caption over demo frames, request over target "
+                         "frames) so the model can factor the demo's content out and keep its "
+                         "style. Off = bit-identical to the pre-2026-08-20 arms.")
+    ap.add_argument("--gamma_vel", type=float, default=0.0,
+                    help="UMO clean_root/joint_velocity analogue (0.01 in their recipe): "
+                         "physical-space frame-difference supervision a FROZEN output cannot "
+                         "satisfy. ktjd17 only.")
+    ap.add_argument("--gamma_lock", type=float, default=0.0,
+                    help="UMO foot_lock analogue (0.01): zero displacement demanded only where GT "
+                         "contact is on at both endpoints. ktjd17 only.")
+    ap.add_argument("--two_stage", action="store_true",
+                    help="variant D: Kimodo/UMO two-stage denoiser (root tower -> parameter-free "
+                         "bridge, detached in training -> body tower). ktjd17 only.")
+    ap.add_argument("--root_dim", type=int, default=192,
+                    help="two_stage root tower width (depth fixed at 4)")
     a = ap.parse_args()
+    # Objective-shaping knobs are validated UNCONDITIONALLY: they reach cfm_loss on every corpus,
+    # so a guard inside the ktjd17 branch would let another corpus pass an invalid value straight
+    # through (codex 2026-08-22 hygiene). 2/s-1 is only defined on (0, 1].
+    # nan/inf must be rejected here, not just negatives: `nan != 0` passes the resume's
+    # "0 -> positive" activation check and gets RECORDED as an activation, while `nan > threshold`
+    # is always False -- so the lineage would claim a guard that is in fact disabled. inf is the
+    # same defect with a different value (codex 2026-08-23 round 2).
+    if a.ckpt_snapshot_steps > 0 and a.ckpt_snapshot_keep < 1:
+        raise SystemExit(f"--ckpt_snapshot_keep must be >= 1 when snapshots are enabled "
+                         f"(0 retains everything, negatives delete the file just written), got "
+                         f"{a.ckpt_snapshot_keep}")
+    if not (np.isfinite(a.grad_spike_reject) and a.grad_spike_reject >= 0.0):
+        raise SystemExit(f"[refuse] --grad_spike_reject must be finite and >= 0, got "
+                         f"{a.grad_spike_reject}")
+    if not (np.isfinite(a.sigma_min) and 0.0 < a.sigma_min <= 1.0):
+        raise SystemExit(f"[refuse] --sigma_min must lie in (0, 1], got {a.sigma_min}")
+    if not (np.isfinite(a.grad_clip) and a.grad_clip > 0):
+        raise SystemExit(f"[refuse] --grad_clip must be finite and positive, got {a.grad_clip}")
+    if not (0.0 <= a.eta_min_ratio <= 1.0):
+        raise SystemExit(f"[refuse] --eta_min_ratio must lie in [0, 1], got {a.eta_min_ratio}")
+    if a.corpus == "ktjd17" and a.joint_sem == ap.get_default("joint_sem"):
+        # the legacy AnyTop table fails the KTJD order-hash on the first rig; select the KTJD
+        # table when the user did not explicitly choose one (codex round-S0)
+        a.joint_sem = "data/joint_semantics_llm2vec_ktjd17_v1.npz"
+        print(f"[ktjd] --joint_sem defaulted to {a.joint_sem}", flush=True)
     assert torch.cuda.is_available(), "run-1 is a GPU run; refusing to silently train on CPU"
     # ---- DDP is opt-in via torchrun's env; absent WORLD_SIZE keeps the single-GPU path
     # bit-identical (run-1 and its crash-resume must not change behaviour). Cross-alloc same-node
@@ -184,24 +417,188 @@ def main():
         dist.barrier()
 
     # ---------------- data ----------------
-    cond = pickle.load(open(f"{a.data_root}/_cond_normalized_J144.pkl", "rb"))
-    types = truebones_types(cond.keys()) if a.corpus == "truebones" else pzh_types(cond.keys())
-    names = {k: read_split(a.splits_dir, k) for k in ("train", "val")}
-    base = AnyTopDataset(data_root=a.data_root, split="all", num_frames=300, max_joints=144,
-                         load_captions=True, caption_emb_cache=a.caption_cache,
-                         random_caption=a.random_caption, augment=False, joint_semantics=a.joint_sem,
-                         species_whitelist=types, splits_dir=a.splits_dir,
-                         texts_json_name=a.texts_json)
+    if a.corpus == "ktjd17":
+        # KTJD-17 (17 real channels + heading-flag plane 18 riding through the crop machinery;
+        # see src/data/ktjd17_incontext.py). InContextPairs itself is reused unchanged.
+        from src.data.ktjd17_incontext import Ktjd17Base, ktjd17_split_names
+        base = Ktjd17Base(a.ktjd_root, caption_emb_cache=a.caption_cache,
+                          joint_semantics=a.joint_sem, texts_json=a.texts_json,
+                          percell_stats=a.ktjd_percell_stats,
+                          exclude_clips=(a.exclude_clips or None),
+                          random_caption=a.random_caption)
+        names = ktjd17_split_names(a.ktjd_root, exclude=(a.exclude_clips or None))
+        types = None                       # all KTJD rigs; splits already carve train/val/held
+        # ---- external release gate (codex round-S0): optimization against this corpus is gated
+        # by the DATA side, and the gate is checked against the EXACT generation the adapter
+        # resolved. The override flag records user authorization without mutating the artifact.
+        # Two corpus layouts carry the data-side release differently, so resolve which one this
+        # corpus uses and reduce both to (gate_generation, ready, gate_desc):
+        #   TrueBones     external dataset/KTJD17_TRUEBONES_RELEASE_GATE.json, ready_for_training
+        #   PZ+Human 312  self-bound: generation.json.full_conversion_authorized, with the visual
+        #                 gate pinned by sha inside the corpus (no external file exists)
+        genj = json.loads((Path(a.ktjd_root) / "generation.json").read_text())
+        if "full_conversion_authorized" in genj:
+            vg_p = Path(a.ktjd_root) / "evidence" / "visual_gate.json"
+            vg_sha = hashlib.sha256(vg_p.read_bytes()).hexdigest()
+            if vg_sha != str(genj.get("visual_gate_sha256")):
+                raise SystemExit(f"[refuse] corpus generation.json pins visual gate "
+                                 f"{genj.get('visual_gate_sha256')} but {vg_p} hashes {vg_sha}")
+            verdict = str(json.loads(vg_p.read_text()).get("verdict", "")).lower()
+            if verdict != "pass":
+                raise SystemExit(f"[refuse] corpus visual gate verdict is {verdict!r}, not 'pass'")
+            if str(genj.get("status")) != "full_numeric_pass_visual_gate_bound":
+                raise SystemExit(f"[refuse] corpus status is {genj.get('status')!r}, expected "
+                                 f"'full_numeric_pass_visual_gate_bound'")
+            gate_generation = str(genj.get("generation_id"))
+            # `is True`, not bool(): bool("false") and bool(0.0) both mislead here.
+            ready = genj.get("full_conversion_authorized") is True
+            gate_desc = "generation.json full_conversion_authorized (visual gate pass, sha-bound)"
+        else:
+            gate_p = Path(a.ktjd_root).parent / "KTJD17_TRUEBONES_RELEASE_GATE.json"
+            gate = json.loads(gate_p.read_text())
+            gate_generation = str(gate["generation"]["generation_id"])
+            ready = bool(gate.get("ready_for_training", False))
+            gate_desc = "KTJD17_TRUEBONES_RELEASE_GATE.json ready_for_training"
+        if gate_generation != base.generation_id:
+            raise SystemExit(f"[refuse] release gate pins generation {gate_generation} but the "
+                             f"corpus resolved {base.generation_id} -- gate and data disagree")
+        if is_main:
+            print(f"[ktjd] data-side release gate: {gate_desc} = {ready}", flush=True)
+        if not ready:
+            # fail-CLOSED-ish (codex round-S8 fail-open #1): the override must name the exact
+            # generation it was granted for, so a flag cannot silently carry to a new corpus.
+            if a.ktjd_training_authorized and a.ktjd_auth_generation != base.generation_id:
+                raise SystemExit(f"[refuse] --ktjd_training_authorized was granted for generation "
+                                 f"{a.ktjd_auth_generation!r}, corpus is {base.generation_id!r}")
+            if not a.ktjd_training_authorized:
+                raise SystemExit(f"[refuse] KTJD data-side release gate ({gate_desc}) is false. "
+                                 f"Training needs either the data-side flag flip or "
+                                 f"--ktjd_training_authorized (explicit user override, recorded "
+                                 f"in args.json).")
+            if is_main:
+                print(f"[ktjd] GATE OVERRIDE: {gate_desc}=false, proceeding under "
+                      "--ktjd_training_authorized (user 2026-08-20)", flush=True)
+        # ---- gamma calibration artifact (codex round-S0): placeholders must not train ----
+        calib_p = Path(a.ktjd_gamma_calib)
+        if not calib_p.exists():
+            raise SystemExit(f"[refuse] KTJD gamma calibration artifact {calib_p} missing -- "
+                             f"run scripts/_measure_ktjd17_gamma_calibration.py first; "
+                             f"placeholder gammas do not train (codex round-S0)")
+        calib = json.loads(calib_p.read_text())
+        if str(calib["generation_id"]) != base.generation_id:
+            raise SystemExit(f"[refuse] gamma calibration measured on generation "
+                             f"{calib['generation_id']}, corpus is {base.generation_id}")
+        if str(calib.get("target_centering")) != base.provenance["target_centering"]:
+            raise SystemExit(f"[refuse] gamma calibration was measured on target_centering="
+                             f"{calib.get('target_centering')!r}, data now serves "
+                             f"{base.provenance['target_centering']!r} -- the energies do not "
+                             f"transfer across a re-parameterization of the target")
+        if str(calib.get("percell_sha256")) != base.provenance["percell_sha256"]:
+            raise SystemExit("[refuse] gamma calibration was measured against a different "
+                             "per-cell stats artifact (sha mismatch) -- recalibrate")
+        # the calibration measured gradient shares THROUGH the loss code; if that code changed,
+        # the artifact no longer describes this objective (codex round-S8 fail-open #2). Recorded
+        # but never compared was the defect.
+        code_now = hashlib.sha256(
+            Path("src/models/v2/dit_motion.py").read_bytes()
+            + Path("scripts/_measure_ktjd17_gamma_calibration.py").read_bytes()).hexdigest()
+        if str(calib["hashes"].get("code_sha256")) != code_now and not a.allow_calib_code_drift:
+            raise SystemExit("[refuse] gamma calibration was measured against different loss code "
+                             "(dit_motion.py / the calibration script changed since). Recalibrate, "
+                             "or pass --allow_calib_code_drift with a reason if the change provably "
+                             "cannot affect group shares.")
+        for hk in ("gains_sha256", "schema_sha256"):
+            if calib["hashes"][hk] != base.provenance[hk]:
+                raise SystemExit(f"[refuse] gamma calibration {hk} mismatch -- artifact was "
+                                 f"measured against different data statistics")
+        ktjd_gammas = {k: float(v) for k, v in calib["gammas"].items()}
+        if sorted(ktjd_gammas) != sorted(_GROUP_SPEC_KTJD17):
+            raise SystemExit(f"[refuse] calibration gamma groups {sorted(ktjd_gammas)} != "
+                             f"group spec {sorted(_GROUP_SPEC_KTJD17)}")
+        if not all(np.isfinite(v) and v > 0 for v in ktjd_gammas.values()):
+            raise SystemExit(f"[refuse] calibration gammas must be finite and positive: "
+                             f"{ktjd_gammas}")
+        calib_huber = float(calib.get("protocol", {}).get("huber_delta", 0.0))
+        if abs(calib_huber - a.huber_delta) > 1e-9:
+            raise SystemExit(f"[refuse] gamma calibration measured the objective at huber_delta="
+                             f"{calib_huber}, this run sets {a.huber_delta}. The gammas describe "
+                             f"per-group gradient shares THROUGH the loss; a different robustness "
+                             f"knee is a different loss (codex 2026-08-21 (A)2).")
+        if calib.get("protocol", {}).get("mask_policy_version") != KTJD17_MASK_POLICY:
+            raise SystemExit(f"[refuse] calibration was measured under mask policy "
+                             f"{calib.get('protocol', {}).get('mask_policy_version')!r}, "
+                             f"code is {KTJD17_MASK_POLICY!r} -- the energies do not transfer")
+        if int(base.provenance["caption_dim"]) != 4096:
+            raise SystemExit(f"[refuse] caption embeddings are {base.provenance['caption_dim']}-d "
+                             f"but the model's d_text is 4096")
+        # Full pin surface (codex round-2): names alone are not selectors, and a path string is
+        # not an artifact. Serialize the actual group SLICES, the calibration file's own SHA and
+        # the code hash it was measured under, plus every data-payload hash the adapter resolved.
+        spec_ser = {k: [[v[0].start, v[0].stop], list(v[1])]
+                    for k, v in _GROUP_SPEC_KTJD17.items()}
+        ktjd_pins = {**base.provenance,
+                     "gamma_calib_version": str(calib.get("version", "?")),
+                     "gamma_calib_sha256": hashlib.sha256(calib_p.read_bytes()).hexdigest(),
+                     "gamma_calib_code_sha256": calib.get("hashes", {}).get("code_sha256"),
+                     "gammas": ktjd_gammas,
+                     "group_spec": spec_ser,
+                     "in_ch": 17,
+                     "mask_policy_version": KTJD17_MASK_POLICY,
+                     # the exclusion list is part of "what this checkpoint was allowed to see":
+                     # resuming or rendering against a different cut is a data change, and the
+                     # drift check must catch it like any other payload hash.
+                     "exclusion": base.provenance_exclusion,
+                     "gate_override": bool(a.ktjd_training_authorized)}
+    else:
+        cond = pickle.load(open(f"{a.data_root}/_cond_normalized_J144.pkl", "rb"))
+        types = truebones_types(cond.keys()) if a.corpus == "truebones" else pzh_types(cond.keys())
+        names = {k: read_split(a.splits_dir, k) for k in ("train", "val")}
+        base = AnyTopDataset(data_root=a.data_root, split="all", num_frames=300, max_joints=144,
+                             load_captions=True, caption_emb_cache=a.caption_cache,
+                             random_caption=a.random_caption, augment=False,
+                             joint_semantics=a.joint_sem, species_whitelist=types,
+                             splits_dir=a.splits_dir, texts_json_name=a.texts_json)
+        ktjd_gammas, ktjd_pins = None, None
+    if a.limit_train_clips > 0:
+        # Round-robin over rigs, TWO clips per rig per round: an alphabetical prefix of this corpus
+        # is all-human, and a rung that never sees an animal cannot answer "does the mixed corpus
+        # fit". Two-at-a-time because InContextPairs drops any target whose only same-rig demo is
+        # itself -- a one-clip rig contributes nothing.
+        per_rig = {}
+        for s_ in base.samples:
+            nm = Path(s_["path"]).name.replace(".npy", "")
+            if nm in names["train"]:
+                per_rig.setdefault(s_["object_type"], []).append(nm)
+        rigs = sorted(per_rig)
+        for r in rigs:
+            per_rig[r].sort()
+        keep, i = [], 0
+        while len(keep) < a.limit_train_clips and any(len(per_rig[r]) > i for r in rigs):
+            for r in rigs:
+                if len(per_rig[r]) > i + 1:               # a pair, or nothing
+                    keep += per_rig[r][i:i + 2]
+                if len(keep) >= a.limit_train_clips:
+                    break
+            i += 2
+        del keep[a.limit_train_clips:]                   # an odd limit overshoots by one
+        keep = set(keep)
+        n_rigs = len({r for r in rigs if per_rig[r][0] in keep})
+        print(f"[overfit-rung] training restricted to {len(keep)} clips over {n_rigs} rigs "
+              f"(of {len(names['train'])}): {sorted(keep)[:3]} ...", flush=True)
+        names = {**names, "train": keep}
     ds_tr = InContextPairs(base, names["train"], names["train"], object_types=types,
                            demo_frames=a.demo_frames, target_frames=a.target_frames,
                            balance_skeletons=(a.balance == "rig"), seed=a.seed,
-                           emit_fk_fields=(a.gamma_fk > 0),
-                           emit_graph_v2=(a.struct_feats or a.dir_bias))
+                           emit_fk_fields=(a.gamma_fk > 0 or a.gamma_vel > 0 or a.gamma_lock > 0),
+                           emit_graph_v2=(a.struct_feats or a.dir_bias),
+                           identity_p=a.identity_p, emit_ref_text=a.ref_text,
+                           demo_rest=a.demo_rest)
     ds_va = InContextPairs(base, names["val"], names["train"], object_types=types,
                            demo_frames=a.demo_frames, target_frames=a.target_frames,
                            balance_skeletons=False, seed=a.seed + 1,
-                           emit_fk_fields=(a.gamma_fk > 0),
-                           emit_graph_v2=(a.struct_feats or a.dir_bias))
+                           emit_fk_fields=(a.gamma_fk > 0 or a.gamma_vel > 0 or a.gamma_lock > 0),
+                           emit_graph_v2=(a.struct_feats or a.dir_bias),
+                           emit_ref_text=a.ref_text, demo_rest=a.demo_rest)
     print(f"[train] {len(ds_tr)} targets / {len(ds_tr.types)} rigs / {ds_tr.pair_count()} pairs "
           f"| bucket-A val {len(ds_va)} targets / {len(ds_va.types)} rigs", flush=True)
 
@@ -234,11 +631,65 @@ def main():
     dl_va = DataLoader(ds_va, batch_size=a.batch, shuffle=False, num_workers=0,
                        collate_fn=collate, pin_memory=True)
 
+    ktjd_lut = ktjd_channel_lut(base) if a.corpus == "ktjd17" else None
+    rest_lut = None
+    if (a.corpus == "ktjd17" and a.artic_min > 0
+            and a.gamma_vel <= 0 and a.gamma_lock <= 0):
+        raise SystemExit("[refuse] the anti-collapse gate needs an articulation reading, and that "
+                         "is only produced by the dynamics term -- set --gamma_vel/--gamma_lock "
+                         "(0.01 each is the UMO recipe), or --artic_min 0 to disable the gate "
+                         "knowingly. A gate that silently cannot fire is worse than none "
+                         "(codex round-S9).")
+    if a.demo_rest and (a.corpus != "ktjd17" or a.demo_frames != 1):
+        raise SystemExit("[refuse] --demo_rest is ktjd17-only and needs --demo_frames 1")
+    if a.corpus == "ktjd17" and a.anchor == "rest":
+        rest_lut = {r: torch.from_numpy(base.rest_anchor_frame(r))
+                    for r in {s_["object_type"] for s_ in base.samples}}
+
     # ---------------- model ----------------
-    model = InContextMotionDiT(in_ch=13, dim=a.dim, depth=a.depth, n_heads=a.heads,
-                               d_text=4096, d_joint_sem=4096,
-                               use_struct_feats=a.struct_feats, use_dir_bias=a.dir_bias).to(dev)
+    if a.corpus != "ktjd17" and (a.anchor != "none" or a.identity_p > 0):
+        raise SystemExit("[refuse] --anchor/--identity_p are ktjd17-only in this integration")
+    if a.corpus == "ktjd17" and a.gamma_fk > 0:
+        # KTJD gamma7 exists (fk_ktjd_consistency_loss, official-decoder mirror) but has NO
+        # fixed_dof override path -- fail loud if a future generation adds such rigs.
+        for rig_ in {s_["object_type"] for s_ in base.samples}:
+            if not base.static_masks(rig_)["rotation_supervised"].all():
+                raise SystemExit(f"[refuse] rig {rig_!r} has fixed_dof joints; the KTJD gamma7 "
+                                 f"FK mirror does not implement the fixed_dof override yet")
+    if a.two_stage and a.corpus != "ktjd17":
+        raise SystemExit("[refuse] --two_stage (variant D) is ktjd17-only in this integration")
+    if a.corpus == "ktjd17" and a.anchor == "rest":
+        # rest-centering (2026-08-20) makes the rest pose the ORIGIN of the target space, so a
+        # rest anchor is now the zero tensor -- passing the pre-centering rest frame would place
+        # the flow base at 2x rest. The centering subsumes what this arm was testing.
+        raise SystemExit("[refuse] --anchor rest is redundant under rest-centering (the rest "
+                         "pose IS the origin now); use --anchor none, or --anchor demo")
+    in_ch = 17 if a.corpus == "ktjd17" else 13
+    if a.two_stage:
+        from src.models.v2.dit_motion import TwoStageInContextDiT
+        model = TwoStageInContextDiT(in_ch=in_ch, dim=a.dim, depth=a.depth, n_heads=a.heads,
+                                     root_dim=a.root_dim, root_depth=4,
+                                     d_text=4096, d_joint_sem=4096,
+                                     use_struct_feats=a.struct_feats,
+                                     use_dir_bias=a.dir_bias, grad_ckpt=a.grad_ckpt,
+                                     use_ref_text=a.ref_text).to(dev)
+    else:
+        model = InContextMotionDiT(in_ch=in_ch, dim=a.dim, depth=a.depth, n_heads=a.heads,
+                                   d_text=4096, d_joint_sem=4096,
+                                   use_struct_feats=a.struct_feats, use_dir_bias=a.dir_bias, grad_ckpt=a.grad_ckpt,
+                                   use_ref_text=a.ref_text).to(dev)
+    # raw_model stays the UNCOMPILED module: it is what state_dict()/load_state_dict() use, so
+    # checkpoints keep clean keys (a compiled wrapper prefixes everything with `_orig_mod.` and
+    # every earlier checkpoint would fail to load).
     raw_model = model
+    if a.compile:
+        # compile BEFORE DDP wraps it. Order matters and the previous arrangement was a no-op:
+        # rebinding `raw_model` after DDP already captured the module leaves DDP running the
+        # uncompiled graph, so the flag would have looked enabled while changing nothing.
+        model = torch.compile(model, dynamic=True)
+        if is_main:
+            print("[train] torch.compile(dynamic=True): first batches pay ~76s of compilation",
+                  flush=True)
     if ddp:
         # find_unused_parameters: bp_mlp (the shelved blueprint pathway, param indices 17-20)
         # never enters the graph, and DDP's reducer otherwise waits forever for its gradients --
@@ -248,13 +699,38 @@ def main():
     n_par = sum(p.numel() for p in raw_model.parameters())
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.wd)
     start_ep, best_val, gstep = 0, float("inf"), 0
+    resumed_strikes = 0
+    # Initialised BEFORE the resume block, which overwrites it: placing it after would wipe the
+    # history the checkpoint just restored, reintroducing the very misreporting this records.
+    guard_history = []
+    # health of the most recent validation, so the periodic epoch/step writers can stamp it too
+    last_health, last_vob = True, 1.0
     if a.resume:
         # Resume is a STATISTICAL continuation, not bit-exact: DataLoader worker streams re-derive
         # from a fresh base_seed after restart. What must NOT drift silently is the config -- a
         # resumed run with different dims/lr/data would corrupt the ckpt lineage, so critical
         # fields are hard-checked. Torch/numpy RNG states are restored best-effort on top.
+        if Path(a.resume).name == "last_step_snapshot.pt":
+            raise SystemExit(
+                "[refuse] last_step_snapshot.pt is a MID-EPOCH snapshot for inspection only. "
+                "Resume restarts at epoch+1 while keeping the saved gstep, so continuing from a "
+                "mid-epoch file silently drops the rest of that epoch AND desynchronizes the lr "
+                "schedule from an uninterrupted run. Resume from last_model.pt "
+                "(epoch-boundary) instead.")
         ck = torch.load(a.resume, map_location="cpu", weights_only=False)  # our own ckpt; contains numpy RNG state, rejected by 2.6's weights_only default
         old_args = ck.get("args", {})
+        if ck.get("healthy", True) is not True and not a.allow_unhealthy_resume:
+            raise SystemExit(
+                f"[refuse] {a.resume} was written AFTER a blow-up: its val {ck.get('val')} is "
+                f"{ck.get('val_over_best', float('nan')):.1f}x the best {ck.get('best_val')}. "
+                f"Resuming it continues training a wrecked model -- run7 burned eight hours that "
+                f"way. Resume from best_model.pt, or pass --allow_unhealthy_resume to override.")
+        if "at_epoch_end" not in ck:
+            raise SystemExit(f"[refuse] {a.resume} predates the resume-safety stamp (written by a "
+                             f"run before 2026-08-23); it cannot be proven epoch-aligned")
+        if not bool(ck["at_epoch_end"]):
+            raise SystemExit(f"[refuse] {a.resume} was written mid-epoch (at_epoch_end=False); "
+                             f"only epoch-boundary checkpoints are resume-safe")
         crit = ("dim", "depth", "heads", "batch", "lr", "seed", "data_root", "splits_dir",
                 "joint_sem", "caption_cache", "texts_json",
                 # run-3 trajectory-defining knobs: silently flipping any of these mid-run would
@@ -262,7 +738,15 @@ def main():
                 "corpus", "balance", "random_caption", "demo_frames", "target_frames",
                 "t_sampler", "v_space", "p_drop_text", "p_drop_demo", "p_drop_both",
                 "bf16", "warmup_steps", "wd", "gamma_fk", "fk_warmup_steps",
-                "struct_feats", "dir_bias")
+                "struct_feats", "dir_bias", "ktjd_root", "anchor", "identity_p",
+                "two_stage", "root_dim", "gamma_vel", "gamma_lock", "ref_text",
+                "demo_rest", "ktjd_percell_stats",
+                # (codex 2026-08-21 (A)2) the robustness knee and the clip threshold BOTH define
+                # the trajectory: resuming with a different one produces later epochs trained
+                # under settings nothing in the lineage records.
+                "huber_delta", "sigma_min", "grad_clip", "exclude_clips", "ktjd_gamma_calib",
+                "lr_scheduler", "eta_min_ratio", "lr_decay_epochs", "grad_ckpt", "epochs",
+                "artic_min", "artic_gate_after", "artic_gate_strikes", "val_every")
         core = ("dim", "depth", "heads", "batch", "lr", "seed", "data_root", "splits_dir",
                 "joint_sem", "caption_cache", "texts_json")
         missing = [k for k in core if k not in old_args]
@@ -279,9 +763,56 @@ def main():
                              f"ckpt={[old_args.get(k, ap.get_default(k)) for k in bad]} "
                              f"vs now={[getattr(a, k) for k in bad]}"
                              f" -- refusing silent drift (change the ckpt or the flags)")
+        if a.corpus == "ktjd17":
+            # provenance pins: path strings alone cannot catch a retargeted symlink or a
+            # regenerated artifact under the same name (codex round-S0)
+            old_pins = ck.get("ktjd_pins")
+            if old_pins is None:
+                raise SystemExit("[resume] ckpt carries no ktjd_pins -- refusing to resume a "
+                                 "pre-pinning KTJD checkpoint into the pinned lineage")
+            drift = sorted(k for k in set(old_pins) | set(ktjd_pins)
+                           if old_pins.get(k) != ktjd_pins.get(k))
+            if drift:
+                raise SystemExit(
+                    f"[resume] KTJD provenance drift on {drift}: "
+                    f"ckpt={ {k: old_pins.get(k) for k in drift} } vs "
+                    f"now={ {k: ktjd_pins.get(k) for k in drift} }")
+        # GUARD LINEAGE. grad_spike_reject is deliberately NOT in `crit` (it is a numerical
+        # stability guard like the non-finite skip, not a definition of the objective), which is
+        # exactly why the checkpoint must carry its history: otherwise a final checkpoint records
+        # only the CURRENT threshold and silently claims it applied to epochs that ran without it.
+        guard_hist = list(ck.get("guard_history", []))
+        old_guard = float(old_args.get("grad_spike_reject", ap.get_default("grad_spike_reject")))
+        if old_guard != a.grad_spike_reject:
+            # Only 0 -> positive is allowed: enabling a guard mid-run is a recoverable, reportable
+            # event; changing or removing one silently rewrites what the later epochs mean.
+            if old_guard != 0.0:
+                raise SystemExit(
+                    f"[resume] grad_spike_reject changes {old_guard} -> {a.grad_spike_reject}; "
+                    f"only 0 -> positive (first activation) is permitted, so that a lineage never "
+                    f"has a guard weakened or retuned underneath it")
+            if a.grad_spike_reject <= 0:
+                raise SystemExit(f"[resume] refusing to DISABLE grad_spike_reject "
+                                 f"({old_guard} -> {a.grad_spike_reject})")
+            guard_hist.append({"from_ckpt": str(a.resume), "old": old_guard,
+                               "new": float(a.grad_spike_reject),
+                               "activated_at_epoch": int(ck["epoch"]) + 1,
+                               "activated_at_gstep": int(ck.get("gstep", 0))})
+            print(f"[resume] grad-spike guard ACTIVATED at ep{int(ck['epoch'])+1} "
+                  f"g{ck.get('gstep', 0)} (threshold {a.grad_spike_reject}); epochs 0-"
+                  f"{ck['epoch']} ran WITHOUT it -- recorded in guard_history", flush=True)
+        guard_history = guard_hist
+        # Carry the health forward. Re-seeding to True would let a periodic checkpoint written
+        # BEFORE the first validation of a resumed run -- or any checkpoint from an
+        # --allow_unhealthy_resume continuation -- claim health it never had (codex 2026-08-24).
+        last_health = bool(ck.get("healthy", True))
+        last_vob = float(ck.get("val_over_best", 1.0))
         raw_model.load_state_dict(ck["model"]); opt.load_state_dict(ck["opt"])
         start_ep, best_val = ck["epoch"] + 1, ck.get("best_val", float("inf"))
         gstep = ck.get("gstep", 0)
+        # the strike counter is RUN state: resetting it on resume let a collapsing run dodge the
+        # gate indefinitely by restarting (codex round-S9)
+        resumed_strikes = int(ck.get("artic_strikes", 0))
         rng = ck.get("rng")
         # Only rank 0 restores the saved RNG: the ckpt carries ONE stream, and loading it on every
         # rank would make all ranks draw IDENTICAL noise/t after a DDP resume. Non-main ranks keep
@@ -295,11 +826,20 @@ def main():
             print(f"[resume] {a.resume} -> epoch {start_ep}, best_val {best_val:.5f} "
                   f"(rng {'restored' if rng else 'fresh'})", flush=True)
     if is_main:
-        (out / "args.json").write_text(json.dumps({**vars(a), "params": n_par,
-                                                   "gammas": KIMODO_GAMMAS,
-                                                   **({"world_size": int(os.environ["WORLD_SIZE"])}
-                                                      if ddp else {})},
-                                                  indent=2))
+        (out / "args.json").write_text(json.dumps(
+            {**vars(a), "params": n_par,
+             # EFFECTIVE objective config (codex round-S0: recording KIMODO_GAMMAS on a KTJD run
+             # misdocumented the lineage): gammas actually applied + spec + mask policy + pins.
+             "gammas": ktjd_gammas if a.corpus == "ktjd17" else KIMODO_GAMMAS,
+             **({"evidence_class": "TRANSDUCTIVE_ARCHITECTURE_TEST",
+                 "evidence_note": "per-cell normalization statistics cover ALL accepted clips of "
+                                  "every rig, held-out rigs and val clips included. Never report "
+                                  "results from this run as inductive or zero-shot.",
+                 "group_spec": sorted(_GROUP_SPEC_KTJD17),
+                 "mask_policy_version": KTJD17_MASK_POLICY,
+                 "ktjd_pins": ktjd_pins} if a.corpus == "ktjd17" else {}),
+             **({"world_size": int(os.environ["WORLD_SIZE"])} if ddp else {})},
+            indent=2))
         if ddp:
             print(f"[train] {n_par/1e6:.2f}M params | T={a.demo_frames}+{a.target_frames} | "
                   f"B{a.batch}x{os.environ['WORLD_SIZE']} lr{a.lr} | "
@@ -325,10 +865,16 @@ def main():
             b["x"] = b["x"].clone(); b["frame_valid"] = b["frame_valid"].clone()
             b["x"][dm, :a.demo_frames] = 0
             b["frame_valid"][dm, :a.demo_frames] = False
+            if "demo_text" in b:
+                # the demo's caption describes frames the model can no longer see -- drop it with
+                # the demo, or the "demo-dropped" CFG branch still gets told what the demo did.
+                b["demo_text"] = b["demo_text"].clone(); b["demo_text"][dm] = 0
             b["valid"] = b["frame_valid"][:, :, None] & b["joint_valid"][:, None, :]
         return b
 
-    def run_validation(ep):
+    abort_msg = [None]
+
+    def run_validation(ep, at_epoch_end=True):
         """rank-0 val + probe + best/last ckpt. Callable from the epoch boundary or mid-epoch
         (step cadence); barrier counts are 2/2 on both sides either way."""
         nonlocal best_val
@@ -337,13 +883,14 @@ def main():
         if not is_main:
             if ddp:
                 dist.barrier()
+            _collective_abort()
             return
         model.eval(); reset_val_stream(ds_va)
         # Fixed captions for val: rotation would make the val text a moving target across passes.
         # ds_va shares `base`; the toggle is safe because the val loader is num_workers=0.
         rc_saved = base.random_caption
         base.random_caption = False
-        vtot, vn, vfk, vfkd = 0.0, 0, 0.0, 0.0
+        vtot, vn, vfk, vfkd, vsr, vsrn = 0.0, 0, 0.0, 0.0, 0.0, 0
         with fixed_torch_rng(10_000 + a.seed):
             with torch.no_grad():
                 for vb in dl_va:
@@ -354,45 +901,168 @@ def main():
                         # gamma_fk enters at FULL weight (no warmup ramp): val measures the
                         # objective being approached, and a step-dependent val is not comparable
                         # across the run.
-                        if a.gamma_fk > 0:
-                            vloss, vp = cfm_loss(model, vb["x"], is_target=vb["is_target"],
-                                                 valid=vb["valid"], gammas=KIMODO_GAMMAS,
-                                                 t_sampler=a.t_sampler, v_space=a.v_space,
-                                                 gamma_fk=a.gamma_fk, fk_pack=fk_pack_of(vb),
-                                                 return_parts=True, **cond_of(vb))
-                            vfk += vp["fk_consist"]; vfkd += vp["fk_dist"]
+                        if ktjd_lut is not None:
+                            vx, vkt = ktjd_prep(vb, ktjd_lut, ktjd_gammas)
+                            if a.anchor != "none":
+                                vkt["anchor"] = ktjd_anchor(vb, vx, a.anchor, rest_lut,
+                                                            a.demo_frames)
                         else:
-                            vloss = cfm_loss(model, vb["x"], is_target=vb["is_target"],
-                                             valid=vb["valid"], gammas=KIMODO_GAMMAS,
-                                             t_sampler=a.t_sampler, v_space=a.v_space,
-                                             **cond_of(vb))
+                            vx, vkt = vb["x"], dict(gammas=KIMODO_GAMMAS)
+                        vextra = {}
+                        if a.gamma_fk > 0:
+                            vextra.update(gamma_fk=a.gamma_fk, fk_pack=fk_pack_of(vb))
+                        if a.gamma_vel > 0 or a.gamma_lock > 0:
+                            vextra.update(gamma_vel=a.gamma_vel, gamma_lock=a.gamma_lock,
+                                          fk_pack=fk_pack_of(vb))
+                        if vextra:
+                            vloss, vp = cfm_loss(model, vx, is_target=vb["is_target"],
+                                                 valid=vb["valid"],
+                                                 t_sampler=a.t_sampler, v_space=a.v_space, sigma_min=a.sigma_min, huber_delta=a.huber_delta,
+                                                 return_parts=True, **vextra, **vkt,
+                                                 **cond_of(vb))
+                            vfk += vp.get("fk_consist", 0.0); vfkd += vp.get("fk_dist", 0.0)
+                            # speed_ratio is the ONLINE frozen-pose monitor (1.0 = GT speed)
+                            # sum-of-ratios / count-of-windows, NEVER mean-of-batch-means:
+                            # static-GT batches contribute no ratio at all (codex round-S3)
+                            vsr += vp.get("speed_ratio", 0.0) * vp.get("speed_ratio_n", 0)
+                            vsrn += vp.get("speed_ratio_n", 0)
+                        else:
+                            vloss = cfm_loss(model, vx, is_target=vb["is_target"],
+                                             valid=vb["valid"],
+                                             t_sampler=a.t_sampler, v_space=a.v_space, sigma_min=a.sigma_min, huber_delta=a.huber_delta,
+                                             **vkt, **cond_of(vb))
                     vtot += float(vloss); vn += 1
                     if a.val_max_batches and vn >= a.val_max_batches:
                         break
             v = vtot / max(vn, 1)
             reset_val_stream(ds_va)
             probe_b = to_dev(next(iter(dl_va)), dev)
-            p5 = connectivity_probe(raw_model, probe_b, a.demo_frames)
+            p5 = connectivity_probe(raw_model, probe_b, a.demo_frames,
+                                    obj=dict(t_sampler=a.t_sampler, v_space=a.v_space,
+                                             sigma_min=a.sigma_min, huber_delta=a.huber_delta),
+                                    ktjd_lut=ktjd_lut,
+                                    ktjd_gammas=ktjd_gammas)
         base.random_caption = rc_saved
         fk_str = (f" | fk={vfk / max(vn, 1):.4f} fkdist={vfkd / max(vn, 1):.3f}bl"
                   if a.gamma_fk > 0 else "")
+        if a.gamma_vel > 0 or a.gamma_lock > 0:
+            # THE gate the ep250 collapse had no online equivalent of: 1.0 = GT speed, ~0 = frozen
+            fk_str += (f" | artic={vsr / vsrn:.3f}xGT({vsrn}w)" if vsrn else " | artic=n/a")
         print(f"  [val] flow_loss={v:.5f}{fk_str} | g{gstep} | P5 demo={p5['demo']:.2e} "
               f"text={p5['text']:.2e} sem={p5['joint_sem']:.2e}", flush=True)
+        # ANTI-COLLAPSE GATE (codex round-S8). The 2-epoch smoke showed articulation falling
+        # 0.496 -> 0.271 while flow loss IMPROVED -- the exact signature of the collapse this
+        # project has hit twice. Printing it was not enough: a collapsed checkpoint could still be
+        # crowned "best" on flow loss alone, and the run would burn 500 epochs producing a frozen
+        # animal. So the ratio now gates BOTH.
+        nonlocal artic_strikes
+        artic_now = (vsr / vsrn) if vsrn else float("nan")
+        # BEST-ELIGIBILITY IS GATED FROM THE FIRST VALIDATION (codex round-S10 blocker): the
+        # epoch-30 grace period exists so an untrained model is not aborted, but it must not also
+        # let epochs 5-30 crown a collapsed checkpoint as "best". Measured on this very config,
+        # articulation sits at 0.30-0.49 in the first epochs -- squarely in the range that would
+        # have been crowned. The grace period applies to STRIKE COUNTING only.
+        artic_ok = True
+        if a.artic_min > 0 and vsrn:
+            artic_ok = artic_now >= a.artic_min
+        # A FATAL articulation verdict must also mark the state unhealthy. Otherwise the gate stops
+        # this process, the checkpoint still says "healthy", and the watchdog dutifully relaunches
+        # exactly the collapsed model the gate refused -- turning a deliberate hard stop into an
+        # infinite restart loop (codex 2026-08-24).
+        # Compute the POST-update strike count exactly as the block below does, then ask whether
+        # that aborts. Using the stale pre-reset count condemned a recovering validation: after an
+        # --allow_unhealthy_resume from a fatal checkpoint, strikes sit at the threshold, and an
+        # articulation-OK validation would still have been stamped unhealthy even though it resets
+        # the count and does not abort (codex 2026-08-24).
+        _next_strikes = 0 if artic_ok else artic_strikes + 1
+        artic_fatal = bool(a.artic_min > 0 and ep >= a.artic_gate_after
+                           and (not vsrn or _next_strikes >= a.artic_gate_strikes))
+        if a.artic_min > 0 and ep >= a.artic_gate_after and not vsrn:
+            raise SystemExit("[FATAL] the anti-collapse gate is enabled but this validation "
+                             "produced NO articulation window -- the gate cannot judge, so it "
+                             "refuses to wave the run through (codex round-S9).")
+        if a.artic_min > 0 and vsrn and ep >= a.artic_gate_after:
+            artic_strikes = 0 if artic_ok else artic_strikes + 1
+            if not artic_ok:
+                print(f"  [WARN] articulation {artic_now:.3f}xGT below floor {a.artic_min} "
+                      f"(strike {artic_strikes}/{a.artic_gate_strikes})", flush=True)
+            if artic_strikes >= a.artic_gate_strikes:
+                # NOT raised here: rank 0 exiting before the closing barrier strands its peers
+                # (codex round-S9). The decision is broadcast below so every rank aborts together.
+                abort_msg[0] = (f"[FATAL] articulation stayed below {a.artic_min}xGT for "
+                                f"{artic_strikes} consecutive validations (last {artic_now:.3f}) "
+                                f"-- the body has collapsed to a near-static pose. Aborting "
+                                f"instead of training a frozen model to {a.epochs} epochs.")
         rng_state = {"cpu": torch.get_rng_state(), "cuda": torch.cuda.get_rng_state_all(),
                      "np": np.random.get_state()}
         state = {"model": raw_model.state_dict(), "opt": opt.state_dict(), "epoch": ep,
-                 "gstep": gstep, "val": v, "best_val": min(best_val, v), "args": vars(a),
-                 "rng": rng_state}
-        atomic_save(state, out / "last_model.pt")
-        if v < best_val:
+                 "gstep": gstep, "val": v,
+                 # only an ELIGIBLE checkpoint may lower the recorded best: otherwise a resume
+                 # inherits a best score no saved file corresponds to, and every later legitimate
+                 # best is suppressed by it (codex round-S9)
+                 "best_val": min(best_val, v) if artic_ok else best_val, "args": vars(a),
+                 "rng": rng_state, "ktjd_pins": ktjd_pins,
+                 "artic": artic_now, "artic_windows": vsrn, "artic_strikes": artic_strikes,
+                 # resume-safety marker: only epoch-boundary states may be continued
+                 "at_epoch_end": bool(at_epoch_end),
+                 # so a checkpoint never claims a guard applied to epochs that ran without it
+                 "guard_history": guard_history,
+                 # HEALTH MARKER. A checkpoint written after a blow-up is still a valid file and a
+                 # resume will happily continue from it -- run7 burned eight hours doing exactly
+                 # that. Record the ratio against the best score so any consumer can tell a
+                 # recoverable state from a wrecked one without re-running validation.
+                 "val_over_best": (float(v) / best_val) if best_val not in (0.0, float("inf"))
+                                  else 1.0,
+                 # `nan > x` is False, so a naive comparison stamps a NaN validation HEALTHY --
+                 # the worst possible state marked safe to resume (codex 2026-08-24). Require
+                 # finiteness explicitly.
+                 "healthy": bool(np.isfinite(v) and not artic_fatal
+                                 and not (best_val not in (0.0, float("inf"))
+                                          and v > HEALTH_RATIO * best_val))}
+        # RESUME SAFETY (codex 2026-08-23 blocker 3): resume restarts at `epoch+1` while keeping
+        # the saved gstep, so a MID-EPOCH checkpoint silently drops the remainder of its epoch and
+        # carries a gstep that no longer matches the epoch counter -- which also desynchronizes the
+        # lr schedule from an uninterrupted run. Only epoch-boundary checkpoints may be written to
+        # last_model.pt; step-level validations still record a snapshot for inspection.
+        nonlocal last_health, last_vob
+        last_health, last_vob = state["healthy"], state["val_over_best"]
+        if at_epoch_end:
+            atomic_save(state, out / "last_model.pt")
+        else:
+            atomic_save(state, out / "last_step_snapshot.pt")
+        # a checkpoint that fails the articulation floor is never "best", however good its loss
+        if v < best_val and artic_ok:
             best_val = v
             atomic_save(state, out / "best_model.pt")
             print(f"  [ckpt] new best val_flow={v:.5f}", flush=True)
         model.train()
         if ddp:
             dist.barrier()
+        _collective_abort()
+
+    def _collective_abort():
+        """Every rank aborts or none does: an abort raised on rank 0 alone deadlocks the others."""
+        flag = torch.tensor([1.0 if abort_msg[0] else 0.0], device=dev)
+        if ddp:
+            dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+        if flag.item() > 0:
+            raise SystemExit(abort_msg[0] or "[FATAL] peer rank aborted on the articulation gate")
 
     nonfinite = 0
+    spike_skips = 0
+    artic_strikes = resumed_strikes
+    # Cosine horizon in OPTIMIZER steps. len(dl_tr) is this rank's step count per epoch (the
+    # DistributedSampler already partitioned the index), which is exactly what gstep counts, so
+    # the two agree without a world-size factor. Fixed by --epochs: changing the epoch budget
+    # mid-run would silently reshape the decay, which is why --epochs is resume-critical.
+    _decay_ep = a.lr_decay_epochs if a.lr_decay_epochs > 0 else a.epochs
+    total_opt_steps = max(1, _decay_ep * len(dl_tr))
+    if is_main:
+        print(f"[train] lr schedule: {a.lr_scheduler} | warmup {a.warmup_steps} -> "
+              f"{total_opt_steps} decay steps ({_decay_ep} ep of {a.epochs})"
+              + (f" -> floor {a.lr * a.eta_min_ratio:.2e}"
+                 if a.lr_scheduler == "half_cosine" else " (FLAT -- runs 1-5 all diverged here)"),
+              flush=True)
     for ep in range(start_ep, a.epochs):
         if tr_sampler is not None:
             tr_sampler.set_epoch(ep)
@@ -402,23 +1072,57 @@ def main():
         model.train(); t0, tot, n = time.time(), 0.0, 0
         g_sum, g_max = 0.0, 0.0
         for b in dl_tr:
-            b = apply_cfg_drops(to_dev(b, dev))
-            # lr warmup (manual: resumes correctly from the saved gstep, no scheduler state)
-            if a.warmup_steps > 0:
-                lr_now = a.lr * min(1.0, (gstep + 1) / a.warmup_steps)
-                for pg in opt.param_groups:
-                    pg["lr"] = lr_now
+            b = to_dev(b, dev)
+            # The anchor is BASE GEOMETRY, not a condition: UMO's source-centered base is
+            # identical across every CFG branch and is NEVER dropped. It must therefore be built
+            # from the UN-DROPPED batch. Built after apply_cfg_drops, a demo-dropped sample has
+            # frame_valid[:demo]=False -> d_real=0 -> a ZERO anchor, so ~19% of arm-B training
+            # saw base=N(0,I) while sampling always adds the demo anchor to every branch --
+            # a train/inference base-distribution mismatch (codex round-2 blocker 1).
+            anchor_kw = {}
+            if ktjd_lut is not None and a.anchor != "none":
+                anchor_kw["anchor"] = ktjd_anchor(b, b["x"][..., :17], a.anchor, rest_lut,
+                                                  a.demo_frames)
+            b = apply_cfg_drops(b)
+            # lr schedule (manual: resumes correctly from the saved gstep, no scheduler state).
+            # Warmup then half-cosine, both keyed to the OPTIMIZER step -- the CodeFlow recipe
+            # notes that keying it to anything else makes a resume diverge from an uninterrupted
+            # run. total_steps is fixed by --epochs, so extending a run's epoch count changes the
+            # schedule and must not be done mid-run.
+            if a.warmup_steps > 0 and gstep < a.warmup_steps:
+                lr_now = a.lr * (gstep + 1) / a.warmup_steps
+            elif a.lr_scheduler == "half_cosine":
+                _prog = ((gstep - a.warmup_steps)
+                         / max(1, total_opt_steps - a.warmup_steps))
+                _prog = min(1.0, max(0.0, _prog))
+                _cos = 0.5 * (1.0 + math.cos(math.pi * _prog))
+                lr_now = a.lr * (a.eta_min_ratio + (1.0 - a.eta_min_ratio) * _cos)
+            else:
+                lr_now = a.lr
+            # OUTSIDE the branch. It used to sit inside the `none` arm, so selecting half_cosine
+            # computed a decayed lr and then never wrote it -- AdamW kept its constructor lr and
+            # the run behaved exactly like the flat-lr ones (codex 2026-08-23 blocker 1).
+            for pg in opt.param_groups:
+                pg["lr"] = lr_now
             fk_kw = {}
+            if a.gamma_vel > 0 or a.gamma_lock > 0:
+                fk_kw = dict(gamma_vel=a.gamma_vel, gamma_lock=a.gamma_lock,
+                             fk_pack=fk_pack_of(b))
             if a.gamma_fk > 0:
                 # hy273 recipe: linear warmup of the consistency weight -- full-strength FK
                 # penalties on the garbage x1_pred of the first steps destabilize more than they
                 # teach. gstep-based, so a resume continues the ramp exactly where it stopped.
                 ramp = min(1.0, (gstep + 1) / max(a.fk_warmup_steps, 1))
-                fk_kw = dict(gamma_fk=a.gamma_fk * ramp, fk_pack=fk_pack_of(b))
+                fk_kw.update(gamma_fk=a.gamma_fk * ramp, fk_pack=fk_pack_of(b))
+            if ktjd_lut is not None:
+                x_in, kt_kw = ktjd_prep(b, ktjd_lut, ktjd_gammas)
+                kt_kw.update(anchor_kw)          # built pre-drop, see the note above
+            else:
+                x_in, kt_kw = b["x"], dict(gammas=KIMODO_GAMMAS)
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=a.bf16):
-                loss = cfm_loss(model, b["x"], is_target=b["is_target"], valid=b["valid"],
-                                gammas=KIMODO_GAMMAS, t_sampler=a.t_sampler, v_space=a.v_space,
-                                **fk_kw, **cond_of(b))
+                loss = cfm_loss(model, x_in, is_target=b["is_target"], valid=b["valid"],
+                                t_sampler=a.t_sampler, v_space=a.v_space, sigma_min=a.sigma_min, huber_delta=a.huber_delta,
+                                **kt_kw, **fk_kw, **cond_of(b))
             bad = (~torch.isfinite(loss.detach())).float()
             if ddp:
                 # The skip decision must be COLLECTIVE: one rank skipping backward while its peers
@@ -438,12 +1142,19 @@ def main():
                 gstep += 1
                 continue
             opt.zero_grad(set_to_none=True); loss.backward()
-            gn = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            gn = torch.nn.utils.clip_grad_norm_(model.parameters(), a.grad_clip)
             # Gradient overflow can be non-finite even when the loss was finite (bf16 backward).
             # The decision must again be COLLECTIVE under DDP.
             gbad = (~torch.isfinite(gn)).float().to(dev)
             if ddp:
                 dist.all_reduce(gbad, op=dist.ReduceOp.MAX)
+            # The spike decision must be COLLECTIVE for the same reason the non-finite one is: one
+            # rank skipping while its peers step deadlocks the reducer at the next bucket sync.
+            # MAX over ranks, so any rank seeing a spike makes every rank skip.
+            gnf_pre_t = torch.tensor([float(gn) if torch.isfinite(gn) else 0.0], device=dev)
+            if ddp:
+                dist.all_reduce(gnf_pre_t, op=dist.ReduceOp.MAX)
+            gnf_pre = float(gnf_pre_t.item())
             if gbad.item() > 0:
                 nonfinite += 1
                 opt.zero_grad(set_to_none=True)
@@ -452,6 +1163,27 @@ def main():
                           f"skipped on ALL ranks", flush=True)
                 if nonfinite >= 50:
                     raise SystemExit("[FATAL] 50 non-finite events -- training unstable, aborting")
+                gstep += 1
+                continue
+            # GRADIENT-SPIKE REJECTION (2026-08-23). Six runs died the same way: one step with a
+            # gradient two to three orders of magnitude above normal, after which the model never
+            # recovered. run6 g31800 grad=1.7 -> g32000 grad=2775 (loss 0.37 -> 43.5); run4 hit
+            # grad=1075 at almost the same gstep (30800); run5 grad=8126. Clipping does NOT stop
+            # this: it rescales the magnitude but keeps the direction, so a clipped garbage
+            # gradient is still a full-size step in a garbage direction.
+            # Measured separation on the ep9 weights (300 batches): median 2.86, p99 11.45, max
+            # 15.69, none above 100; the worst normal value anywhere in training was 99.3 (ep1).
+            # A threshold of 200 therefore sits 2x above anything healthy and 5x below the
+            # smallest observed catastrophe. Only active after warmup, where early gradients are
+            # legitimately large (run3 ep0 reached 483).
+            if (a.grad_spike_reject > 0 and gstep >= a.warmup_steps
+                    and gnf_pre > a.grad_spike_reject):
+                spike_skips += 1
+                opt.zero_grad(set_to_none=True)
+                if is_main:
+                    print(f"[SPIKE] grad {gnf_pre:.1f} > {a.grad_spike_reject} at g{gstep} ep{ep} "
+                          f"(#{spike_skips}) -- step REJECTED on all ranks (clipping would keep "
+                          f"the direction)", flush=True)
                 gstep += 1
                 continue
             opt.step()
@@ -463,14 +1195,29 @@ def main():
                 print(f"[g{gstep}] ep{ep} loss={float(loss.detach()):.4f} grad={gnf:.3f} "
                       f"lr={opt.param_groups[0]['lr']:.2e}", flush=True)
             if a.val_every_steps > 0 and gstep % a.val_every_steps == 0:
-                run_validation(ep)
+                run_validation(ep, at_epoch_end=False)
             if a.ckpt_snapshot_steps > 0 and gstep % a.ckpt_snapshot_steps == 0 and is_main:
                 atomic_save({"model": raw_model.state_dict(), "opt": opt.state_dict(),
                              "epoch": ep, "gstep": gstep, "best_val": best_val, "args": vars(a),
+                         "artic_strikes": artic_strikes,
+                             # MID-epoch: resume must refuse this even if the file is renamed
+                             "at_epoch_end": False, "guard_history": guard_history,
+                             "healthy": last_health, "val_over_best": last_vob,
+                             "ktjd_pins": ktjd_pins,
                              "rng": {"cpu": torch.get_rng_state(),
                                      "cuda": torch.cuda.get_rng_state_all(),
                                      "np": np.random.get_state()}},
                             out / f"g{gstep:07d}_model.pt")
+                # Rolling window: these carry optimizer state and are ~1 GB each, so an
+                # unbounded series fills the filesystem (42 GB in 1.5 h at 100-step spacing).
+                # Keeping the most recent N still spans thousands of steps before any blow-up.
+                snaps = sorted(q for q in out.glob("g[0-9][0-9][0-9][0-9][0-9][0-9][0-9]_model.pt")
+                               if q.stem[1:-6].isdigit())
+                for old_snap in snaps[:-a.ckpt_snapshot_keep]:
+                    try:
+                        old_snap.unlink()
+                    except OSError:
+                        pass
         if ddp:
             # g_sum rides in the SAME reduction so the printed mean divides a GLOBAL sum by the
             # GLOBAL step count (a local g_sum over a global n would understate the mean 4x).
@@ -483,14 +1230,23 @@ def main():
             print(f"=== epoch {ep} done in {time.time()-t0:.1f}s | train_flow={tot/max(n,1):.5f} "
                   f"| grad mean={g_sum/max(n,1):.3f} max={g_max:.3f} ===", flush=True)
 
-        if a.val_every_steps == 0 and ((ep + 1) % a.val_every == 0 or ep == a.epochs - 1):
-            run_validation(ep)
+        if a.val_every_steps > 0 or (ep + 1) % a.val_every == 0 or ep == a.epochs - 1:
+            # ALWAYS validate at the epoch boundary when a step cadence is active: that is the
+            # only point whose checkpoint can be resumed without desynchronizing epoch/gstep.
+            run_validation(ep, at_epoch_end=True)
         # RESUME POLICY: resume always restarts at epoch ck["epoch"]+1. For a MID-epoch snapshot
         # that discards the remainder of the interrupted epoch -- statistically harmless here
         # because draws are random (balanced or shuffled), while gstep/lr/warmup continue exactly.
         if (ep + 1) % a.ckpt_every == 0 and is_main:
             atomic_save({"model": raw_model.state_dict(), "opt": opt.state_dict(),
                          "epoch": ep, "gstep": gstep, "best_val": best_val, "args": vars(a),
+                         "artic_strikes": artic_strikes,
+                         "at_epoch_end": True,   # epoch boundary: resume-safe
+                         "guard_history": guard_history,
+                         # carries the health of the most recent validation: an epoch checkpoint
+                         # written after a blow-up must not look resume-safe (codex 2026-08-24)
+                         "healthy": last_health, "val_over_best": last_vob,
+                         "ktjd_pins": ktjd_pins,
                          "rng": {"cpu": torch.get_rng_state(),
                                  "cuda": torch.cuda.get_rng_state_all(),
                                  "np": np.random.get_state()}},

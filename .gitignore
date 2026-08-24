@@ -28,3 +28,12 @@ scripts/_codex_*.txt
 
 # rendered visual-QA outputs (large, regenerable)
 renders/
+
+# Bulk diagnostic scans and captured tool output live beside the code but are not source:
+# configs/ holds multi-MB corpus scans (teleport/jitter/discontinuity), scripts/ holds captured
+# codex transcripts and training logs. Keep the configs and code, drop the dumps.
+configs/pzh312_*_scan.json
+configs/*_audit_*.json
+scripts/_codex_*.txt
+scripts/*.log
+scripts/_*_out.txt

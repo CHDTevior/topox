@@ -35,6 +35,7 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint  # activation checkpointing (grad_ckpt)
 import torch.nn.functional as F
 
 
@@ -158,8 +159,15 @@ class InContextMotionDiT(nn.Module):
     """
 
     def __init__(self, in_ch=13, dim=256, depth=6, n_heads=8, d_text=4096, d_blueprint=16,
-                 d_joint_sem=4096, mlp_ratio=4.0, use_struct_feats=False, use_dir_bias=False):
+                 d_joint_sem=4096, mlp_ratio=4.0, use_struct_feats=False, use_dir_bias=False,
+                 local_root_dim=0, use_ref_text=False, grad_ckpt=False):
         super().__init__()
+        # Activation checkpointing recomputes each block's activations in the backward pass
+        # instead of storing them: ~60-70% less activation memory for ~30% more compute. It is
+        # what makes a wider/deeper trunk fit while KEEPING global batch 32 -- shrinking the batch
+        # instead would worsen the tail-sample-count problem that drives the instability.
+        # Inference-only paths (torch.no_grad) fall through to the plain call.
+        self.grad_ckpt = bool(grad_ckpt)
         self.dim = dim
         self.n_heads = n_heads
         self.x_in = nn.Linear(in_ch, dim)
@@ -227,17 +235,55 @@ class InContextMotionDiT(nn.Module):
             self.e_down = nn.Embedding(16, n_heads)
             nn.init.zeros_(self.e_up.weight)
             nn.init.zeros_(self.e_down.weight)
-
+        # Two-stage bridge input (Kimodo's local-root block). LAST and zero-initialised, same
+        # causal-pairing discipline as the graph-v2 modules. It carries a DETERMINISTIC function
+        # of the root tower's prediction, and the body tower's global-root slots are zeroed, so
+        # this is a replacement pathway, not an additive shortcut.
+        # F5-TTS reference-transcript analogue (2026-08-20, user: "和它对齐"). F5 lays
+        # [ref_text + gen_text] over [ref_mel + masked span], so the model is TOLD what the
+        # reference says and can factor the reference's CONTENT out, keeping only its style --
+        # which is why a few seconds of any utterance clones a voice. Ours is that trick on the
+        # [demo | target] layout: ONE shared projection (F5 has a single text encoder), applied
+        # PER FRAME -- the demo's own caption over the demo frames, the request over the frames
+        # being generated. Position is what LETS the two captions be told apart at the input; it is
+        # NOT an information barrier (codex round-S5): temporal attention still carries demo-frame
+        # content into target frames, and the global AdaLN target-text condition still modulates
+        # every frame. The claim is only that the model can DISTINGUISH "what the reference did"
+        # from "what is being asked", which is the factorization the old design withheld outright.
+        # Zero-initialised and built LAST: flag off = bit-identical weights under one seed.
+        self.use_ref_text = bool(use_ref_text)
+        if self.use_ref_text:
+            self.ref_text_mlp = nn.Sequential(nn.LayerNorm(d_text), nn.Linear(d_text, dim),
+                                              nn.SiLU(), nn.Linear(dim, dim))
+            nn.init.zeros_(self.ref_text_mlp[-1].weight)
+            nn.init.zeros_(self.ref_text_mlp[-1].bias)
+        self.local_root_mlp = None
+        if local_root_dim > 0:
+            self.local_root_mlp = nn.Linear(local_root_dim, dim)
+            nn.init.zeros_(self.local_root_mlp.weight)
+            nn.init.zeros_(self.local_root_mlp.bias)
     def forward(self, x, t, *, is_target, joint_sem=None, text=None, blueprint=None,
                 joint_bias=None, frame_valid=None, joint_valid=None,
-                struct_feats=None, updown=None):
+                struct_feats=None, updown=None, local_root=None, demo_text=None):
         """x [B,T,J,C] ; t [B] in [0,1] ; is_target [B,T] bool.
         struct_feats [B,J,8] / updown [B,J,J,2] are graph-v2 inputs; both ignored (and refused)
-        unless the matching use_* flag built the module."""
+        unless the matching use_* flag built the module.
+        local_root [B,T,4] is the two-stage bridge input (Kimodo's local-root representation);
+        it is refused unless local_root_dim built the module."""
         B, T, J, _ = x.shape
         h = self.x_in(x)
         h = h + self.t_pos[:, :T] + self.j_pos[:, :, :J]                        # temporal + joint position
         h = h + is_target[..., None, None].to(h.dtype) * self.mask_token       # flag frames to generate
+        if self.use_ref_text and demo_text is not None:
+            tgt_v = self.ref_text_mlp(text if text is not None else torch.zeros_like(demo_text))
+            dem_v = self.ref_text_mlp(demo_text)
+            per_frame = torch.where(is_target[..., None], tgt_v[:, None], dem_v[:, None])
+            h = h + per_frame[:, :, None, :].to(h.dtype)                # [B,T,1,D] -> every joint
+        if local_root is not None:
+            if self.local_root_mlp is None:
+                raise ValueError("local_root passed but the model was built with "
+                                 "local_root_dim=0")
+            h = h + self.local_root_mlp(local_root.to(h.dtype))[:, :, None, :]  # [B,T,1,D]->all J
         if joint_sem is not None:
             h = h + self.joint_sem(joint_sem)[:, None]                          # [B,1,J,D]
         if self.use_struct_feats:
@@ -262,10 +308,127 @@ class InContextMotionDiT(nn.Module):
             c = c + self.bp_mlp(blueprint)
 
         for blk in self.blocks:
-            h = blk(h, c, joint_bias=joint_bias, frame_valid=frame_valid, joint_valid=joint_valid)
+            if self.grad_ckpt and self.training and torch.is_grad_enabled():
+                # use_reentrant=False: the reentrant variant does not play well with DDP's
+                # bucketed backward and silently drops the grads of unused parameters.
+                h = torch.utils.checkpoint.checkpoint(
+                    blk, h, c, joint_bias, frame_valid, joint_valid, use_reentrant=False)
+            else:
+                h = blk(h, c, joint_bias=joint_bias, frame_valid=frame_valid,
+                        joint_valid=joint_valid)
         shift, scale = self.ada_out(c).chunk(2, dim=-1)
         h = modulate(self.n_out(h), shift[:, None, None], scale[:, None, None])
         return self.out(h)
+
+
+class TwoStageInContextDiT(nn.Module):
+    """Variant D -- the Kimodo/UMO two-stage denoiser, adapted to per-joint tokens (KTJD-17).
+
+    Contract, verbatim from the sources (kimodo twostage_denoiser.py:36-153, UMO
+    kimodo_context_flow_dit.py:1022-1081 -- extracted 2026-08-20):
+      - the ROOT tower consumes the FULL noisy state (all joints; Kimodo: root_input_dim =
+        input_dim) and emits ONLY the global-root block -- here the root ROW [B,T,1,C];
+      - the BODY tower is conditioned on the root tower's OWN x0-prediction from the SAME
+        forward pass, DETACHED in training (never GT root; gradients flow at eval "for
+        guidance", twostage_denoiser.py:121-130);
+      - ONE two-stage forward per ODE step: no root-first-then-body schedule (kimodo_model.py:
+        617-633);
+      - ONE joint loss on the concatenated output; tower separation is implicit -- root groups
+        reach the root tower through the root row, the body loss cannot cross the detached
+        bridge (UMO train_hy273_raw_flow.py:1344-1444);
+      - towers share NO transformer weights (Kimodo convention: independent embed_text /
+        embed_timestep per tower; we inherit that since each InContextMotionDiT owns its own).
+    THE DECOMPOSITION (codex round-2 blocker 3: an additive side-channel, or even a raw-root
+    replacement, is NOT the cited architecture). Kimodo predicts ONLY the global-root block,
+    converts it DETERMINISTICALLY into a local-root representation, removes the global root from
+    the body tower's input and puts the local one there instead:
+
+      global root (Kimodo, 5) = smooth_root_pos(3) + heading(2)
+      local  root (Kimodo, 4) = heading angular velocity, planar velocity x/z, root height
+
+    KTJD carries the same five quantities in different slots -- smooth-root is XZ only (ch13:15),
+    heading is ch15:17, and root HEIGHT lives in the root row's q_position Y (ch1), because KTJD
+    subtracts only XZ when forming q_position. So GLOBAL_ROOT_CH = (1, 13, 14, 15, 16), five
+    channels, exactly Kimodo's five. Everything else -- all non-root rows, and the root row's
+    ch0/ch2 (the XZ residual), rot6d, velocity, contact -- is the body block, matching Kimodo
+    (which places every joint's position, the root's included, in the body block).
+
+    Consequently:
+      * the root tower's prediction is READ only on GLOBAL_ROOT_CH; its other outputs are unused;
+      * the body tower's input has those five slots ZEROED on target frames (the global root is
+        REMOVED, as in Kimodo) and receives the local-root block through a zero-init injection --
+        so there is no path from the noisy global root into the body tower;
+      * the bridge is parameter-free and detached in training (gradients flow at eval, Kimodo's
+        allow-guidance convention).
+
+    Demo frames keep their clean global root: they are the in-context reference the whole method
+    rests on, and zeroing them would destroy it. Kimodo has no demo, so the question is ours.
+
+    DELIBERATE DEVIATION: Kimodo un-normalizes, differentiates at fps, then re-normalizes with
+    dedicated local-root statistics. We have no such statistics, and both the fps factor and the
+    re-normalization are constants that the zero-initialised injection absorbs by learning, so
+    the bridge here emits raw per-frame differences in normalized units. The QUANTITIES are
+    Kimodo's; only their scale convention differs.
+
+    The BODY tower is constructed FIRST: under one seed its backbone WEIGHT init is identical to
+    the single-tower arms (the same causal-pairing discipline as the graph-v2 modules); the root
+    tower's parameter draws come after.
+    """
+
+    GLOBAL_ROOT_CH = (1, 13, 14, 15, 16)      # KTJD analogue of Kimodo's 5-dim global root
+
+    ROOT_TOWER_SEED = 20260820   # see __init__
+
+    def __init__(self, in_ch=17, dim=384, depth=7, n_heads=8, root_dim=192, root_depth=4, **kw):
+        super().__init__()
+        # Body FIRST, from the ambient RNG stream, so its backbone weights are bit-identical to a
+        # single-tower arm under the same seed (the causal-pairing discipline).
+        self.body = InContextMotionDiT(in_ch=in_ch, dim=dim, depth=depth, n_heads=n_heads,
+                                       local_root_dim=4, **kw)
+        # Root SECOND, inside a FORKED stream with a fixed seed (codex round-S5 BLOCK): otherwise
+        # any optional module inside the body -- e.g. use_ref_text's projection -- consumes RNG and
+        # SHIFTS the root tower's entire initialisation. Measured: 31 changed root tensors and
+        # 0.24-0.37 output drift from a module that is itself zero-initialised. Forking makes the
+        # root's init depend on nothing but this constant, so body-side options can never move it.
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(self.ROOT_TOWER_SEED)
+            self.root = InContextMotionDiT(in_ch=in_ch, dim=root_dim, depth=root_depth,
+                                           n_heads=n_heads, **kw)
+
+    @staticmethod
+    def _global_to_local(g):
+        """[B,T,C] predicted root row -> [B,T,4] local root, Kimodo's parameter-free conversion.
+        Angular velocity comes from the signed angle between consecutive heading vectors via
+        atan2(cross, dot) -- scale-invariant, so it is well defined even though a PREDICTED
+        heading is not unit-norm. The last frame copies the previous pair, as Kimodo does."""
+        xz = g[..., 13:15]
+        vel = torch.zeros_like(xz)
+        vel[:, :-1] = xz[:, 1:] - xz[:, :-1]
+        vel[:, -1] = vel[:, -2] if g.shape[1] > 1 else 0.0
+        c0, s0 = g[:, :-1, 15], g[:, :-1, 16]
+        c1, s1 = g[:, 1:, 15], g[:, 1:, 16]
+        om = torch.zeros_like(g[..., 0])
+        om[:, :-1] = torch.atan2(c0 * s1 - s0 * c1, c0 * c1 + s0 * s1)
+        if g.shape[1] > 1:
+            om[:, -1] = om[:, -2]
+        return torch.stack([om, vel[..., 0], vel[..., 1], g[..., 1]], dim=-1)
+
+    def forward(self, x, t, *, is_target, **cond):
+        root_out = self.root(x, t, is_target=is_target, **cond)
+        bridge = root_out[:, :, 0]                                       # [B,T,C], root row
+        bridge = bridge.detach() if self.training else bridge            # Kimodo contract
+        local = self._global_to_local(bridge)                            # [B,T,4], no parameters
+
+        x_body = x.clone()
+        keep = (~is_target)[..., None].to(x.dtype)                       # demo frames stay clean
+        for c in self.GLOBAL_ROOT_CH:
+            x_body[:, :, 0, c] = x[:, :, 0, c] * keep[..., 0]            # target -> exact zero
+        body = self.body(x_body, t, is_target=is_target, local_root=local, **cond)
+
+        out = body.clone()
+        for c in self.GLOBAL_ROOT_CH:
+            out[:, :, 0, c] = root_out[:, :, 0, c]
+        return out
 
 
 # Semantic loss groups over the AnyTop 13-channel layout, with the ROOT ROW SPLIT OUT.
@@ -326,8 +489,51 @@ _GROUP_SPEC = {
     "contact": (slice(0, None), [12]),
 }
 
+# KTJD-17 layout (README:47-57): ch0:3 canonical positions (XZ minus smooth-root), 3:9 global
+# delta rot6d, 9:12 velocities (SUPERVISION-ONLY; decode never integrates them), 12 contact,
+# root-only 13:15 smooth-root XZ, 15:17 heading. Root position and root velocity are SEPARATE
+# groups (codex 01a01b1a round-KTJD: their semantics and gains differ), and the two new root
+# blocks get their own groups. STARTING gammas mirror the Kimodo mapping; they MUST be
+# re-measured on KTJD-normalized energies before any real run (the 13ch measurement does not
+# transfer: positions changed frame, rotations changed convention).
+_GROUP_SPEC_KTJD17 = {
+    "root_pos": (slice(0, 1), [0, 1, 2]),
+    "root_rot": (slice(0, 1), [3, 4, 5, 6, 7, 8]),
+    "root_vel": (slice(0, 1), [9, 10, 11]),
+    "body_pos": (slice(1, None), [0, 1, 2]),
+    "body_rot": (slice(1, None), [3, 4, 5, 6, 7, 8]),
+    "body_vel": (slice(1, None), [9, 10, 11]),
+    "contact": (slice(0, None), [12]),
+    "smooth_root": (slice(0, 1), [13, 14]),
+    "heading": (slice(0, 1), [15, 16]),
+}
+# MEASURED on 300 real KTJD-17 train clips in normalized space (scratch/_measure_ktjd17_energy.py,
+# 2026-08-20; per-element energies E_i): root_pos .484 root_rot .333 root_vel .846 body_pos .868
+# body_rot .333 body_vel 1.329 contact .141 smooth_root 2.781 heading .500. Under share ~ gamma^2*E
+# the naive Kimodo-mapped gammas hand smooth_root 58.9% of the gradient (its normalized energy is
+# ~2.8, far above the calibration's unit target). Gammas below are solved from a PRE-REGISTERED
+# target share profile -- body_pos 21% / body_rot 22% / smooth_root 23% (trajectory prominent, not
+# dominant; the floating failure lives here) / root_pos 12% / heading 5% (wrong-turn-direction was
+# the reported 13ch failure axis; keep it alive) / body_vel 5.5% / contact 4.6% / root_rot 3.6% /
+# root_vel 3.5% -- via gamma_i = sqrt(share_i/E_i), scaled to anchor body_rot at 10.0.
+# REFERENCE ONLY -- never consumed by training (codex round-S0: placeholders must refuse, not
+# train). The trainer loads gammas exclusively from the versioned calibration artifact
+# (configs/ktjd17_gamma_calibration_v1.json, built by scripts/_measure_ktjd17_gamma_calibration.py
+# AFTER the crop-origin re-base fix; the 2026-08-20 pre-rebase measurement above is stale for
+# smooth_root, whose energy included clip-level origin offsets).
+KTJD17_GAMMAS_PREREBASE_REFERENCE = {
+    "root_pos": 6.0, "root_rot": 4.0, "root_vel": 2.5,
+    "body_pos": 6.0, "body_rot": 10.0, "body_vel": 2.5,
+    "contact": 7.0, "smooth_root": 3.5, "heading": 4.0,
+}
 
-def grouped_loss(err2, m, gammas):
+# Bumped whenever the KTJD validity treatment changes semantics. v2 = "effective validity"
+# applied to x1/noise/anchor/interpolant/supervision in cfm_loss AND per-step state projection
+# in sample() (codex round-S0 complete treatment); v1 was noise+loss masking only.
+KTJD17_MASK_POLICY = "ktjd17_effvalid_v2"
+
+
+def grouped_loss(err2, m, gammas, group_spec=None):
     """err2 [B,T,J,C] squared error, m [B,T,J,C] validity mask, -> (total, per-group dict).
 
     SIZE-INVARIANT GRADIENT SHARES. A plain per-group mean does NOT equalise groups -- it
@@ -351,14 +557,15 @@ def grouped_loss(err2, m, gammas):
     joints or channels it spans. That is the property the design wanted and the plain mean did not
     deliver. Predicted shares under this form (using measured per-element energies): root 40.5%.
     """
+    spec = _GROUP_SPEC if group_spec is None else group_spec
     total, parts = 0.0, {}
     counts = {}
     for name in gammas:
-        js, cs = _GROUP_SPEC[name]
+        js, cs = spec[name]
         counts[name] = m[:, :, js][..., cs].sum()
     n_total = sum(counts.values()).clamp_min(1.0)
     for name, gamma in gammas.items():
-        js, cs = _GROUP_SPEC[name]
+        js, cs = spec[name]
         e = err2[:, :, js][..., cs]
         mm = m[:, :, js][..., cs]
         denom = counts[name].clamp_min(1.0)
@@ -369,8 +576,9 @@ def grouped_loss(err2, m, gammas):
 
 
 def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=False,
-             t_sampler="uniform", v_space=False, sigma_min=0.05,
-             gamma_fk=0.0, fk_pack=None, **cond):
+             t_sampler="uniform", v_space=False, sigma_min=0.05, huber_delta=0.0,
+             gamma_fk=0.0, fk_pack=None, group_spec=None, gamma_vel=0.0, gamma_lock=0.0,
+             channel_valid=None, heading_valid=None, anchor=None, **cond):
     """Conditional flow matching with **x-prediction**: the network outputs the clean motion.
 
     `gammas=None` keeps the original single unweighted MSE (kept as the ablation baseline).
@@ -392,10 +600,32 @@ def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=Fals
         t = torch.sigmoid(torch.randn(B, device=x1.device) * 0.8 - 0.8)
     else:
         t = torch.rand(B, device=x1.device)
+    # ---- EFFECTIVE VALIDITY (KTJD-17, codex round-S0 "complete treatment"): one mask, applied
+    # to EVERY tensor that carries state -- clean x1 (demo frames included), base noise, anchor,
+    # hence the interpolant and the supervision. A loss-only or noise-only mask is not enough:
+    # fixed_dof rows keep nonzero inherited d6 in raw GT, and heading-invalid frames carry
+    # unreliable heading values; both must be canonical ZERO in model space at every t.
+    eff = None
+    if channel_valid is not None:
+        eff = channel_valid[:, None].to(x1.dtype).expand(B, T, J, C).clone()
+        if heading_valid is not None and C >= 17:
+            # [B,T] flag gates the ROOT heading channels per frame (root is row 0 by contract)
+            eff[:, :, 0, 15:17] *= heading_valid.to(x1.dtype)[:, :, None]
+        x1 = x1 * eff
     x0 = torch.randn_like(x1)
+    if anchor is not None:
+        # UMO source-centered base (cfgA:70 aligned_source_plus_standard_gaussian_v1): the flow
+        # base becomes anchor + N(0,I), so "copy the anchor" is the zero-work default and the
+        # conditioning only has to steer the DEVIATION. The anchor is BASE GEOMETRY, not a
+        # condition: it is identical across all CFG branches and is never dropped.
+        x0 = x0 + anchor.to(x0.dtype)
+    if eff is not None:
+        # project the SUM (noise + anchor): invalid cells are exact zero in the base too, so
+        # xt == x1 == 0 there at every t and nothing leaks through attention.
+        x0 = x0 * eff
     tt = t[:, None, None, None]
     xt = (1 - tt) * x0 + tt * x1
-    xt = torch.where((~is_target)[..., None, None], x1, xt)   # demo frames stay clean
+    xt = torch.where((~is_target)[..., None, None], x1, xt)   # demo frames stay clean (projected)
     x1_pred = model(xt, t, is_target=is_target, **cond)
     # `valid` is REQUIRED, not optional. Without it, padded joints (a J=9 rig in a batch whose max
     # is 142 is 94% padding) count as legitimate zero targets and dominate every group denominator.
@@ -404,18 +634,51 @@ def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=Fals
                          "None silently trains on padding as valid zeros")
     m = (is_target[..., None] & valid).to(x1.dtype)[..., None]
     m = m.expand_as(x1)
-    err2 = (x1_pred - x1) ** 2
+    # REAL target frames only (codex round-S2 #3): `valid` = frame_valid & joint_valid, so
+    # valid.any(-1) is the per-frame real-frame flag. The physical-space terms below take
+    # DIFFERENCES between consecutive frames, and a padded frame is an exact zero -- which in the
+    # rest-centered space IS the rest pose. Feeding padding to them manufactures a
+    # last-real-frame -> rest jump that no motion contains, and poisons the speed diagnostic.
+    real_target = is_target & valid.any(-1)
+    if eff is not None:
+        m = m * eff
+    if huber_delta > 0.0:
+        # ROBUST TARGET (user-agreed 2026-08-21). The corpus carries source-side defects that no
+        # detector separated from fast motion across seven attempts -- isolated teleports, sustained
+        # oscillation, opening IK settle, and quaternion-induced errors already present in the
+        # source BVH (Cobra MANIS issue 381). Rather than keep hunting for a criterion, the
+        # objective is made robust so undetected contamination cannot dominate: below the knee the
+        # term is EXACTLY the squared error, so the calibrated gammas and their group shares are
+        # untouched for the overwhelming majority of cells; above it the term grows linearly and
+        # the per-cell gradient saturates at 2*delta instead of growing with the error.
+        # delta=10 sits just under the measured p99.99 of |normalized target| (11.45 over 4.63e8
+        # supervised cells): 99.982% of supervision is unaffected, while the worst cell in the
+        # corpus (bound 62.7) has its gradient cut ~6x. As training converges the errors shrink
+        # and the knee stops binding, so this is not a permanent reweighting of the objective.
+        d = (x1_pred - x1).abs()
+        err2 = torch.where(d <= huber_delta, d ** 2, huber_delta * (2.0 * d - huber_delta))
+    else:
+        err2 = (x1_pred - x1) ** 2
     if v_space:
         # JiT (denoiser.py:58-62): the network predicts clean data, but the LOSS lives in velocity
         # space. On the OT path x1 - xt = (1-t)(x1 - x0), so v-space MSE == x-space MSE weighted by
         # 1/(1-t)^2 -- emphasis lands on the near-data regime where high-frequency detail (jitter)
         # is decided. The clamp (user's ACMDM-JiT sigma_min=0.05) caps the weight at 400x.
         w = 1.0 / torch.clamp(1.0 - t, min=sigma_min) ** 2
-        err2 = err2 * w[:, None, None, None]
+        # UNIT-MEAN NORMALIZATION (2026-08-20, deliberate deviation from UMO's literal form).
+        # E_t~U(0,1)[1/max(1-t,s)^2] = 2/s - 1 = 39 at s=0.05, so the raw weight inflates the loss
+        # ~39x and the gradient norm ~50x (measured smoke: grad mean 249 -> 12226 against a
+        # clip at 1.0, i.e. every step clipped ~1e4x = normalized-gradient descent, and loss values
+        # no longer comparable to any earlier run). Dividing by the analytic mean keeps the RELATIVE
+        # up-weighting of clean-end timesteps -- the entire point of the term -- while restoring
+        # scale. It is a single global constant, so it cannot change any group's share. For a
+        # non-uniform t sampler the constant is only approximate; being a global scale, it then acts
+        # purely as an effective-lr factor.
+        err2 = err2 * (w / (2.0 / sigma_min - 1.0))[:, None, None, None]
     if gammas is None:
         loss, parts = (err2 * m).sum() / m.sum().clamp_min(1.0), {}
     else:
-        loss, parts = grouped_loss(err2, m, gammas)
+        loss, parts = grouped_loss(err2, m, gammas, group_spec=group_spec)
     if gamma_fk > 0.0:
         # Kimodo Eq.1 term 7 (gamma7=5.0): FK(pred rotations) vs RIC(pred positions) consistency.
         # Added 2026-08-19 (user: "kimodo有的你都得加") after the 1000-epoch run-1 verdict that the
@@ -426,31 +689,87 @@ def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=Fals
         if fk_pack is None:
             raise ValueError("gamma_fk > 0 requires fk_pack (mean/std/parents/offsets/n_joints); "
                              "build the dataset with emit_fk_fields=True")
-        from src.models.graph_salad.world_recovery import recover_world_positions_torch
-        from src.models.v2.fk_torch import fk_ric_consistency_loss
-        fk_term, fk_dist = fk_ric_consistency_loss(
-            x1_pred, fk_pack["anytop_mean"], fk_pack["anytop_std"], fk_pack["std_floor"],
-            fk_pack["parents"], fk_pack["rest_offsets"], fk_pack["n_joints"],
-            frame_mask=is_target, ric_world_fn=recover_world_positions_torch,
-            want_diag=return_parts)
+        if fk_pack.get("kind") == "ktjd17":
+            # KTJD-17 gamma7: FK vs DIRECT positions via the official decoder semantics
+            # (kimodo Eq.1 term 7, KTJD form -- user 2026-08-20: kimodo-like loss aligned)
+            from src.models.v2.fk_torch import fk_ktjd_consistency_loss
+            fk_term, fk_dist = fk_ktjd_consistency_loss(
+                x1_pred, fk_pack["anytop_mean"], fk_pack["anytop_std"], fk_pack["std_floor"],
+                fk_pack["parents"], fk_pack["rest_offsets"], fk_pack["R_rest_global"],
+                fk_pack["n_joints"], frame_mask=real_target, want_diag=return_parts)
+        else:
+            from src.models.graph_salad.world_recovery import recover_world_positions_torch
+            from src.models.v2.fk_torch import fk_ric_consistency_loss
+            fk_term, fk_dist = fk_ric_consistency_loss(
+                x1_pred, fk_pack["anytop_mean"], fk_pack["anytop_std"], fk_pack["std_floor"],
+                fk_pack["parents"], fk_pack["rest_offsets"], fk_pack["n_joints"],
+                frame_mask=real_target, ric_world_fn=recover_world_positions_torch,
+                want_diag=return_parts)
         loss = loss + gamma_fk * fk_term
         if return_parts:
             # scalar conversions sync; keep them off the per-step train path (return_parts=False)
             parts = dict(parts)
             parts["fk_consist"] = float(fk_term.detach())
             parts["fk_dist"] = fk_dist   # mean |FK-RIC| in bone-length units, weight-0 diagnostic
+    if gamma_vel > 0.0 or gamma_lock > 0.0:
+        # UMO's anti-degenerate pair (train_hy273_raw_flow.py:733-757, weights 0.01 each):
+        # physical-space finite differences a frozen output cannot satisfy, plus the contact lock
+        # that stops the opposite failure. Independent of gamma_fk (different job: gamma_fk makes
+        # the two DECODES agree -- a static pose satisfies it perfectly -- while these two make the
+        # motion MOVE). KTJD-only: it needs the direct-decode geometry, so it rides fk_pack.
+        if fk_pack is None or fk_pack.get("kind") != "ktjd17":
+            raise ValueError("gamma_vel/gamma_lock need the KTJD fk_pack (kind='ktjd17')")
+        from src.models.v2.fk_torch import ktjd_dynamics_losses
+        vel_term, lock_term, speed_ratio, speed_n = ktjd_dynamics_losses(
+            x1_pred, x1, fk_pack["anytop_mean"], fk_pack["anytop_std"], fk_pack["std_floor"],
+            fk_pack["rest_offsets"], fk_pack["n_joints"], frame_mask=real_target,
+            # contact must be thresholded on the DE-NORMALIZED channel (codex round-S7 blocker
+            # 3): per-cell standardization moves the 0/1 flag off {0,1}, and testing >0.5 on the
+            # normalized value missed ~19% of true contact events, constant-contact cells included.
+            contact_on=((x1[..., 12] * (fk_pack["anytop_std"][:, None, :, 12] + fk_pack["std_floor"])
+                         + fk_pack["anytop_mean"][:, None, :, 12]) > 0.5)
+            if gamma_lock > 0.0 else None,
+            want_diag=return_parts)
+        loss = loss + gamma_vel * vel_term + gamma_lock * lock_term
+        if return_parts:
+            parts = dict(parts)
+            parts["dyn_vel"] = float(vel_term.detach())
+            parts["foot_lock"] = float(lock_term.detach())
+            # speed_ratio = predicted mean joint speed / GT's. 1.0 matched, ~0 frozen: the ONLINE
+            # frozen-pose monitor, so the ep250 surprise cannot repeat unseen.
+            parts["speed_ratio"] = speed_ratio
+            parts["speed_ratio_n"] = speed_n      # windows that actually contributed a ratio
     return (loss, parts) if return_parts else loss
 
 
 @torch.no_grad()
-def sample(model, x_ref, is_target, steps, cfg_text=1.0, cfg_demo=1.0, demo_frames=None, **cond):
+def sample(model, x_ref, is_target, steps, cfg_text=1.0, cfg_demo=1.0, demo_frames=None,
+           channel_valid=None, anchor=None, heading_valid=None, **cond):
     """Euler along the straight path, driven by the predicted clean motion.
 
     The update x <- x + (x1_pred - x)/(steps - i) walks the remaining distance in the remaining
     steps. It is numerically stable at t->1 (the denominator is a step count, never 1-t -> 0),
     which is precisely where the v1 x-prediction sampler blew up by 25x.
+    channel_valid [B,J,C]: KTJD-17 invalid cells stay EXACT ZERO through the whole ODE -- the
+    state is re-projected after EVERY Euler update (codex round-S0: init-only zeroing lets the
+    model's own prediction resurrect invalid cells on step one), mirroring training.
+    heading_valid [B,T] is DEMO-side only: the demo's flag is a legitimate input at inference,
+    but target-time validity is unknowable at generation and is never consumed here -- target
+    heading is generated, and any validity call happens downstream from decoded rotations.
     """
-    x = torch.where(is_target[..., None, None], torch.randn_like(x_ref), x_ref)
+    cv = channel_valid[:, None].to(x_ref.dtype) if channel_valid is not None else None
+    if cv is not None:
+        x_ref = x_ref * cv
+        if heading_valid is not None and x_ref.shape[-1] >= 17:
+            hv = heading_valid.to(x_ref.dtype).clone()
+            hv[is_target] = 1.0                    # never gate target frames with GT validity
+            x_ref[:, :, 0, 15:17] *= hv[:, :, None]
+    noise = torch.randn_like(x_ref)
+    if anchor is not None:
+        noise = noise + anchor.to(noise.dtype)     # base = anchor + N(0,I), matching training
+    if cv is not None:
+        noise = noise * cv                          # project the SUM, as training does
+    x = torch.where(is_target[..., None, None], noise, x_ref)
 
     guided = (cfg_text != 1.0) or (cfg_demo != 1.0)
     if guided:
@@ -470,6 +789,10 @@ def sample(model, x_ref, is_target, steps, cfg_text=1.0, cfg_demo=1.0, demo_fram
         if fv_u is not None:
             fv_u[:, :demo_frames] = False
         cond_uu = {**cond_du, "frame_valid": fv_u}
+        if cond.get("demo_text") is not None:
+            # the demo's caption IS part of the demo condition: the demo-dropped branch must not
+            # keep a description of frames it can no longer see (mirrors apply_cfg_drops).
+            cond_uu = {**cond_uu, "demo_text": torch.zeros_like(cond["demo_text"])}
 
     for i in range(steps):
         t = torch.full((x.shape[0],), i / steps, device=x.device)
@@ -483,4 +806,6 @@ def sample(model, x_ref, is_target, steps, cfg_text=1.0, cfg_demo=1.0, demo_fram
             x1_pred = x_uu + cfg_demo * (x_du - x_uu) + cfg_text * (x_dt - x_du)
         step = (x1_pred - x) / (steps - i)
         x = torch.where(is_target[..., None, None], x + step, x_ref)
+        if cv is not None:
+            x = x * cv                              # per-step state projection (see docstring)
     return x
