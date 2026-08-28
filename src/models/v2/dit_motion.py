@@ -53,14 +53,28 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
 
 class Attention(nn.Module):
     """Multi-head self-attention with an optional additive [B,H|1,N,N] bias (used to inject the
-    skeleton graph on the joint axis) and an optional key-padding mask."""
+    skeleton graph on the joint axis) and an optional key-padding mask.
 
-    def __init__(self, dim: int, n_heads: int):
+    qk_norm: RMS-normalise q and k per head before the dot product (ViT-22B / Gemma recipe).
+    MEASURED MOTIVE (2026-08-26): without it, blocks[0].t_attn's max logit sat at 1372-1483 on
+    HEALTHY run10 checkpoints (a sane transformer runs O(10)) and exploded to 12392-23391 across
+    the ep34 damage step. A saturated softmax has near-zero local gradients (which is also why
+    Adam's v collapsed on the conditioning biases) yet a tiny parameter move flips its argmax --
+    the "ordinary-gradient damage step" that killed seven runs. Normalising q and k bounds the
+    logits by construction. Flag-gated so every pre-run11 checkpoint still loads bit-identically."""
+
+    def __init__(self, dim: int, n_heads: int, qk_norm: bool = False):
         super().__init__()
         assert dim % n_heads == 0
         self.h, self.dh = n_heads, dim // n_heads
         self.qkv = nn.Linear(dim, dim * 3, bias=False)
         self.proj = nn.Linear(dim, dim)
+        self.qk_norm = bool(qk_norm)
+        if self.qk_norm:
+            # RMSNorm over head_dim with a learnable gain, applied to q AND k: logits become
+            # bounded by |g_q||g_k|*dh/sqrt(dh) regardless of how far training sharpens.
+            self.q_norm = nn.RMSNorm(self.dh, eps=1e-6)
+            self.k_norm = nn.RMSNorm(self.dh, eps=1e-6)
 
     def forward(self, x, attn_bias=None, key_pad=None):
         """x [..., N, D] (any leading batch dims); attn_bias broadcastable to [..., H, N, N];
@@ -76,6 +90,8 @@ class Attention(nn.Module):
         lead = x.shape[:-2]
         qkv = self.qkv(x).reshape(*lead, N, 3, self.h, self.dh)
         q, k, v = (t.transpose(-3, -2) for t in qkv.movedim(-3, 0))   # each [..., H, N, dh]
+        if self.qk_norm:
+            q, k = self.q_norm(q), self.k_norm(k)
         bias = attn_bias
         if key_pad is not None:                       # [..., N] True = valid
             m = torch.zeros(*key_pad.shape[:-1], 1, 1, N, device=x.device, dtype=q.dtype)
@@ -89,11 +105,11 @@ class Block(nn.Module):
     """One factorised block: temporal attention -> spatial (joint) attention -> MLP,
     every sub-layer AdaLN-modulated by the conditioning vector c."""
 
-    def __init__(self, dim: int, n_heads: int, mlp_ratio: float = 4.0):
+    def __init__(self, dim: int, n_heads: int, mlp_ratio: float = 4.0, qk_norm: bool = False):
         super().__init__()
         self.n1, self.n2, self.n3 = (nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6) for _ in range(3))
-        self.t_attn = Attention(dim, n_heads)
-        self.s_attn = Attention(dim, n_heads)
+        self.t_attn = Attention(dim, n_heads, qk_norm=qk_norm)
+        self.s_attn = Attention(dim, n_heads, qk_norm=qk_norm)
         h = int(dim * mlp_ratio)
         self.mlp = nn.Sequential(nn.Linear(dim, h), nn.GELU(approximate="tanh"), nn.Linear(h, dim))
         # zero-init so an untrained block is the identity: pretrained-style stability, and the
@@ -160,7 +176,7 @@ class InContextMotionDiT(nn.Module):
 
     def __init__(self, in_ch=13, dim=256, depth=6, n_heads=8, d_text=4096, d_blueprint=16,
                  d_joint_sem=4096, mlp_ratio=4.0, use_struct_feats=False, use_dir_bias=False,
-                 local_root_dim=0, use_ref_text=False, grad_ckpt=False):
+                 local_root_dim=0, use_ref_text=False, grad_ckpt=False, qk_norm=False):
         super().__init__()
         # Activation checkpointing recomputes each block's activations in the backward pass
         # instead of storing them: ~60-70% less activation memory for ~30% more compute. It is
@@ -201,7 +217,8 @@ class InContextMotionDiT(nn.Module):
                                       nn.Linear(dim, dim))
         # blueprint is low-dimensional and explicit: it modulates every block and cannot be routed around
         self.bp_mlp = nn.Sequential(nn.Linear(d_blueprint, dim), nn.SiLU(), nn.Linear(dim, dim))
-        self.blocks = nn.ModuleList([Block(dim, n_heads, mlp_ratio) for _ in range(depth)])
+        self.blocks = nn.ModuleList([Block(dim, n_heads, mlp_ratio, qk_norm=qk_norm)
+                                     for _ in range(depth)])
         self.n_out = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.ada_out = nn.Sequential(nn.SiLU(), nn.Linear(dim, 2 * dim))
         self.out = nn.Linear(dim, in_ch)
@@ -578,6 +595,7 @@ def grouped_loss(err2, m, gammas, group_spec=None):
 def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=False,
              t_sampler="uniform", v_space=False, sigma_min=0.05, huber_delta=0.0,
              gamma_fk=0.0, fk_pack=None, group_spec=None, gamma_vel=0.0, gamma_lock=0.0,
+             gamma_acc=0.0,
              channel_valid=None, heading_valid=None, anchor=None, **cond):
     """Conditional flow matching with **x-prediction**: the network outputs the clean motion.
 
@@ -595,9 +613,17 @@ def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=Fals
     """
     B, T, J, C = x1.shape
     if t_sampler == "logitnormal":
-        # ACMDM-JiT / SD3: logit-normal(mu=-0.8, sigma=0.8) concentrates supervision where the
-        # x->v conversion is worst-conditioned, instead of spreading it uniformly.
-        t = torch.sigmoid(torch.randn(B, device=x1.device) * 0.8 - 0.8)
+        # ACMDM-JiT / SD3 concentrate sampling toward the DATA end. Their convention puts clean
+        # data at t=0, ours at t=1, so their mu=-0.8 flips sign here: sigmoid(+0.8) centres the
+        # draw at t~0.69, toward OUR clean end. The verbatim -0.8 form (which early v2 runs did
+        # use, before the v-space weight existed) was refused at review for the CURRENT weighted
+        # objective (codex 2026-08-28): under the v-space weight it moved clean-end (t>=0.8)
+        # supervision mass from 89.74% to 4.36% -- the opposite of the sampler's purpose. Measured
+        # composition with sigma_min=0.05: p(t)*w(t) mass at t>=0.8 is 69.9%, and the extreme
+        # endpoint band t>=0.95 drops from uniform's 51.3% to 6.3% -- supervision moves from the
+        # noisy-gradient endpoint into the information-rich near-clean band, which is the SD3
+        # rationale for the sampler.
+        t = torch.sigmoid(torch.randn(B, device=x1.device) * 0.8 + 0.8)
     else:
         t = torch.rand(B, device=x1.device)
     # ---- EFFECTIVE VALIDITY (KTJD-17, codex round-S0 "complete treatment"): one mask, applied
@@ -666,15 +692,23 @@ def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=Fals
         # is decided. The clamp (user's ACMDM-JiT sigma_min=0.05) caps the weight at 400x.
         w = 1.0 / torch.clamp(1.0 - t, min=sigma_min) ** 2
         # UNIT-MEAN NORMALIZATION (2026-08-20, deliberate deviation from UMO's literal form).
-        # E_t~U(0,1)[1/max(1-t,s)^2] = 2/s - 1 = 39 at s=0.05, so the raw weight inflates the loss
-        # ~39x and the gradient norm ~50x (measured smoke: grad mean 249 -> 12226 against a
-        # clip at 1.0, i.e. every step clipped ~1e4x = normalized-gradient descent, and loss values
-        # no longer comparable to any earlier run). Dividing by the analytic mean keeps the RELATIVE
-        # up-weighting of clean-end timesteps -- the entire point of the term -- while restoring
-        # scale. It is a single global constant, so it cannot change any group's share. For a
-        # non-uniform t sampler the constant is only approximate; being a global scale, it then acts
-        # purely as an effective-lr factor.
-        err2 = err2 * (w / (2.0 / sigma_min - 1.0))[:, None, None, None]
+        # E_t~U(0,1)[1/max(1-t,s)^2] = 2/s - 1 (= 39 at s=0.05); the raw weight otherwise
+        # inflates the loss and gradients by that factor (measured smoke: grad mean 249 -> 12226,
+        # every step clipped ~1e4x). Dividing by the SAMPLER'S OWN mean keeps the RELATIVE
+        # up-weighting of clean-end timesteps while restoring scale, so the flow term keeps its
+        # calibrated balance against the un-weighted FK/velocity/lock terms. The constant MUST
+        # match the active sampler (codex 2026-08-28): using uniform's 39 under logit-normal
+        # would shrink the flow term to 0.61x and silently re-weight the auxiliaries by 1.64x.
+        if t_sampler == "logitnormal":
+            # E[1/max(1-t,0.05)^2] over t = sigmoid(0.8 N + 0.8): Gauss quadrature, abserr 1e-7.
+            # BOUND to the sampler's (mu=+0.8, sigma=0.8) and sigma_min=0.05 hard-coded above --
+            # recompute if any of the three changes.
+            assert abs(sigma_min - 0.05) < 1e-12, \
+                "logitnormal unit-mean constant is precomputed for sigma_min=0.05 only"
+            w_mean = 23.733256
+        else:
+            w_mean = 2.0 / sigma_min - 1.0
+        err2 = err2 * (w / w_mean)[:, None, None, None]
     if gammas is None:
         loss, parts = (err2 * m).sum() / m.sum().clamp_min(1.0), {}
     else:
@@ -739,6 +773,28 @@ def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=Fals
             # frozen-pose monitor, so the ep250 surprise cannot repeat unseen.
             parts["speed_ratio"] = speed_ratio
             parts["speed_ratio_n"] = speed_n      # windows that actually contributed a ratio
+    if gamma_acc > 0.0:
+        # ACCELERATION MATCHING (user plan-a, 2026-08-28). Measured attribution
+        # (jitter_analysis_s32.txt): the residual micro-jitter is uniform >5Hz noise
+        # concentrated on near-static joints (gen/GT band ratio 2.9x at 0-2Hz rising to 32.8x at
+        # 10-15Hz; GT's own high-band share 0.57%; FK/RIC parity 1.00), i.e. per-frame
+        # independent error in the x1 prediction itself, which neither the JiT weighting nor
+        # more ODE steps nor a one-euro post-filter resolved to the user's eye. This term matches
+        # the SECOND DIFFERENCE of the prediction to GT's on the normalized channels: for
+        # near-static joints GT's acceleration is ~0 so frame noise is pushed to zero, while
+        # moving joints' real bursts are the TARGET, not a casualty (unlike a smoothness prior).
+        # Deliberately NOT v-space weighted -- like gamma_fk/vel/lock it is a geometric
+        # consistency term. GT d2-energy is ~10% of position energy (measured over 160 batches),
+        # so gamma_acc=1.0 puts this near a 9% share of the flow term at init.
+        d2p = x1_pred[:, 2:] - 2 * x1_pred[:, 1:-1] + x1_pred[:, :-2]
+        d2t = x1[:, 2:] - 2 * x1[:, 1:-1] + x1[:, :-2]
+        # a triple of frames supervises acceleration only when ALL THREE are real target frames
+        m3 = m[:, 2:] * m[:, 1:-1] * m[:, :-2]
+        acc_term = ((d2p - d2t) ** 2 * m3).sum() / m3.sum().clamp_min(1.0)
+        loss = loss + gamma_acc * acc_term
+        if return_parts:
+            parts = dict(parts)
+            parts["acc_match"] = float(acc_term.detach())
     return (loss, parts) if return_parts else loss
 
 
@@ -778,26 +834,38 @@ def sample(model, x_ref, is_target, steps, cfg_text=1.0, cfg_demo=1.0, demo_fram
         # where u/d mark dropped/kept demo and text. Requires a CFG-trained model (independent
         # demo/text dropout); both scales at 1.0 reduce to a single forward, bit-identical to the
         # unguided path.
-        assert demo_frames is not None, "guided sampling needs demo_frames to build the demo-drop"
         cond_dt = cond
         # Uncond text must be the ZERO VECTOR, exactly as training's dropout produces it: with
         # text=None the model skips the text_mlp branch entirely, a c the network never saw.
         cond_du = ({**cond, "text": torch.zeros_like(cond["text"])}
                    if cond.get("text") is not None else cond)
-        fv = cond.get("frame_valid")
-        fv_u = fv.clone() if fv is not None else None
-        if fv_u is not None:
-            fv_u[:, :demo_frames] = False
-        cond_uu = {**cond_du, "frame_valid": fv_u}
-        if cond.get("demo_text") is not None:
-            # the demo's caption IS part of the demo condition: the demo-dropped branch must not
-            # keep a description of frames it can no longer see (mirrors apply_cfg_drops).
-            cond_uu = {**cond_uu, "demo_text": torch.zeros_like(cond["demo_text"])}
+        if cfg_demo != 1.0:
+            # Only the demo-guided path needs the demo-drop machinery (codex 2026-08-27 r2):
+            # text-only guidance must neither require demo_frames nor build cond_uu.
+            assert demo_frames is not None, \
+                "guided sampling needs demo_frames to build the demo-drop"
+            fv = cond.get("frame_valid")
+            fv_u = fv.clone() if fv is not None else None
+            if fv_u is not None:
+                fv_u[:, :demo_frames] = False
+            cond_uu = {**cond_du, "frame_valid": fv_u}
+            if cond.get("demo_text") is not None:
+                # the demo's caption IS part of the demo condition: the demo-dropped branch must
+                # not keep a description of frames it can no longer see (mirrors apply_cfg_drops).
+                cond_uu = {**cond_uu, "demo_text": torch.zeros_like(cond["demo_text"])}
 
     for i in range(steps):
         t = torch.full((x.shape[0],), i / steps, device=x.device)
         if not guided:
             x1_pred = model(x, t, is_target=is_target, **cond)
+        elif cfg_demo == 1.0:
+            # Text-only guidance. x_uu's algebraic coefficient is (1 - cfg_demo) = 0, but
+            # evaluating it anyway leaks the UNTRAINED demo-drop branch into the state at
+            # floating-point rounding level on every Euler step (codex 2026-08-27) -- and burns
+            # a third forward for nothing. Both surviving branches are p_drop_text-trained.
+            x_dt = model(x, t, is_target=is_target, **cond_dt)
+            x_du = model(x, t, is_target=is_target, **cond_du)
+            x1_pred = x_du + cfg_text * (x_dt - x_du)
         else:
             x_dt = model(x, t, is_target=is_target, **cond_dt)
             x_du = model(x, t, is_target=is_target, **cond_du)

@@ -47,6 +47,7 @@ The artifact (configs/ktjd17_gamma_calibration_v2.json) is written ONLY if every
 passes. Training refuses to start without it and re-checks generation/gains/schema hashes.
 """
 import hashlib
+import os
 import json
 import sys
 import time
@@ -56,14 +57,14 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-EXCLUDE = "configs/pzh312_extreme_cut_K100.json"   # extreme-tail cut (ratio>100), user-agreed 2026-08-21
+EXCLUDE = os.environ.get("EXCLUDE", "configs/pzh312_extreme_cut_K100.json")
 from src.data.incontext_pairs import InContextPairs, collate, DEMO_FRAMES, TARGET_FRAMES  # noqa: E402
 from src.data.ktjd17_incontext import Ktjd17Base, ktjd17_split_names                      # noqa: E402
 from src.models.v2.dit_motion import (InContextMotionDiT, cfm_loss,                       # noqa: E402
                                       _GROUP_SPEC_KTJD17, KTJD17_MASK_POLICY)
 from scripts.train_v2_incontext import ktjd_channel_lut, ktjd_prep, cond_of, to_dev       # noqa: E402
 
-OUT = Path("configs/pzh312_gamma_calibration_v5.json")
+OUT = Path(os.environ.get("CALIB_OUT", "configs/pzh312_gamma_calibration_v5.json"))
 # Kimodo Eq.1 families -> KTJD groups, with the Eq.1-implied share profile (gamma^2-normalized:
 # 100/4/100/100/9/16 over a 329 total)
 FAMILIES = {
@@ -75,17 +76,37 @@ FAMILIES = {
     "f": {"groups": ["contact"], "share": 16 / 329},
 }
 ANCHOR_FAMILY, ANCHOR_GAMMA = "j_a", 10.0        # Kimodo gamma4
-HUBER = 10.0   # must match --huber_delta of the run these gammas are for
+HUBER = float(os.environ["HUBER"])   # REQUIRED: must match --huber_delta of the run (0 = pure MSE); made an env input when step-2 (Huber->MSE) landed, same no-default rule as V_SPACE/SIGMA_MIN/T_SAMPLER
+# The docstring's own principle -- "the mechanism check must run through the SAME objective the
+# run trains on" -- was not implemented for v_space/sigma_min/t_sampler until codex 2026-08-26
+# round 4 refuted the share-invariance shortcut: realized shares ride on
+# gamma^2 * E_t[w(t)^2 * min(r(t)^2, delta^2)], and the residual profile is t-dependent even
+# though the DATA energies E[x1^2] (which the gamma SOLVE uses) are not. Hence: the solve is
+# unchanged, but the check runs under the objective's true weighting, and the three knobs are
+# REQUIRED (no defaults -- a forgotten export must fail here, not silently certify the old loss).
+V_SPACE = os.environ["V_SPACE"] == "1"
+SIGMA_MIN = float(os.environ["SIGMA_MIN"])
+T_SAMPLER = os.environ["T_SAMPLER"]
+# auxiliary acc-matching weight of the run these gammas are for (0 = off). The gamma SOLVE and
+# the primary mechanism check stay on the grouped flow objective (gamma_acc=0), where the
+# analytic share prediction gamma^2*E_err is valid; a SECOND, diagnostic-only pass then runs
+# with gamma_acc active and RECORDS how the measured group shares shift plus the acc_match
+# magnitude -- no hard tolerance, because the acc gradient has no analytic share model
+# (codex 2026-08-28 item 2: the artifact must characterize the objective it certifies).
+GAMMA_ACC = float(os.environ["GAMMA_ACC"])
 VERIFY_STEPS, VERIFY_TOL = 30, 1.25    # mechanism check band, recorded verbatim in the artifact
 ARM = dict(dim=384, depth=7, heads=8)  # the Step-1 arm config the gammas will train
 
 
 def main():
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    R = "dataset/ktjd17_pz_human312"
-    base = Ktjd17Base(R, caption_emb_cache="data/anytop_caption_llm2vec_v4b272neutral_multi",
+    R = os.environ.get("KTJD_ROOT", "dataset/ktjd17_pz_human312")
+    base = Ktjd17Base(R, caption_emb_cache=os.environ.get(
+                          "CAPTION_CACHE", "data/anytop_caption_llm2vec_v4b272neutral_multi"),
                       joint_semantics="data/joint_semantics_llm2vec_pzh312_v1.npz",
-                      percell_stats="data/pzh312_norm_stats_v4.npz",
+                      percell_stats=os.environ.get("PERCELL", "data/pzh312_norm_stats_v4.npz"),
+                      texts_json=os.environ.get(
+                          "TEXTS_JSON", "motion_texts_by_file_clean_v1.json"),
                   exclude_clips=EXCLUDE)
     names = ktjd17_split_names(R, exclude=EXCLUDE)
     ds = InContextPairs(base, names["train"], names["train"], balance_skeletons=False, seed=0,
@@ -204,8 +225,18 @@ def main():
     for step in range(VERIFY_STEPS):
         b = to_dev(next(it), dev)
         x17, kt = ktjd_prep(b, lut, gammas=gammas)
+        # Seed immediately before the call, then REPLAY the t draw for the prediction side:
+        # t is the FIRST rng consumption inside cfm_loss (dit_motion.py:614-619, before the
+        # x0 randn), so the replayed draw below is bit-identical to the t the loss used.
+        torch.manual_seed(10000 + step)
         loss = cfm_loss(model, x17, is_target=b["is_target"], valid=b["valid"],
-                        huber_delta=HUBER, **kt, **cond_of(b))
+                        huber_delta=HUBER, t_sampler=T_SAMPLER, v_space=V_SPACE,
+                        sigma_min=SIGMA_MIN, gamma_acc=0.0, **kt, **cond_of(b))
+        torch.manual_seed(10000 + step)
+        if T_SAMPLER == "logitnormal":
+            t_used = torch.sigmoid(torch.randn(x17.shape[0], device=dev) * 0.8 + 0.8)  # mirrors dit_motion.py:624 (our-convention +0.8)
+        else:
+            t_used = torch.rand(x17.shape[0], device=dev)
         model.zero_grad(set_to_none=True)
         loss.backward()
         gr = holder["out"].grad
@@ -224,6 +255,11 @@ def main():
                 e2 = torch.clamp(r ** 2, max=HUBER ** 2)
             else:
                 e2 = r ** 2
+            if V_SPACE:
+                # the loss element is huber(r) * w(t)/const, so the gradient ENERGY carries
+                # w(t)^2; const is a global scalar and cancels in every share.
+                w = 1.0 / torch.clamp(1.0 - t_used, min=SIGMA_MIN) ** 2
+                e2 = e2 * (w ** 2)[:, None, None, None]
             sat_hit += int(((r.abs() > HUBER) & (mm > 0)).sum()) if HUBER > 0 else 0
             sat_tot += int((mm > 0).sum())
         for gname, (js, cs) in _GROUP_SPEC_KTJD17.items():
@@ -264,6 +300,37 @@ def main():
                          f"for {sorted(mech_bad)}: measured="
                          f"{ {g: round(measured[g],3) for g in mech_bad} } predicted="
                          f"{ {g: round(pred_g[g]/tp,3) for g in mech_bad} }")
+    acc_diag = None
+    if GAMMA_ACC > 0.0:
+        # diagnostic pass: same batches/seeds, acc term ACTIVE; record share drift + magnitude
+        g_sum2 = {g: 0.0 for g in _GROUP_SPEC_KTJD17}
+        acc_vals = []
+        vgen2 = torch.Generator(); vgen2.manual_seed(1)
+        it2 = iter(DataLoader(ds, batch_size=8, shuffle=True, generator=vgen2, num_workers=2,
+                              collate_fn=collate))
+        for step in range(VERIFY_STEPS):
+            b = to_dev(next(it2), dev)
+            x17, kt = ktjd_prep(b, lut, gammas=gammas)
+            torch.manual_seed(10000 + step)
+            loss2, parts2 = cfm_loss(model, x17, is_target=b["is_target"], valid=b["valid"],
+                                     huber_delta=HUBER, t_sampler=T_SAMPLER, v_space=V_SPACE,
+                                     sigma_min=SIGMA_MIN, gamma_acc=GAMMA_ACC,
+                                     return_parts=True, **kt, **cond_of(b))
+            model.zero_grad(set_to_none=True)
+            loss2.backward()
+            gr2 = holder["out"].grad
+            for gname, (js, cs) in _GROUP_SPEC_KTJD17.items():
+                g_sum2[gname] += float((gr2[:, :, js][..., cs] ** 2).sum())
+            acc_vals.append(parts2["acc_match"])
+        tot2 = sum(g_sum2.values())
+        fam2 = {f: sum(g_sum2[g] / tot2 for g in FAMILIES[f]["groups"]) for f in FAMILIES}
+        acc_diag = {"gamma_acc": GAMMA_ACC,
+                    "acc_match_mean": float(np.mean(acc_vals)),
+                    "family_shares_with_acc": {f: round(v, 6) for f, v in fam2.items()},
+                    "family_shares_without_acc": {f: round(v, 6) for f, v in fam_measured.items()},
+                    "note": "diagnostic only -- no analytic prediction exists for the acc term"}
+        print(f"[acc-diag] acc_match(init)={acc_diag['acc_match_mean']:.4f} "
+              f"shares with acc: " + " ".join(f"{f}={fam2[f]:.3f}" for f in fam2))
     print("[verify] PASS (mechanism): measured shares match gamma^2*E_err within 25% per group")
 
     code_sha = hashlib.sha256(
@@ -281,7 +348,8 @@ def main():
                      "weighting": "clip_balanced",
                      "seed": 0, "batch": 8, "huber_delta": HUBER, "windows": "demo_random_rebased/target_head",
                      "crop_rebase_active": True, "space": "normalized_model_space",
-                     "t_sampler": "uniform", "v_space": False,
+                     "t_sampler": T_SAMPLER, "v_space": V_SPACE, "sigma_min": SIGMA_MIN,
+                     "gamma_acc": GAMMA_ACC,
                      "energy_stat": "mean_x1_sq_over_effective_valid_cells",
                      "mapping": "kimodo_eq1_family_shares: share_fam ~ gamma_fam^2 * sum E_i; "
                                 "gamma_fam = sqrt(share_fam / sum E_i)",
@@ -306,6 +374,7 @@ def main():
             "achieved": {f: round(v, 6) for f, v in ach.items()},
             "max_deviation": max(off.values()),
         },
+        "acc_diagnostic": acc_diag,
         "mechanism_check": {
             "statement": "measured output-grad share == gamma^2 * E_err within 25%/group "
                          "(diagnostic: catches wiring bugs; CANNOT verify the design target, "

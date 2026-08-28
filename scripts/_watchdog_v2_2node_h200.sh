@@ -58,24 +58,33 @@ log() { echo "[wd $(ts)] $*" >> "$LOG"; }
 log "START v2 watchdog (CHECK_SEC=$CHECK_SEC, out=$OUT_REL, epochs=$EPOCHS lr=$LR batch=$BATCH) pid=$$ host=$(hostname)"
 down_streak=0
 
-# Discover the two H200 nodes hosting MY gpu:2 allocs: exactly ONE dual_h200 (master)
-# + exactly ONE quad_h200 (worker). Echo "mnode mjob wnode wjob", else return 1 (never guess).
+# Discover the two H200 nodes this run occupies. The original form hard-coded partitions
+# dual_h200 + quad_h200 and a `:2` GRES; i7_h200 gives 2 nodes x 4 GPUs on pink[7001-7025], which
+# that filter rejects outright -- the watchdog then reports DOWN forever while the run is healthy.
+# Driven by the config instead: PARTITION and the node-name pattern come from the same file the
+# launcher sources, so a partition change is a config edit rather than a code edit. Node identity
+# is still VALIDATED, never guessed: exactly two RUNNING allocs on the expected partition with the
+# expected GPU count, and both names must match the configured pattern.
+WD_PARTITION=${WD_PARTITION:-i7_h200}
+WD_NODE_RE=${WD_NODE_RE:-^pink7[0-9][0-9][0-9]$}
 discover_h200() {
-    local sq dline qline mj mn wj wn
+    local sq lines n1 n2 j1 j2
     sq=$(timeout 25 ssh "$CTRL_NODE" "squeue -u ts1v23 -t RUNNING -h -o '%i|%P|%N|%b' 2>/dev/null" 2>/dev/null) || return 1
-    # exact partition match; GRES anchored on ':2$' so gpu:20 / gpu:h200:20 do NOT match.
-    dline=$(printf '%s\n' "$sq" | awk -F'|' '$2=="dual_h200" && $4 ~ /:2$/ {print $1"|"$3}')
-    qline=$(printf '%s\n' "$sq" | awk -F'|' '$2=="quad_h200" && $4 ~ /:2$/ {print $1"|"$3}')
-    [ "$(printf '%s\n' "$dline" | grep -c .)" -eq 1 ] || return 1
-    [ "$(printf '%s\n' "$qline" | grep -c .)" -eq 1 ] || return 1
-    mj=${dline%%|*}; mn=${dline##*|}
-    wj=${qline%%|*}; wn=${qline##*|}
-    [ -n "$mn" ] && [ -n "$wn" ] && [ -n "$mj" ] && [ -n "$wj" ] || return 1
-    # validate single, expected hostnames (guards against node ranges / unexpected nodes).
-    [[ "$mn" =~ ^flamingo0[12]$ ]] || { log "DISCOVER-REJECT: master node '$mn' not flamingo0[12]"; return 1; }
-    [[ "$wn" =~ ^blossom0[1-4]$ ]] || { log "DISCOVER-REJECT: worker node '$wn' not blossom0[1-4]"; return 1; }
-    [[ "$mj" =~ ^[0-9]+$ ]] && [[ "$wj" =~ ^[0-9]+$ ]] || return 1
-    printf '%s %s %s %s\n' "$mn" "$mj" "$wn" "$wj"
+    lines=$(printf '%s\n' "$sq" | awk -F'|' -v p="$WD_PARTITION" -v g=":$GPUS_PER\$" \
+            '$2==p && $4 ~ g {print $1"|"$3}')
+    [ "$(printf '%s\n' "$lines" | grep -c .)" -eq 2 ] || return 1
+    j1=$(printf '%s\n' "$lines" | sed -n 1p); n1=${j1##*|}; j1=${j1%%|*}
+    j2=$(printf '%s\n' "$lines" | sed -n 2p); n2=${j2##*|}; j2=${j2%%|*}
+    [ -n "$n1" ] && [ -n "$n2" ] && [ -n "$j1" ] && [ -n "$j2" ] || return 1
+    [[ "$n1" =~ $WD_NODE_RE ]] || { log "DISCOVER-REJECT: '$n1' does not match $WD_NODE_RE"; return 1; }
+    [[ "$n2" =~ $WD_NODE_RE ]] || { log "DISCOVER-REJECT: '$n2' does not match $WD_NODE_RE"; return 1; }
+    [[ "$j1" =~ ^[0-9]+$ ]] && [[ "$j2" =~ ^[0-9]+$ ]] || return 1
+    # MASTER is whichever alloc the config names, so a resume keeps the same rendezvous host
+    if [ "$n2" = "$MASTER_NODE" ]; then
+        printf '%s %s %s %s\n' "$n2" "$j2" "$n1" "$j1"
+    else
+        printf '%s %s %s %s\n' "$n1" "$j1" "$n2" "$j2"
+    fi
 }
 
 procs_on() {  # count of THIS run's train procs on node $1 (scoped to OUT_REL; 0 if unreachable)

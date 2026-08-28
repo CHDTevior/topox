@@ -78,6 +78,30 @@ def world_of_ktjd(norm_seg18, base, rig, strict_gt):
     return dec.positions_direct, dec.positions_fk
 
 
+def one_euro(x, fps=20.0, min_cutoff=1.5, beta=0.3, d_cutoff=1.0):
+    """One-euro filter along axis 0 of x [T, ...] (Casiez et al. 2012), the game-industry
+    standard adaptive low-pass: strong smoothing at low speeds (kills uniform micro-jitter on
+    near-static joints -- the measured failure mode, see jitter_analysis_s32.txt), weak at high
+    speeds (bursts stay sharp). Pure post-process on the MODEL OUTPUT channels; deployment
+    candidate (user 2026-08-28 plan b)."""
+    import numpy as _np
+    def alpha(cutoff):
+        tau = 1.0 / (2 * _np.pi * cutoff)
+        te = 1.0 / fps
+        return 1.0 / (1.0 + tau / te)
+    y = x.copy()
+    dx_prev = _np.zeros_like(x[0])
+    for t in range(1, x.shape[0]):
+        dx = (x[t] - y[t - 1]) * fps
+        a_d = alpha(d_cutoff)
+        dx_hat = a_d * dx + (1 - a_d) * dx_prev
+        cutoff = min_cutoff + beta * _np.abs(dx_hat)
+        a = alpha(cutoff)
+        y[t] = a * x[t] + (1 - a) * y[t - 1]
+        dx_prev = dx_hat
+    return y
+
+
 def jitter_ratio(gen_w, gt_w):
     """Second-difference acceleration ratio gen/GT -- the milestone-comparable jitter number.
     Reported for all joints and for the root row separately (root mixes in velocity-integration
@@ -179,6 +203,14 @@ def main():
     ap.add_argument("--rigs_A", default="Alligator,Trex")
     ap.add_argument("--rigs_B", default="BrownBear,Elephant")
     ap.add_argument("--steps", type=int, default=10)
+    ap.add_argument("--smooth_mincutoff", type=float, default=0.0,
+                    help="one-euro post-filter on the generated channels (0 = off); typical "
+                         "1.5 mild / 0.8 strong at 30fps source")
+    ap.add_argument("--smooth_beta", type=float, default=0.3)
+    ap.add_argument("--cfg_text", type=float, default=1.0,
+                    help="text-axis classifier-free guidance at inference; 1.0 = off (bare "
+                         "conditional). The text-dropped branch was trained (p_drop_text 0.1), "
+                         "the demo axis was NOT (p_drop_demo 0) -- so only cfg_text is exposed.")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--corpus", choices=("truebones", "pzh", "ktjd17"), default="truebones")
     ap.add_argument("--ktjd_root", default="dataset/ktjd17_truebones")
@@ -226,6 +258,7 @@ def main():
                d_text=4096, d_joint_sem=4096,
                use_struct_feats=bool(ca.get("struct_feats", False)),
                use_dir_bias=bool(ca.get("dir_bias", False)),
+               qk_norm=bool(ca.get("qk_norm", False)),
                use_ref_text=bool(ca.get("ref_text", False)))
     if bool(ca.get("two_stage", False)):
         from src.models.v2.dit_motion import TwoStageInContextDiT
@@ -290,13 +323,17 @@ def main():
               emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)))
     dsA = InContextPairs(base, names["val"], names["train"], object_types=tb,
                          balance_skeletons=False, seed=a.seed, **PK)
-    dsB = InContextPairs(base, names["held_representative"], names["held_representative"],
-                         object_types=tb, balance_skeletons=False, seed=a.seed, **PK)
+    # the merged no-IK corpus ships only train/val; a missing held bucket renders nothing for B
+    _held = names.get("held_representative", set())
+    dsB = (InContextPairs(base, _held, _held, object_types=tb,
+                          balance_skeletons=False, seed=a.seed, **PK) if _held else None)
     dsT = InContextPairs(base, names["train"], names["train"], object_types=tb,
                          balance_skeletons=False, seed=a.seed, **PK)
 
     jobs = []
     for bucket, rigs, ds in (("A", a.rigs_A, dsA), ("B", a.rigs_B, dsB), ("T", a.rigs_T, dsT)):
+        if ds is None:
+            continue
         for r in [x.strip() for x in rigs.split(",") if x.strip()]:
             if r not in ds.types:
                 print(f"[render] SKIP {bucket}:{r} -- not in bucket "
@@ -386,11 +423,19 @@ def main():
                     g2kw["anchor"] = ktjd_anchor(b, x_in, anc_mode, rest_lut, a.demo_frames)
             else:
                 x_in = b["x"]
-            gen = sample(model, x_in, b["is_target"], a.steps,
+            gen = sample(model, x_in, b["is_target"], a.steps, cfg_text=a.cfg_text,
+                         demo_frames=a.demo_frames,
                          joint_bias=b["joint_bias"], frame_valid=b["frame_valid"],
                          joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"],
                          **g2kw)
         gen = gen[0].float().cpu().numpy()
+        if a.smooth_mincutoff > 0:
+            # smooth ONLY the target frames of the model-output channels; the demo frame is GT.
+            # fps follows the corpus: KTJD-17 is 30fps, the legacy 13ch corpora are 20fps
+            # (codex 2026-08-28: a hard-coded 30 would mistune the filter for those renders)
+            _fps = 30.0 if a.corpus == "ktjd17" else 20.0
+            gen[a.demo_frames:] = one_euro(gen[a.demo_frames:], fps=_fps,
+                                           min_cutoff=a.smooth_mincutoff, beta=a.smooth_beta)
         gt = b["x"][0].float().cpu().numpy()
 
         t_item = base[ds.index[pos][1]]
@@ -429,7 +474,7 @@ def main():
                      f"root_ric={jit_root:.3f}x root_fk={jfk_root:.3f}x{static_warn}"
                      f"\tcaption: {cap}\tdemo={item['demo_id']} target={item['motion_id']}")
     (out / "summary.txt").write_text(
-        f"ckpt={a.ckpt} epoch={ep} steps={a.steps} seed={a.seed} panels=demo|gen_ric|gen_fk|gt\n" + "\n".join(lines) + "\n")
+        f"ckpt={a.ckpt} epoch={ep} steps={a.steps} seed={a.seed} cfg_text={a.cfg_text} smooth_mincutoff={a.smooth_mincutoff} smooth_beta={a.smooth_beta} panels=demo|gen_ric|gen_fk|gt\n" + "\n".join(lines) + "\n")
     print(f"[render] DONE -> {out}", flush=True)
 
 

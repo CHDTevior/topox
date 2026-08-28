@@ -64,8 +64,11 @@ def fk_pack_of(b):
 
 
 # A validation this much worse than the best seen means the run has blown up, not merely
-# regressed: healthy epoch-to-epoch movement here is a few percent, while a blow-up is 50-100x.
-HEALTH_RATIO = 5.0
+# regressed: healthy epoch-to-epoch movement here is a few percent. 5.0 was calibrated on run9's
+# 50-100x blow-ups and then run10's ep34 damage -- a REAL 3.71x regression that froze the run --
+# was stamped healthy under it. 2.0 still clears every healthy fluctuation ever observed (a few
+# percent) by a wide margin.
+HEALTH_RATIO = 2.0
 
 
 def ktjd_channel_lut(base):
@@ -213,6 +216,27 @@ def main():
                          "ranks are not parked behind a long rank-0 val")
     ap.add_argument("--val_every_steps", type=int, default=0,
                     help=">0: validate/checkpoint every N steps INSTEAD of every val_every epochs")
+    ap.add_argument("--param_resync_steps", type=int, default=200,
+                    help="broadcast rank 0's parameters every N optimizer steps. DDP syncs only "
+                         "gradients and assumes identical updates; at extreme clip scaling that "
+                         "assumption fails for the smallest-gradient tensors. 0 disables.")
+    ap.add_argument("--qk_norm", action="store_true",
+                    help="RMS-normalise q,k per head before the dot product (ViT-22B recipe). "
+                         "Measured: without it run10's block-0 temporal attention ran at logit "
+                         "1372-1483 while HEALTHY and 12392+ across the damage step.")
+    ap.add_argument("--allow_calib_reswap", action="store_true",
+                    help="Resume across a gamma-calibration ARTIFACT swap whose gammas and group "
+                         "spec are BIT-IDENTICAL to the checkpoint's (verified here, not "
+                         "trusted). The legitimate case: non-loss code (e.g. the sampler) "
+                         "changed dit_motion.py, the calib code-hash guard demanded a "
+                         "re-measurement, and the re-measured artifact is numerically the same "
+                         "objective under a new file. Recorded in calib_history on every "
+                         "checkpoint this run writes.")
+    ap.add_argument("--allow_schedule_restart", action="store_true",
+                    help="permit lr_scheduler/eta_min_ratio/lr_decay_epochs to differ from the "
+                         "checkpoint ON RESUME, recording {old,new,epoch,gstep} into "
+                         "schedule_history. Everything else in the crit list still refuses. "
+                         "Motivated by run10: the model outgrew its own lr floor.")
     ap.add_argument("--allow_unhealthy_resume", action="store_true",
                     help="continue from a checkpoint written after a blow-up (refused by default)")
     ap.add_argument("--ckpt_snapshot_keep", type=int, default=20,
@@ -364,6 +388,10 @@ def main():
     ap.add_argument("--gamma_lock", type=float, default=0.0,
                     help="UMO foot_lock analogue (0.01): zero displacement demanded only where GT "
                          "contact is on at both endpoints. ktjd17 only.")
+    ap.add_argument("--gamma_acc", type=float, default=0.0,
+                    help="acceleration-matching weight: MSE between the prediction's and GT's "
+                         "temporal second difference on the normalized channels (anti-jitter, "
+                         "plan-a 2026-08-28); 0 = off")
     ap.add_argument("--two_stage", action="store_true",
                     help="variant D: Kimodo/UMO two-stage denoiser (root tower -> parameter-free "
                          "bridge, detached in training -> body tower). ktjd17 only.")
@@ -511,6 +539,38 @@ def main():
             if calib["hashes"][hk] != base.provenance[hk]:
                 raise SystemExit(f"[refuse] gamma calibration {hk} mismatch -- artifact was "
                                  f"measured against different data statistics")
+        # The mechanism check certifies the calibration ONLY under the objective it ran with.
+        # v_space reweights gradient energy by w(t)^2 and the residual profile is t-dependent,
+        # so a check run under a different v_space/sigma_min/t_sampler certifies a DIFFERENT
+        # loss (codex 2026-08-26 round 4; supersedes the share-invariance assumption that let
+        # runs 7-10 pair v_space=False artifacts with v_space=True training).
+        proto = calib.get("protocol", {})
+        if "sigma_min" not in proto:
+            raise SystemExit("[refuse] gamma calibration predates the objective-protocol record "
+                             "(no protocol.sigma_min); its mechanism check did not run this "
+                             "run's objective -- recalibrate with V_SPACE/SIGMA_MIN/T_SAMPLER")
+        drift = []
+        if bool(proto.get("v_space")) != bool(a.v_space):
+            drift.append(f"v_space {proto.get('v_space')} != {a.v_space}")
+        if abs(float(proto["sigma_min"]) - float(a.sigma_min)) > 1e-9:
+            drift.append(f"sigma_min {proto['sigma_min']} != {a.sigma_min}")
+        if str(proto.get("t_sampler")) != str(a.t_sampler):
+            drift.append(f"t_sampler {proto.get('t_sampler')!r} != {a.t_sampler!r}")
+        # gamma_acc: absent in pre-acc artifacts MEANS 0 (their mechanism ran without the term,
+        # which is exactly the gamma_acc=0 objective) -- so absence certifies only acc-off runs
+        if abs(float(proto.get("gamma_acc", 0.0)) - float(a.gamma_acc)) > 1e-9:
+            drift.append(f"gamma_acc {proto.get('gamma_acc', 0.0)} != {a.gamma_acc}")
+        # huber_delta shapes the gradient the mechanism check measured through -- a calibration
+        # verified under the knee does not certify the knee-free (MSE) objective, and vice versa
+        # (gap found 2026-08-28 when step-2 Huber->MSE landed; the three-key guard predated it)
+        if "huber_delta" not in proto:
+            raise SystemExit("[refuse] gamma calibration protocol lacks huber_delta -- "
+                             "recalibrate with the HUBER env set")
+        if abs(float(proto["huber_delta"]) - float(a.huber_delta)) > 1e-9:
+            drift.append(f"huber_delta {proto['huber_delta']} != {a.huber_delta}")
+        if drift:
+            raise SystemExit("[refuse] gamma calibration objective-protocol mismatch: "
+                             + "; ".join(drift) + " -- recalibrate under this objective")
         ktjd_gammas = {k: float(v) for k, v in calib["gammas"].items()}
         if sorted(ktjd_gammas) != sorted(_GROUP_SPEC_KTJD17):
             raise SystemExit(f"[refuse] calibration gamma groups {sorted(ktjd_gammas)} != "
@@ -672,12 +732,12 @@ def main():
                                      d_text=4096, d_joint_sem=4096,
                                      use_struct_feats=a.struct_feats,
                                      use_dir_bias=a.dir_bias, grad_ckpt=a.grad_ckpt,
-                                     use_ref_text=a.ref_text).to(dev)
+                                     use_ref_text=a.ref_text, qk_norm=a.qk_norm).to(dev)
     else:
         model = InContextMotionDiT(in_ch=in_ch, dim=a.dim, depth=a.depth, n_heads=a.heads,
                                    d_text=4096, d_joint_sem=4096,
                                    use_struct_feats=a.struct_feats, use_dir_bias=a.dir_bias, grad_ckpt=a.grad_ckpt,
-                                   use_ref_text=a.ref_text).to(dev)
+                                   use_ref_text=a.ref_text, qk_norm=a.qk_norm).to(dev)
     # raw_model stays the UNCOMPILED module: it is what state_dict()/load_state_dict() use, so
     # checkpoints keep clean keys (a compiled wrapper prefixes everything with `_orig_mod.` and
     # every earlier checkpoint would fail to load).
@@ -703,6 +763,8 @@ def main():
     # Initialised BEFORE the resume block, which overwrites it: placing it after would wipe the
     # history the checkpoint just restored, reintroducing the very misreporting this records.
     guard_history = []
+    schedule_history = []
+    calib_history = []
     # health of the most recent validation, so the periodic epoch/step writers can stamp it too
     last_health, last_vob = True, 1.0
     if a.resume:
@@ -739,8 +801,8 @@ def main():
                 "t_sampler", "v_space", "p_drop_text", "p_drop_demo", "p_drop_both",
                 "bf16", "warmup_steps", "wd", "gamma_fk", "fk_warmup_steps",
                 "struct_feats", "dir_bias", "ktjd_root", "anchor", "identity_p",
-                "two_stage", "root_dim", "gamma_vel", "gamma_lock", "ref_text",
-                "demo_rest", "ktjd_percell_stats",
+                "two_stage", "root_dim", "gamma_vel", "gamma_lock", "gamma_acc", "ref_text",
+                "demo_rest", "ktjd_percell_stats", "qk_norm",
                 # (codex 2026-08-21 (A)2) the robustness knee and the clip threshold BOTH define
                 # the trajectory: resuming with a different one produces later epochs trained
                 # under settings nothing in the lineage records.
@@ -758,11 +820,35 @@ def main():
         # against the runtime value would wave through exactly the drift this check exists to catch
         # (legacy ckpt + new flag => missing key silently "equals" the new flag).
         bad = [k for k in crit if old_args.get(k, ap.get_default(k)) != getattr(a, k)]
-        if bad:
+        # restored BEFORE the append below -- appending first and restoring afterwards silently
+        # discarded the very record the mechanism exists to keep (codex 2026-08-26)
+        schedule_history = list(ck.get("schedule_history", []))
+        calib_history = list(ck.get("calib_history", []))
+        calib_path_changed = False
+        SCHEDULE_KEYS = {"lr_scheduler", "eta_min_ratio", "lr_decay_epochs"}
+        if bad and a.allow_schedule_restart and set(bad) <= SCHEDULE_KEYS:
+            # a deliberate, recorded schedule change -- NOT silent drift: every checkpoint this
+            # run writes will carry the change and where it was made
+            schedule_history.append({
+                "from_ckpt": str(a.resume),
+                "old": {k: old_args.get(k, ap.get_default(k)) for k in bad},
+                "new": {k: getattr(a, k) for k in bad},
+                "at_epoch": int(ck["epoch"]) + 1, "at_gstep": int(ck.get("gstep", 0))})
+            print(f"[resume] SCHEDULE RESTART recorded: "
+                  f"{ {k: (old_args.get(k, ap.get_default(k)), getattr(a, k)) for k in bad} } "
+                  f"from ep{int(ck['epoch'])+1} g{ck.get('gstep', 0)}", flush=True)
+        elif bad == ["ktjd_gamma_calib"] and a.allow_calib_reswap:
+            # allowed HERE only as a path change; the pins check below verifies the swapped
+            # artifact before anything proceeds, and requires exactly this signal -- a swap
+            # without a path change is a same-name regeneration, which stays refused
+            calib_path_changed = True
+        elif bad:
             raise SystemExit(f"[resume] config mismatch on {bad}: "
                              f"ckpt={[old_args.get(k, ap.get_default(k)) for k in bad]} "
                              f"vs now={[getattr(a, k) for k in bad]}"
-                             f" -- refusing silent drift (change the ckpt or the flags)")
+                             f" -- refusing silent drift (change the ckpt or the flags; a "
+                             f"schedule-only change may pass --allow_schedule_restart; an "
+                             f"equivalent-calibration swap may pass --allow_calib_reswap)")
         if a.corpus == "ktjd17":
             # provenance pins: path strings alone cannot catch a retargeted symlink or a
             # regenerated artifact under the same name (codex round-S0)
@@ -770,9 +856,126 @@ def main():
             if old_pins is None:
                 raise SystemExit("[resume] ckpt carries no ktjd_pins -- refusing to resume a "
                                  "pre-pinning KTJD checkpoint into the pinned lineage")
+            if calib_path_changed:
+                # BEFORE anything compares pins: the equivalence BASELINE (the old artifact on
+                # disk) must itself be proven untampered against the checkpoint's byte pin --
+                # a replaced old file could otherwise redefine what "equivalent" means
+                # (codex r6/r7: integrity first, then judgement).
+                oldc_p = Path(str(old_args.get("ktjd_gamma_calib")))
+                if not oldc_p.is_file():
+                    raise SystemExit(f"[resume] calib reswap refused: old artifact {oldc_p} is "
+                                     f"gone -- behavioural equivalence cannot be verified")
+                _old_bytes = oldc_p.read_bytes()
+                _old_sha = hashlib.sha256(_old_bytes).hexdigest()
+                _pin_sha = str((old_pins or {}).get("gamma_calib_sha256"))
+                if _old_sha != _pin_sha:
+                    raise SystemExit(f"[resume] calib reswap refused: the OLD artifact on disk "
+                                     f"({oldc_p}) does not match the checkpoint's pinned sha "
+                                     f"({_old_sha[:12]} != {_pin_sha[:12]}) -- the equivalence "
+                                     f"baseline itself has been tampered with")
             drift = sorted(k for k in set(old_pins) | set(ktjd_pins)
                            if old_pins.get(k) != ktjd_pins.get(k))
-            if drift:
+            CALIB_ID_KEYS = {"gamma_calib_version", "gamma_calib_sha256",
+                             "gamma_calib_code_sha256"}
+            if calib_path_changed and set(drift) <= CALIB_ID_KEYS:
+                # (codex 2026-08-27 round 2) Acceptance requires ALL of:
+                #  - an actual PATH change (crit arm set the signal; a same-name regeneration
+                #    never reaches here and stays refused),
+                #  - the ckpt carries the complete calib-identity pin schema (a legacy ckpt
+                #    without them cannot certify what it trained under -- refuse),
+                #  - gammas/group_spec bit-identical (they are pins; a difference would be in
+                #    `drift` and fail the subset test),
+                #  - BEHAVIOURAL loss equivalence between the OLD and NEW artifacts: same
+                #    preregistered protocol and, decisively, the same measured mechanism-check
+                #    fields -- the recorded behaviour of the loss THROUGH its own code at
+                #    measurement time. gammas alone prove grouped weighting, not objective
+                #    semantics; this contract is what licenses the code-hash drift.
+                missing_pins = sorted(k for k in CALIB_ID_KEYS
+                                      if not old_pins.get(k) or not ktjd_pins.get(k))
+                if missing_pins:
+                    raise SystemExit(f"[resume] calib reswap refused: empty/missing identity "
+                                     f"pins {missing_pins} (checked on BOTH lineages); an "
+                                     f"uncertified calibration cannot take the hatch")
+                import numpy as _np
+                oldc = json.loads(_old_bytes.decode())
+                def _flat(d, pre=""):
+                    # a section that is not a mapping certifies nothing -- surface it as an
+                    # empty flat dict, which the caller's nonempty check turns into ":keys"
+                    if not isinstance(d, dict):
+                        return {}
+                    out = {}
+                    for k, v in d.items():
+                        if isinstance(v, dict):
+                            out.update(_flat(v, pre + k + "."))
+                        else:
+                            out[pre + k] = v
+                    return out
+                sem_bad = []
+                def _num_eq(sect, k, ov, nv):
+                    # exactly ONE text leaf is legitimate: mechanism_check.statement (fixed
+                    # generator prose; changed wording = changed check semantics). Text anywhere
+                    # else in a numeric section is a malformed artifact (codex r4).
+                    if f"{sect}.{k}" == "mechanism_check.statement":
+                        # this leaf must BE text on both sides -- a numeric statement is a
+                        # malformed artifact, not a number to compare (codex r5)
+                        if not (isinstance(ov, str) and isinstance(nv, str)):
+                            sem_bad.append(f"{sect}.{k}:malformed")
+                        elif ov != nv:
+                            sem_bad.append(f"{sect}.{k}:text")
+                        return
+                    if isinstance(ov, str) or isinstance(nv, str):
+                        sem_bad.append(f"{sect}.{k}:malformed")
+                        return
+                    # booleans float() silently (True == 1.0) but are not measurements
+                    if isinstance(ov, bool) or isinstance(nv, bool):
+                        sem_bad.append(f"{sect}.{k}:malformed"); return
+                    # fail CLOSED on malformed or non-finite leaves: an artifact whose measured
+                    # field cannot be read as a finite number certifies nothing (codex r3)
+                    try:
+                        ov, nv = float(ov), float(nv)
+                    except (TypeError, ValueError):
+                        sem_bad.append(f"{sect}.{k}:malformed"); return
+                    if not (_np.isfinite(ov) and _np.isfinite(nv)):
+                        sem_bad.append(f"{sect}.{k}:nonfinite"); return
+                    if not _np.isclose(ov, nv, rtol=1e-3, atol=1e-9):
+                        sem_bad.append(f"{sect}.{k}")
+                # numeric sections AND mechanism_check: leaf sets must match EXACTLY -- a leaf
+                # deleted from either side is a schema change, not a free pass
+                for section in ("gammas", "energies", "counts", "target_family_shares",
+                                "mechanism_check"):
+                    o, n = _flat(oldc.get(section)), _flat(calib.get(section))
+                    if not o or not n or set(o) != set(n):
+                        sem_bad.append(f"{section}:keys")
+                        continue
+                    for k in o:
+                        _num_eq(section, k, o[k], n[k])
+                for key in ("v_space", "sigma_min", "t_sampler", "huber_delta", "batch", "seed",
+                            "mask_policy_version", "weighting", "cohort"):
+                    ov = oldc.get("protocol", {}).get(key)
+                    nv = calib.get("protocol", {}).get(key)
+                    if ov is None or nv is None:
+                        # both-missing must NOT compare equal: a required protocol key absent on
+                        # either side means the artifact cannot certify its objective
+                        sem_bad.append(f"protocol.{key}:missing")
+                    elif ov != nv:
+                        sem_bad.append(f"protocol.{key}")
+                if sem_bad:
+                    raise SystemExit(f"[resume] calib reswap refused: artifacts are NOT "
+                                     f"behaviourally equivalent on {sorted(set(sem_bad))} -- "
+                                     f"the code-hash drift is not license-able")
+                calib_history.append({
+                    "from_ckpt": str(a.resume),
+                    "old": {k: old_pins.get(k) for k in sorted(CALIB_ID_KEYS)},
+                    "new": {k: ktjd_pins.get(k) for k in sorted(CALIB_ID_KEYS)},
+                    "old_path": str(old_args.get("ktjd_gamma_calib")),
+                    "new_path": str(a.ktjd_gamma_calib),
+                    "behavioural_equivalence": "gammas/energies/counts/shares/protocol/"
+                                               "mechanism_check within rtol 1e-3",
+                    "at_epoch": int(ck["epoch"]) + 1, "at_gstep": int(ck.get("gstep", 0))})
+                print(f"[resume] CALIB RESWAP recorded (behavioural equivalence verified): "
+                      f"{old_args.get('ktjd_gamma_calib')} -> {a.ktjd_gamma_calib} "
+                      f"from ep{int(ck['epoch'])+1} g{ck.get('gstep', 0)}", flush=True)
+            elif drift:
                 raise SystemExit(
                     f"[resume] KTJD provenance drift on {drift}: "
                     f"ckpt={ {k: old_pins.get(k) for k in drift} } vs "
@@ -911,6 +1114,8 @@ def main():
                         vextra = {}
                         if a.gamma_fk > 0:
                             vextra.update(gamma_fk=a.gamma_fk, fk_pack=fk_pack_of(vb))
+                        if a.gamma_acc > 0:
+                            vextra.update(gamma_acc=a.gamma_acc)
                         if a.gamma_vel > 0 or a.gamma_lock > 0:
                             vextra.update(gamma_vel=a.gamma_vel, gamma_lock=a.gamma_lock,
                                           fk_pack=fk_pack_of(vb))
@@ -1006,7 +1211,8 @@ def main():
                  # resume-safety marker: only epoch-boundary states may be continued
                  "at_epoch_end": bool(at_epoch_end),
                  # so a checkpoint never claims a guard applied to epochs that ran without it
-                 "guard_history": guard_history,
+                 "guard_history": guard_history, "schedule_history": schedule_history,
+                 "calib_history": calib_history,
                  # HEALTH MARKER. A checkpoint written after a blow-up is still a valid file and a
                  # resume will happily continue from it -- run7 burned eight hours doing exactly
                  # that. Record the ratio against the best score so any consumer can tell a
@@ -1108,6 +1314,9 @@ def main():
             if a.gamma_vel > 0 or a.gamma_lock > 0:
                 fk_kw = dict(gamma_vel=a.gamma_vel, gamma_lock=a.gamma_lock,
                              fk_pack=fk_pack_of(b))
+            if a.gamma_acc > 0:
+                # independent of the dynamics pair: pure normalized-channel term, no fk_pack
+                fk_kw["gamma_acc"] = a.gamma_acc
             if a.gamma_fk > 0:
                 # hy273 recipe: linear warmup of the consistency weight -- full-strength FK
                 # penalties on the garbage x1_pred of the first steps destabilize more than they
@@ -1187,6 +1396,18 @@ def main():
                 gstep += 1
                 continue
             opt.step()
+            # PARAMETER RESYNC. DDP synchronises GRADIENTS, never parameters -- it relies on every
+            # rank computing the identical update from the identical gradient. Measured on the 8-rank
+            # 0.3B configuration that assumption breaks: with gradient norms of 2e3-4e4 the clip
+            # coefficient falls to ~3e-5, and the two smallest-gradient tensors (t_mlp.2.bias,
+            # text_mlp.3.bias) land at the edge of float32 resolution after rescaling. Their
+            # parameters then drift apart monotonically (2.6e-4 by step 1, 1.9e-3 by step 6) while
+            # every gradient stays bitwise equal. Broadcasting rank 0's parameters restores the
+            # invariant the design already assumes; it is a no-op whenever the ranks agree.
+            if ddp and a.param_resync_steps > 0 and gstep % a.param_resync_steps == 0:
+                with torch.no_grad():
+                    for _p in raw_model.parameters():
+                        dist.broadcast(_p.data, src=0)
             gnf = float(gn)
             g_sum += gnf; g_max = max(g_max, gnf)
             tot += float(loss.detach()); n += 1
@@ -1202,6 +1423,8 @@ def main():
                          "artic_strikes": artic_strikes,
                              # MID-epoch: resume must refuse this even if the file is renamed
                              "at_epoch_end": False, "guard_history": guard_history,
+                             "schedule_history": schedule_history,
+                             "calib_history": calib_history,
                              "healthy": last_health, "val_over_best": last_vob,
                              "ktjd_pins": ktjd_pins,
                              "rng": {"cpu": torch.get_rng_state(),
@@ -1242,7 +1465,8 @@ def main():
                          "epoch": ep, "gstep": gstep, "best_val": best_val, "args": vars(a),
                          "artic_strikes": artic_strikes,
                          "at_epoch_end": True,   # epoch boundary: resume-safe
-                         "guard_history": guard_history,
+                         "guard_history": guard_history, "schedule_history": schedule_history,
+                 "calib_history": calib_history,
                          # carries the health of the most recent validation: an epoch checkpoint
                          # written after a blow-up must not look resume-safe (codex 2026-08-24)
                          "healthy": last_health, "val_over_best": last_vob,

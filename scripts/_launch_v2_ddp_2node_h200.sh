@@ -74,10 +74,17 @@ GRAD_CLIP=${GRAD_CLIP:?gradient clip}
 # Reject (not clip) post-warmup gradient spikes. Bound because a dropped value silently restores
 # the failure mode that killed six runs; clipping alone does not stop it.
 GRAD_SPIKE=${GRAD_SPIKE:?pre-clip gradient norm above which a step is REJECTED (0 disables)}
+PARAM_RESYNC_STEPS=${PARAM_RESYNC_STEPS:?broadcast rank-0 parameters every N steps (0 disables)}
+QK_NORM=${QK_NORM:?1 or 0 -- RMS-normalise q,k per head (architecture-defining)}
+# strict 0/1: "true"/"2"/"01" would expand $([ = 1 ]) to NOTHING and silently train the OLD
+# architecture while the config says otherwise (codex 2026-08-26 blocker 2)
+case "$QK_NORM" in 0|1) ;; *) echo "[orch] QK_NORM must be exactly 0 or 1, got '$QK_NORM'"; exit 1 ;; esac
 SIGMA_MIN=${SIGMA_MIN:?v_space weight floor}
 GRAD_CKPT=${GRAD_CKPT:?1 or 0 -- activation checkpointing}
 COMPILE=${COMPILE:?1 or 0 -- torch.compile}
 JOINT_SEM=${JOINT_SEM:?joint-semantics npz}
+CAPTION_CACHE=${CAPTION_CACHE:?LLM2Vec caption-embedding cache prefix}
+TEXTS_JSON=${TEXTS_JSON:?caption text table the cache was built from}
 # OBJECTIVE + ARCHITECTURE bindings (codex 2026-08-23 final gate, BLOCKING 1 and 2). Every one of
 # these has a trainer default that is NOT what this project trains: gamma_fk/gamma_vel/gamma_lock
 # default to 0.0, and v_space/bf16/demo_rest/struct_feats/dir_bias default to OFF. Passing them
@@ -89,6 +96,7 @@ V_SPACE=${V_SPACE:?1 or 0 -- JiT velocity-space loss (SIGMA_MIN is inert when 0)
 GAMMA_FK=${GAMMA_FK:?FK auxiliary weight}
 FK_WARMUP=${FK_WARMUP:?FK warmup steps}
 GAMMA_VEL=${GAMMA_VEL:?velocity auxiliary weight}
+GAMMA_ACC=${GAMMA_ACC:?acceleration-matching weight (0 disables)}
 GAMMA_LOCK=${GAMMA_LOCK:?foot-lock auxiliary weight}
 DEMO_REST=${DEMO_REST:?1 or 0 -- rest-pose demo}
 DEMO_FRAMES=${DEMO_FRAMES:?demo frame count}
@@ -107,10 +115,11 @@ SMOKE=${SMOKE:-0}
 EXTRA=${EXTRA:-}
 case "$EXTRA" in *\'*|*\"*) echo "[orch] PREFLIGHT FAIL: EXTRA must not contain quotes"; exit 1;; esac
 for dup in --out --epochs --lr --batch --resume --corpus --ktjd_root --joint_sem \
+           --caption_cache --texts_json \
            --ktjd_percell_stats --ktjd_gamma_calib --exclude_clips --huber_delta \
            --dim --depth --lr_scheduler --lr_decay_epochs --eta_min_ratio --warmup_steps \
-           --wd --grad_clip --grad_spike_reject --sigma_min --grad_ckpt --compile \
-           --heads --bf16 --v_space --gamma_fk --fk_warmup_steps --gamma_vel --gamma_lock \
+           --wd --grad_clip --grad_spike_reject --param_resync_steps --sigma_min --grad_ckpt --compile \
+           --heads --bf16 --v_space --gamma_fk --fk_warmup_steps --gamma_vel --gamma_lock --gamma_acc --qk_norm \
            --demo_rest --demo_frames --struct_feats --dir_bias --random_caption --anchor \
            --p_drop_text --p_drop_demo --p_drop_both --t_sampler; do
   case " $EXTRA " in *" $dup "*|*" $dup="*) echo "[orch] PREFLIGHT FAIL: EXTRA must not set $dup"; exit 1;; esac
@@ -165,11 +174,12 @@ echo "[orch] world=$((2*GPUS_PER)) batch=$BATCH/rank -> global $((2*GPUS_PER*BAT
 echo "[orch] out=$OUT resume=${RESUME:-<none>} smoke=$SMOKE"
 echo "[orch] root=$KTJD_ROOT"
 echo "[orch] percell=$PERCELL calib=$CALIB"
+echo "[orch] captions=$CAPTION_CACHE texts=$TEXTS_JSON"
 echo "[orch] cut=$CUT huber=$HUBER joint_sem=$JOINT_SEM"
-echo "[orch] arch dim=$DIM depth=$DEPTH grad_ckpt=$GRAD_CKPT compile=$COMPILE"
+echo "[orch] arch dim=$DIM depth=$DEPTH grad_ckpt=$GRAD_CKPT compile=$COMPILE qk_norm=$QK_NORM"
 echo "[orch] sched=$LR_SCHED decay_ep=$LR_DECAY_EPOCHS eta_min=$ETA_MIN_RATIO warmup=$WARMUP"
 echo "[orch] wd=$WD grad_clip=$GRAD_CLIP spike_reject=$GRAD_SPIKE sigma_min=$SIGMA_MIN v_space=$V_SPACE bf16=$BF16"
-echo "[orch] gamma fk=$GAMMA_FK/warm$FK_WARMUP vel=$GAMMA_VEL lock=$GAMMA_LOCK t_sampler=$T_SAMPLER"
+echo "[orch] gamma fk=$GAMMA_FK/warm$FK_WARMUP vel=$GAMMA_VEL lock=$GAMMA_LOCK acc=$GAMMA_ACC t_sampler=$T_SAMPLER"
 echo "[orch] demo_rest=$DEMO_REST frames=$DEMO_FRAMES struct=$STRUCT_FEATS dir_bias=$DIR_BIAS"
 echo "[orch] heads=$HEADS anchor=$ANCHOR rand_cap=$RANDOM_CAPTION drops=$P_DROP_TEXT/$P_DROP_DEMO/$P_DROP_BOTH"
 for f in "$PERCELL" "$CALIB" "$CUT" "$JOINT_SEM"; do
@@ -191,12 +201,13 @@ run_rank() {  # $1 jobid  $2 node_rank
       --master_addr=$RDZV_HOST --master_port=$RDZV_PORT \
       scripts/train_v2_incontext.py $EXTRA \
       --corpus ktjd17 --ktjd_root $KTJD_ROOT --joint_sem $JOINT_SEM \
+      --caption_cache $CAPTION_CACHE --texts_json $TEXTS_JSON \
       --ktjd_percell_stats $PERCELL --ktjd_gamma_calib $CALIB --exclude_clips $CUT \
       --huber_delta $HUBER --sigma_min $SIGMA_MIN \
       --dim $DIM --depth $DEPTH --heads $HEADS \
-      --warmup_steps $WARMUP --wd $WD --grad_clip $GRAD_CLIP --grad_spike_reject $GRAD_SPIKE \
+      --warmup_steps $WARMUP --wd $WD --grad_clip $GRAD_CLIP --grad_spike_reject $GRAD_SPIKE --param_resync_steps $PARAM_RESYNC_STEPS \
       --gamma_fk $GAMMA_FK --fk_warmup_steps $FK_WARMUP \
-      --gamma_vel $GAMMA_VEL --gamma_lock $GAMMA_LOCK \
+      --gamma_vel $GAMMA_VEL --gamma_lock $GAMMA_LOCK --gamma_acc $GAMMA_ACC \
       --demo_frames $DEMO_FRAMES --anchor $ANCHOR --t_sampler $T_SAMPLER \
       --p_drop_text $P_DROP_TEXT --p_drop_demo $P_DROP_DEMO --p_drop_both $P_DROP_BOTH \
       $([ "$BF16" = 1 ] && echo --bf16) $([ "$V_SPACE" = 1 ] && echo --v_space) \
@@ -205,6 +216,7 @@ run_rank() {  # $1 jobid  $2 node_rank
       $([ "$RANDOM_CAPTION" = 1 ] && echo --random_caption) \
       --lr_scheduler $LR_SCHED --lr_decay_epochs $LR_DECAY_EPOCHS --eta_min_ratio $ETA_MIN_RATIO \
       $([ "$GRAD_CKPT" = 1 ] && echo --grad_ckpt) $([ "$COMPILE" = 1 ] && echo --compile) \
+      $([ "$QK_NORM" = 1 ] && echo --qk_norm) \
       --out $OUT --epochs $EPOCHS --lr $LR --batch $BATCH $RES_ARG $SMOKE_ARGS" \
     2>&1 | stdbuf -oL sed "s/^/[r$2] /"
 }
