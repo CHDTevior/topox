@@ -297,16 +297,18 @@ class AnyTopT2MEvaluator(nn.Module):
         learnable_temperature: bool = True,
         temperature: float = 0.07,
         max_logit_scale: float = 4.6051702,  # ln(100), CLIP cap
+        strict_frame_masking: bool = False,  # True only for new (KTJD) trainings; old
+                                             # ckpts predate the flag and must rebuild False
     ) -> None:
         super().__init__()
         if coemb_dim % n_heads != 0:
             raise ValueError(
                 f"coemb_dim ({coemb_dim}) must be divisible by n_heads ({n_heads})"
             )
-        if motion_feat_dim not in (12, 13):
+        if motion_feat_dim not in (12, 13, 16):
             raise ValueError(
-                f"AnyTopT2MEvaluator motion tower is AnyTop-13ch; motion_feat_dim must be "
-                f"13 (full) or 12 (drop the trailing contact channel ch12), got {motion_feat_dim}"
+                f"motion_feat_dim must be 13 (full AnyTop), 12 (AnyTop minus trailing "
+                f"contact) or 16 (KTJD-17 contact-free serve), got {motion_feat_dim}"
             )
         self.motion_feat_dim = int(motion_feat_dim)
         if not (0.0 < temperature):
@@ -351,6 +353,9 @@ class AnyTopT2MEvaluator(nn.Module):
             dropout=dropout,
             motion_mode="anytop13_split",
             attn_mode="graphormer",
+            # padded frames must not pollute valid tail frames through the temporal
+            # conv receptive field; ctor-controlled so legacy ckpts rebuild bit-identical
+            strict_frame_masking=strict_frame_masking,
         )
 
         # ---- Temperature / logit scale. ----
@@ -403,10 +408,22 @@ class AnyTopT2MEvaluator(nn.Module):
         # (kept channels: pos 0:3, rot6d 3:9, vel 9:12). Contact is per-joint-normalized
         # near-binary (std~0 -> any recon error blows up in normalized space and pollutes
         # the embedding), so the 12ch tower is the clean motion-semantics metric.
-        if batch.anytop_x.shape[2] != 13:                         # slice assumes ch12==contact
-            raise ValueError(f"encode_motion expects AnyTop 13ch anytop_x [B,J,13,T], "
-                             f"got C={batch.anytop_x.shape[2]}")
-        motion_in = batch.anytop_x.permute(0, 3, 1, 2)[..., :self.motion_feat_dim].contiguous()  # [B,T,J,motion_feat_dim]
+        C = batch.anytop_x.shape[2]
+        if C == 13:                                              # legacy corpus: tail = contact
+            if self.motion_feat_dim > 13:
+                raise ValueError(
+                    f"encode_motion: legacy 13ch input cannot feed a "
+                    f"motion_feat_dim={self.motion_feat_dim} tower (the [:16] slice "
+                    "would silently no-op and die later in a Linear shape error)")
+            motion_in = batch.anytop_x.permute(0, 3, 1, 2)[..., :self.motion_feat_dim].contiguous()
+        elif C == self.motion_feat_dim:
+            # KTJD contact-free serve: the dataset already dropped contact (mid-tensor there,
+            # so the drop cannot be a tail slice) and serves exactly motion_feat_dim channels
+            motion_in = batch.anytop_x.permute(0, 3, 1, 2).contiguous()
+        else:
+            raise ValueError(f"encode_motion: anytop_x has C={C}, expected 13 (legacy, "
+                             f"tail-sliced to {self.motion_feat_dim}) or exactly "
+                             f"motion_feat_dim={self.motion_feat_dim}")
         h = self.motion_encoder(
             motion_in,                       # [B, T, J, 13]
             batch.skeleton_features,         # [B, J, 9]

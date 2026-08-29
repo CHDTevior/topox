@@ -220,8 +220,14 @@ class AnyTopGraphAttentionBlock(nn.Module):
 class TemporalBlock(nn.Module):
     """Temporal convolution + attention for fusing motion dynamics."""
 
-    def __init__(self, d_model: int, kernel_size: int = 9, dropout: float = 0.1):
+    def __init__(self, d_model: int, kernel_size: int = 9, dropout: float = 0.1,
+                 strict_mask: bool = False):
         super().__init__()
+        # strict_mask: also zero padded frames at the input (residual) and after the
+        # LayerNorm (whose beta re-creates nonzero rows), so the conv receptive field
+        # never reads padded context. Default False = legacy behaviour (frozen VAE /
+        # VQVAE / 13ch-evaluator ckpts were trained with the leak and must not drift).
+        self.strict_mask = strict_mask
         padding = (kernel_size - 1) // 2
         self.conv = nn.Sequential(
             nn.Conv1d(d_model, d_model, kernel_size, padding=padding, groups=1),
@@ -238,8 +244,12 @@ class TemporalBlock(nn.Module):
             x: [B, T, D] or [B*J, T, D]
             mask: [B, T] or [B*J, T] bool
         """
+        if self.strict_mask and mask is not None:
+            x = x * mask.unsqueeze(-1).float()
         residual = x
         x = self.norm(x)
+        if self.strict_mask and mask is not None:
+            x = x * mask.unsqueeze(-1).float()
         # Conv expects [B, D, T]
         x = x.permute(0, 2, 1)
         x = self.conv(x)
@@ -263,6 +273,7 @@ class SkeletonEncoder(nn.Module):
         d_ff: int = 1024,
         n_graph_layers: int = 6,
         n_temporal_layers: int = 4,
+        strict_frame_masking: bool = False,
         joint_feat_dim: int = 9,       # from SkeletonGraph.get_joint_features()
         motion_feat_dim: int = 6,      # fk6: local_pos(3)+vel(3); anytop13: 13ch
         clip_embed_dim: int = 768,     # CLIP text embedding dim
@@ -359,7 +370,8 @@ class SkeletonEncoder(nn.Module):
 
         # Temporal layers (operate along time for each joint)
         self.temporal_layers = nn.ModuleList([
-            TemporalBlock(d_model, temporal_kernel, dropout)
+            TemporalBlock(d_model, temporal_kernel, dropout,
+                          strict_mask=strict_frame_masking)
             for _ in range(n_temporal_layers)
         ])
 

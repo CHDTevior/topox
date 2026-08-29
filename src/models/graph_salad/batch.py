@@ -515,7 +515,9 @@ class GraphMotionBatch:
         # unified path never emits these, so this whole block is skipped there.
         # Spec: (key, expected_rank, expected_full_shape_excluding_B).
         _OPTIONAL_TENSOR_SPEC = (
-            ("anytop_x",               4, (J_max_val, 13, T_max_val)),
+            # channel axis: 13 = legacy AnyTop corpus, 16 = KTJD-17 contact-free serve
+            # (q_pos/rot6d/vel/smooth_root/heading; ch12 contact dropped at the dataset)
+            ("anytop_x",               4, (J_max_val, {13, 16}, T_max_val)),
             ("anytop_graph_dist",      3, (J_max_val, J_max_val)),
             ("anytop_joint_relations", 3, (J_max_val, J_max_val)),
             ("foot_contact_per_joint", 3, (T_max_val, J_max_val)),
@@ -540,8 +542,11 @@ class GraphMotionBatch:
             # A None entry in tail_shape means that axis is free (e.g. the sentence-encoder
             # dimension), so it is checked for rank and for every pinned axis only.
             want = (B, *tail_shape)
+            # a set entry means the axis may take any listed value (e.g. anytop_x channels
+            # 13 legacy / 16 KTJD contact-free); None means the axis is free
             if t.dim() != expected_rank or any(
-                    w is not None and g != w for g, w in zip(tuple(t.shape), want)):
+                    (g not in w if isinstance(w, (set, frozenset)) else
+                     (w is not None and g != w)) for g, w in zip(tuple(t.shape), want)):
                 raise ValueError(
                     f"GraphMotionBatch: optional '{key}' must have shape "
                     f"{want} (None = free), got {tuple(t.shape)}"

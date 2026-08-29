@@ -50,8 +50,17 @@ from src.models.graph_salad.t2m_evaluator import (
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--ckpt", required=True, help="frozen evaluator .pt (best_model.pt).")
-    ap.add_argument("--val_manifest", required=True)
-    ap.add_argument("--data_root", required=True)
+    ap.add_argument("--dataset", default="anytop", choices=["anytop", "ktjd17"])
+    ap.add_argument("--val_manifest", default=None, help="required for --dataset anytop.")
+    ap.add_argument("--data_root", default=None, help="required for --dataset anytop.")
+    # ---- ktjd17 corpus (PZ-animal 16ch contact-free; scores are PZ-only/16ch/T=240,
+    #      NOT comparable to legacy 13ch evaluator numbers) ----
+    ap.add_argument("--ktjd_root", default="dataset/ktjd17_pzh312_noik_v2")
+    ap.add_argument("--ktjd_caption_cache", default="data/noik_caption_llm2vec_v1")
+    ap.add_argument("--ktjd_joint_sem", default="data/joint_semantics_llm2vec_pzh312_v1.npz")
+    ap.add_argument("--ktjd_percell", default="data/noik_norm_stats_v2.npz")
+    ap.add_argument("--ktjd_exclude", default="configs/pilot_animal_only_exclusions.json")
+    ap.add_argument("--ktjd_texts_json", default="data/noik_pzh312_motion_texts_v1.json")
     ap.add_argument("--pool", type=int, default=32, help="R-precision pool size (training used 32).")
     ap.add_argument("--num_frames", type=int, default=300)
     ap.add_argument("--max_joints", type=int, default=144)
@@ -123,6 +132,7 @@ def main() -> int:
         motion_feat_dim=g("motion_feat_dim", 13),  # 12ch (contact-free) ckpt rebuilds at 12; old 13ch -> 13
         dropout=g("dropout", 0.1),
         learnable_temperature=not g("fixed_temperature", False), temperature=g("temperature", 0.07),
+        strict_frame_masking=g("strict_frame_masking", False),  # old ckpts lack the field -> False
     )
     missing, unexpected = core.load_state_dict(ckpt["model"], strict=False)
     # tolerate ONLY the frozen DistilBERT backbone (text_distilbert.text_model.*), which
@@ -137,11 +147,27 @@ def main() -> int:
     print(f"[sanity] loaded {args.ckpt} (epoch={ckpt.get('epoch','?')} "
           f"saved_val={ckpt.get('val','?')}) text_tower={text_tower}", flush=True)
 
-    ds = AnyTopT2MEvalDataset(
-        manifest_path=args.val_manifest, data_root=args.data_root,
-        caption_emb_cache=None, split="val", view="full",
-        num_frames=args.num_frames, max_joints=args.max_joints,
-    )
+    if args.dataset == "ktjd17":
+        print("[sanity] corpus=ktjd17 (PZ-only, 16ch contact-free, T=240) -- scores are "
+              "NOT comparable to legacy 13ch evaluator numbers; object_type=rig, so "
+              "the within-species section reads as WITHIN-RIG", flush=True)
+        from src.data.ktjd17_incontext import Ktjd17Base
+        from src.data.ktjd17_t2m_eval_dataset import Ktjd17T2MEvalDataset
+        kbase = Ktjd17Base(args.ktjd_root, caption_emb_cache=args.ktjd_caption_cache,
+                           joint_semantics=args.ktjd_joint_sem,
+                           percell_stats=args.ktjd_percell,
+                           exclude_clips=args.ktjd_exclude,
+                           texts_json=args.ktjd_texts_json)
+        ds = Ktjd17T2MEvalDataset(kbase, "val", max_frames=240,
+                                  exclude=args.ktjd_exclude)
+    else:
+        if not args.val_manifest or not args.data_root:
+            raise SystemExit("--val_manifest/--data_root are required for --dataset anytop")
+        ds = AnyTopT2MEvalDataset(
+            manifest_path=args.val_manifest, data_root=args.data_root,
+            caption_emb_cache=None, split="val", view="full",
+            num_frames=args.num_frames, max_joints=args.max_joints,
+        )
     loader = DataLoader(ds, batch_size=args.encode_batch, shuffle=False,
                         num_workers=args.num_workers, collate_fn=collate_fn, drop_last=False)
 

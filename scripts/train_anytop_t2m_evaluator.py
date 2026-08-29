@@ -104,8 +104,17 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--holdout_sha", type=str, default=None)
     ap.add_argument("--allow_no_holdout", action="store_true",
                     help="run WITHOUT the guard; logs loudly and must not back any unseen claim.")
-    ap.add_argument("--manifest", required=True, help="M0 train_main.json manifest.")
-    ap.add_argument("--data_root", required=True, help="AnyTop merged data root.")
+    ap.add_argument("--dataset", default="anytop", choices=["anytop", "ktjd17"],
+                    help="ktjd17 = the PZ-animal KTJD-17 corpus via Ktjd17T2MEvalDataset "
+                         "(16ch contact-free serve; graph fields derived from rig parents)")
+    ap.add_argument("--ktjd_root", default="dataset/ktjd17_pzh312_noik_v2")
+    ap.add_argument("--ktjd_exclude", default="configs/pilot_animal_only_exclusions.json")
+    ap.add_argument("--ktjd_percell", default="data/noik_norm_stats_v2.npz")
+    ap.add_argument("--ktjd_caption_cache", default="data/noik_caption_llm2vec_v1")
+    ap.add_argument("--ktjd_joint_sem", default="data/joint_semantics_llm2vec_pzh312_v1.npz")
+    ap.add_argument("--ktjd_texts_json", default="data/noik_pzh312_motion_texts_v1.json")
+    ap.add_argument("--manifest", default="", help="M0 train_main.json manifest (anytop path).")
+    ap.add_argument("--data_root", default="", help="AnyTop merged data root (anytop path).")
     ap.add_argument("--caption_emb_cache", default=None,
                     help="T5 sidecar prefix; ONLY for --text_tower t5_cache. "
                          "Leave unset for the DistilBERT primary path.")
@@ -133,7 +142,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--d_ff", type=int, default=2048)
     ap.add_argument("--n_graph_layers", type=int, default=6)
     ap.add_argument("--n_temporal_layers", type=int, default=4)
-    ap.add_argument("--motion_feat_dim", type=int, default=13, choices=[12, 13],
+    ap.add_argument("--motion_feat_dim", type=int, default=13, choices=[12, 13, 16],
                     help="motion-tower input channels: 13=full AnyTop, 12=drop contact ch12 "
                          "(contact-free clean motion-semantics evaluator).")
     ap.add_argument("--dropout", type=float, default=0.1)
@@ -158,7 +167,36 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def build_dataset(args) -> AnyTopT2MEvalDataset:
+def build_dataset(args):
+    if args.dataset == "ktjd17":
+        # fail closed: the wrapper serves exactly 16ch / T=240 (15,037/77,894 clips
+        # truncate at 240 by design -- the v2 mainline length); any other setting
+        # would train a tower the corpus cannot feed.
+        if args.motion_feat_dim != 16:
+            raise SystemExit(f"--dataset ktjd17 requires --motion_feat_dim 16 "
+                             f"(got {args.motion_feat_dim})")
+        if args.num_frames != 240:
+            raise SystemExit(f"--dataset ktjd17 requires --num_frames 240 "
+                             f"(got {args.num_frames})")
+        # new corpus, fresh tower: train with strict temporal padding-masking. Injected
+        # into the Namespace (not a CLI flag) so vars(args) persists it in every ckpt
+        # and rebuild sites can restore it; anytop stays False = legacy behaviour.
+        args.strict_frame_masking = True
+        # PZ-animal corpus: the wrapper serves 16ch contact-free tensors plus the full
+        # GraphMotionBatch schema; no holdout artifact exists for this corpus (train/val
+        # splits only), so the guard is bypassed by construction, not by flag.
+        from src.data.ktjd17_incontext import Ktjd17Base
+        from src.data.ktjd17_t2m_eval_dataset import Ktjd17T2MEvalDataset
+        base = Ktjd17Base(args.ktjd_root, caption_emb_cache=args.ktjd_caption_cache,
+                          joint_semantics=args.ktjd_joint_sem,
+                          percell_stats=args.ktjd_percell,
+                          exclude_clips=args.ktjd_exclude,
+                          texts_json=args.ktjd_texts_json)
+        return Ktjd17T2MEvalDataset(base, args.split, max_frames=args.num_frames,
+                                    exclude=args.ktjd_exclude)
+    args.strict_frame_masking = False   # legacy corpus keeps the (leaky) trained-in behaviour
+    if not args.manifest or not args.data_root:
+        raise SystemExit("--manifest/--data_root are required for --dataset anytop")
     ds = AnyTopT2MEvalDataset(
         manifest_path=args.manifest,
         data_root=args.data_root,
@@ -193,6 +231,7 @@ def build_model(args) -> AnyTopT2MEvaluator:
         dropout=args.dropout,
         learnable_temperature=not args.fixed_temperature,
         temperature=args.temperature,
+        strict_frame_masking=getattr(args, "strict_frame_masking", False),
     )
 
 
@@ -316,7 +355,19 @@ def main() -> int:
     # Held-out val loader (rank-0 only) — the per-epoch val gate + best-by-val safety
     # net (HumanML3D-style). Full R@K/shuffle/source gates (M5) are still post-training.
     val_loader = None
-    if args.val_manifest and is_main(rank):
+    if args.dataset == "ktjd17" and is_main(rank):
+        from src.data.ktjd17_incontext import Ktjd17Base
+        from src.data.ktjd17_t2m_eval_dataset import Ktjd17T2MEvalDataset
+        vbase = Ktjd17Base(args.ktjd_root, caption_emb_cache=args.ktjd_caption_cache,
+                           joint_semantics=args.ktjd_joint_sem,
+                           percell_stats=args.ktjd_percell,
+                           exclude_clips=args.ktjd_exclude,
+                           texts_json=args.ktjd_texts_json)
+        val_ds = Ktjd17T2MEvalDataset(vbase, "val", max_frames=args.num_frames,
+                                      exclude=args.ktjd_exclude)
+        val_loader = DataLoader(val_ds, batch_size=args.val_batch_size, shuffle=False,
+                                num_workers=2, collate_fn=collate_fn, drop_last=True)
+    elif args.val_manifest and is_main(rank):
         val_ds = AnyTopT2MEvalDataset(
             manifest_path=args.val_manifest, data_root=args.data_root,
             caption_emb_cache=(args.caption_emb_cache if args.text_tower == "t5_cache" else None),
@@ -408,7 +459,8 @@ def main() -> int:
                 json.dumps({"epoch": epoch, "loss": loss.item()}) + "\n")
 
         # --- held-out val gate (rank-0 runs val_eval; all ranks barrier to stay in step) ---
-        run_val = bool(args.val_manifest) and args.val_every > 0 and (epoch + 1) % args.val_every == 0
+        run_val = ((bool(args.val_manifest) or args.dataset == "ktjd17")
+                   and args.val_every > 0 and (epoch + 1) % args.val_every == 0)
         if run_val and val_loader is not None and is_main(rank):
             vm = val_eval(core, val_loader, device, args.text_tower, args.val_max_batches)
             if vm is not None:
