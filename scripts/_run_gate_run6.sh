@@ -9,6 +9,9 @@ cd "$P" || exit 1
 # the gate and the real launch read the SAME file -- that is what makes a PASS transferable
 CFG=${CFG:-configs/run9_env.sh}
 [ -f "$CFG" ] || { echo "[gate] missing $CFG"; exit 1; }
+# only the CFG may define the fabric -- a stray parent-shell NCCL value must not leak
+# into a CFG that does not declare one (codex run12 r2)
+unset NCCL_SOCKET_IFNAME NCCL_IB_HCA
 set -a; . "$CFG"; set +a
 RDZV_PORT=${GATE_PORT:-29537}   # never the training port: a stale gate must not block a launch
 # `set -a` above already exported every CFG value, which srun inherits -- no hand-copied list.
@@ -30,8 +33,11 @@ for _n in "$MASTER_NODE" "$WORKER_NODE"; do
   [ "$_cnt" = "$GPUS_PER" ] || { echo "[gate] $_n has $_cnt GPUs, expected $GPUS_PER"; exit 1; }
   case "$_gpu" in *H200*) ;; *) echo "[gate] $_n is not H200 ($_gpu)"; exit 1 ;; esac
 done
-N="NCCL_P2P_DISABLE=0 NCCL_SHM_DISABLE=0 NCCL_IB_DISABLE=0 NCCL_SOCKET_IFNAME=ib1 \
-NCCL_IB_HCA=mlx5_1 TORCH_NCCL_ASYNC_ERROR_HANDLING=1"
+# HCA/iface come from the CFG (same knobs the launcher reads) -- pink7005/7013's live
+# fabric is ib1 -> mlx5_3, and a hard-coded mlx5_1 gates a network nobody will train on.
+N="NCCL_P2P_DISABLE=0 NCCL_SHM_DISABLE=0 NCCL_IB_DISABLE=0 \
+NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-ib1} \
+NCCL_IB_HCA=${NCCL_IB_HCA:-mlx5_1} TORCH_NCCL_ASYNC_ERROR_HANDLING=1"
 run() { srun --jobid="$1" --overlap --ntasks=1 --gres=gpu:$GPUS_PER --cpus-per-task=$CPUS --no-kill \
   bash -c "cd $P && env $N torchrun --nnodes=2 --nproc_per_node=$GPUS_PER --node_rank=$2 \
     --master_addr=$RDZV_HOST --master_port=$RDZV_PORT scripts/_gate_run6_4rank.py" 2>&1 \
