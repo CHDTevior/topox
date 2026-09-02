@@ -11,11 +11,21 @@ set -uo pipefail
 cd /scratch/ts1v23/workspace/noKslot_clean
 SMOKE=${SMOKE:-0}
 INIT=${INIT:-runs/v2_noik_run12_896_r1acc/best_model.pt}
-OUT=${OUT:-runs/lora_tb_${RIG}_r64_v1}
+# OUT defaults to a name derived from the data VIEW so two views can never share a run dir
+# (codex 2026-09-02 r7 #6): dataset/ktjd17_truebones_lora_v1 -> runs/lora_tb_<rig>_r64_v1,
+# dataset/ktjd17_truebones_lora_v2_mainbody -> runs/lora_tb_<rig>_r64_v2_mainbody.
+KTJD_ROOT=${KTJD_ROOT:-dataset/ktjd17_truebones_lora_v1}
+VIEW_TAG=$(basename "$KTJD_ROOT"); VIEW_TAG=${VIEW_TAG#ktjd17_truebones_lora_}
+OUT=${OUT:-runs/lora_tb_${RIG}_r64_${VIEW_TAG}}
 CALIB=${CALIB:-configs/tb_$(echo "$RIG" | tr 'A-Z' 'a-z')_gamma_calibration_v1.json}
 CUT=configs/tb_lora_${RIG}_only_exclusions.json   # written only for ELIGIBLE rigs by the builder
-for f in "$INIT" "$CALIB" "$CUT" data/tb_norm_stats_v2.npz data/tb_caption_llm2vec_pzstyle_v1.keys.json \
-         data/joint_semantics_llm2vec_ktjd17_v1.npz data/tb_motion_texts_pzstyle_v1.json; do
+# Data view (defaults = the v1 view). The pruned "main body" view v2 (user 2026-09-02) is selected by
+# KTJD_ROOT/PERCELL/JOINT_SEM together with its own CALIB; the three must belong to ONE view --
+# Ktjd17Base verifies the stats / rig_table / exclusion shas against the view's derivation.json.
+PERCELL=${PERCELL:-data/tb_norm_stats_v2.npz}
+JOINT_SEM=${JOINT_SEM:-data/joint_semantics_llm2vec_ktjd17_v1.npz}
+for f in "$INIT" "$CALIB" "$CUT" "$PERCELL" "$JOINT_SEM" "$KTJD_ROOT/derivation.json" data/tb_caption_llm2vec_pzstyle_v1.keys.json \
+         data/tb_motion_texts_pzstyle_v1.json; do
   [ -s "$f" ] || { echo "[lora] missing $f"; exit 1; }
 done
 # LoRA knobs (rank 64 per user; alpha = r -> scale 1; lr 1e-4 is the usual LoRA lr, ~0.7x the
@@ -35,11 +45,14 @@ FK_WARMUP=${FK_WARMUP:-100}
 # torch.compile is deliberately OFF here (run12 had COMPILE=1): ~76 s of compilation is not worth it
 # for a ~600-step run, and LoRA + compile has no smoke of its own yet. Throughput-only difference.
 [ "$SMOKE" = 1 ] && { EPOCHS=2; OUT=${OUT}_smoke; }
+# never write into a run dir that already holds a training log (a second launch would truncate
+# the first run's train.log through tee); remove it explicitly or pick another OUT
+if [ -e "$OUT/train.log" ] && [ "${FORCE_OUT:-0}" != 1 ]; then echo "[lora] refuse: $OUT/train.log exists (set OUT=... or FORCE_OUT=1)"; exit 1; fi
 # the rig must have at least one full training batch and a source-disjoint val set (rig_table.json)
-python - "$RIG" "$BATCH" << 'RIGCHECK'
+python - "$RIG" "$BATCH" "$KTJD_ROOT" << 'RIGCHECK'
 import json, sys
 rig, batch = sys.argv[1], int(sys.argv[2])
-t = json.load(open("dataset/ktjd17_truebones_lora_v1/splits/lora_v1/rig_table.json"))
+t = json.load(open(sys.argv[3] + "/splits/lora_v1/rig_table.json"))
 if rig not in t: raise SystemExit(f"[lora] refuse: rig {rig} not in rig_table.json")
 r = t[rig]
 if not r["eligible"] or r["n_train"] < batch or r["n_val"] < 1:
@@ -57,12 +70,12 @@ mkdir -p "$OUT"
 # regression was never marked complete in the artifact, while its own visual gate (66/66 rigs,
 # verdict pass) and fixed QA (986 clips, 0 fail) both passed. Training here is the user's explicit
 # OOD experiment (2026-09-02); the flag records that authorization without touching the artifact.
-echo "[lora] rig=$RIG out=$OUT init=$INIT calib=$CALIB cut=$CUT r=$LORA_R alpha=$LORA_ALPHA targets=$LORA_TARGETS lr=$LR epochs=$EPOCHS"
+echo "[lora] rig=$RIG out=$OUT view=$KTJD_ROOT stats=$PERCELL sem=$JOINT_SEM init=$INIT calib=$CALIB cut=$CUT r=$LORA_R alpha=$LORA_ALPHA targets=$LORA_TARGETS lr=$LR epochs=$EPOCHS"
 srun --jobid="$SKIN_JOBID" --ntasks=1 --cpus-per-task=${CPUS:-8} --gres=gpu:1 --mem=${MEM:-96G} \
   /usr/bin/env HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python scripts/train_v2_incontext.py \
-  --out "$OUT" --corpus ktjd17 --ktjd_root dataset/ktjd17_truebones_lora_v1 \
-  --joint_sem data/joint_semantics_llm2vec_ktjd17_v1.npz --caption_cache data/tb_caption_llm2vec_pzstyle_v1 \
-  --texts_json data/tb_motion_texts_pzstyle_v1.json --ktjd_percell_stats data/tb_norm_stats_v2.npz \
+  --out "$OUT" --corpus ktjd17 --ktjd_root "$KTJD_ROOT" \
+  --joint_sem "$JOINT_SEM" --caption_cache data/tb_caption_llm2vec_pzstyle_v1 \
+  --texts_json data/tb_motion_texts_pzstyle_v1.json --ktjd_percell_stats "$PERCELL" \
   --ktjd_gamma_calib "$CALIB" --exclude_clips "$CUT" \
   --dim 896 --depth 14 --heads 14 --qk_norm --grad_ckpt \
   --lr "$LR" --batch "$BATCH" --epochs "$EPOCHS" --warmup_steps "$WARMUP" --wd 0.01 --grad_clip 1.0 \

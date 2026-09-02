@@ -583,7 +583,10 @@ def main():
         _view_now = {"exclusion_sha256": (base.provenance_exclusion or {}).get("sha256") or "none",
                      "train_ids_sha256": _train_ids_sha,
                      "manifest_sha256": hashlib.sha256(
-                         (Path(a.ktjd_root) / "manifests" / "clips.jsonl").read_bytes()).hexdigest()}
+                         (Path(a.ktjd_root) / "manifests" / "clips.jsonl").read_bytes()).hexdigest(),
+                     # the gammas were measured with one joint-description table; a pruned view ships
+                     # another (codex 2026-09-02 r7 #5). Every artifact so far records this key.
+                     "joint_sem_sha256": hashlib.sha256(Path(a.joint_sem).read_bytes()).hexdigest()}
         for hk, now in _view_now.items():
             have = calib["hashes"].get(hk)
             if have is None and getattr(base, "derivation", None) is not None:

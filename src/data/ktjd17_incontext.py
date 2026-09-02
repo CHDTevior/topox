@@ -196,6 +196,11 @@ class Ktjd17Base:
                 "norm_stats": (Path(percell_stats), (self.derivation.get("norm_stats") or {}).get("sha256")),
                 "texts_json": (Path(texts_json), (self.derivation.get("texts_json") or {}).get("sha256")),
             }
+            # a view that ships its own joint-semantics table (joint-pruned view, 2026-09-02) must be
+            # served with exactly that table; the per-rig order hash alone would accept any table whose
+            # names match (codex r7 #5). v1-style derivations that declare none keep the order-hash check only.
+            if "joint_semantics" in self.derivation:
+                _want["joint_semantics"] = (Path(joint_semantics), (self.derivation.get("joint_semantics") or {}).get("sha256"))
             if exclude_clips:
                 # fail-closed: a derived view may only be cut by an exclusion artifact its
                 # derivation declares (codex 2026-09-02 round 3) -- an undeclared cut is refused
