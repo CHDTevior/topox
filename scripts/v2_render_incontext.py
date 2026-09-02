@@ -235,7 +235,20 @@ def main():
     ap.add_argument("--joint_sem", default="data/joint_semantics_llm2vec_v1.npz")
     ap.add_argument("--caption_cache", default="data/anytop_caption_llm2vec_v4b272neutral_multi")
     ap.add_argument("--texts_json", default="motion_texts_by_file_clean_v1.json")
+    ap.add_argument("--allow_corpus_swap", action="store_true",
+                    help="ktjd17: render a ckpt ZERO-SHOT on a corpus it was not trained on (different "
+                         "generation/stats/captions). The pins drift is printed and written to "
+                         "summary.txt instead of refusing; use only for deliberate OOD baselines.")
+    ap.add_argument("--exclude_clips", default="",
+                    help="ktjd17 + --allow_corpus_swap only: the swapped corpus' own clip-exclusion artifact "
+                         "(the ckpt's cut names clips of another corpus)")
+    ap.add_argument("--percell_stats", default="",
+                    help="ktjd17: override the per-cell stats path stored in the ckpt (needed to run a "
+                         "PZ-trained ckpt zero-shot on another corpus whose rigs the ckpt stats lack)")
     a = ap.parse_args()
+    if a.exclude_clips and not a.allow_corpus_swap:
+        raise SystemExit("[refuse] --exclude_clips is only honoured together with --allow_corpus_swap "
+                         "(the ckpt's own cut is authoritative otherwise)")
     if a.corpus == "ktjd17" and a.joint_sem == ap.get_default("joint_sem"):
         # the legacy AnyTop table fails the KTJD order hash on the first rig (same defect codex
         # round-S0 found in the trainer); select the KTJD table when none was chosen explicitly
@@ -270,27 +283,50 @@ def main():
     ep = ck.get("epoch", -1)
     print(f"[render] ckpt {a.ckpt} (epoch {ep}) on {dev}", flush=True)
 
+    corpus_swap_note = ""
     if a.corpus == "ktjd17":
         from src.data.ktjd17_incontext import Ktjd17Base, ktjd17_split_names
         pins_ck = ck.get("ktjd_pins") or {}
+        # The CHECKPOINT names the data it was trained on. Unless this is an explicit zero-shot
+        # corpus swap, every data argument is back-filled from the ckpt BEFORE the loader is built
+        # (codex 2026-09-02 round 4: filling ktjd_root afterwards built a LoRA ckpt's PARENT view
+        # and its derived-view pins were then skipped by the key-intersection drift check).
+        if not a.allow_corpus_swap:
+            for k_ in ("ktjd_root", "joint_sem", "caption_cache", "texts_json"):
+                if k_ in ca and getattr(a, k_) != ca[k_]:
+                    print(f"[render] {k_}: {getattr(a, k_)!r} -> {ca[k_]!r} (from ckpt)", flush=True)
+                    setattr(a, k_, ca[k_])
         base = Ktjd17Base(a.ktjd_root, caption_emb_cache=a.caption_cache,
                           joint_semantics=a.joint_sem, texts_json=a.texts_json,
-                          percell_stats=ca.get("ktjd_percell_stats",
-                                               "data/ktjd17_percell_stats_v1.npz"),
+                          percell_stats=(a.percell_stats or ca.get("ktjd_percell_stats",
+                                                                    "data/ktjd17_percell_stats_v1.npz")),
                           # the cut comes from the CKPT, never a render-time default: rendering a
-                          # model against data it was not trained on is the drift this refuses.
-                          exclude_clips=(ca.get("exclude_clips") or None))
+                          # model against data it was not trained on is the drift this refuses --
+                          # except for an explicit zero-shot corpus swap, whose own cut applies.
+                          exclude_clips=((a.exclude_clips if a.allow_corpus_swap else "")
+                                         or ca.get("exclude_clips") or None))
         # `exclusion` is NOT in base.provenance -- it lives on base.provenance_exclusion -- so a
         # key-intersection drift check silently misses a swapped cut file at the same path, which
         # changes render/eval membership under an unchanged checkpoint (codex 2026-08-21 (A)4).
         live = {**base.provenance, "exclusion": base.provenance_exclusion}
+        # BIDIRECTIONAL over the DATA pins: a data pin the ckpt carries but the live corpus lacks
+        # (a derived view's manifest/derivation sha rendered against its parent) is drift, not a
+        # skip. Objective pins the trainer adds to ktjd_pins (gammas, gamma_calib_*, group_spec,
+        # gate_override, in_ch, ...) describe the run, not the data, and are not compared here.
+        data_keys = set(live) | {"manifest_sha256", "derivation_sha256"}
         drift = sorted(k for k, v in pins_ck.items()
-                       if k in live and live[k] != v)
-        if drift:
+                       if k in data_keys and (k not in live or live[k] != v))
+        if drift and a.allow_corpus_swap:
+            corpus_swap_note = (f"ZERO-SHOT CORPUS SWAP: ckpt pins differ on {drift}; rendered on "
+                                f"{a.ktjd_root} with stats {a.percell_stats or 'ckpt'} by explicit request")
+            print(f"[render] {corpus_swap_note}", flush=True)
+        elif drift:
             raise SystemExit(f"[refuse] render-time data does not match what this checkpoint was "
                              f"trained on: {drift}. Rendering a model against replaced artifacts "
-                             f"produces a picture of nothing.")
-        names = ktjd17_split_names(a.ktjd_root, exclude=(ca.get("exclude_clips") or None))
+                             f"produces a picture of nothing (pass --allow_corpus_swap for a "
+                             f"deliberate zero-shot baseline on another corpus).")
+        names = ktjd17_split_names(a.ktjd_root, exclude=((a.exclude_clips if a.allow_corpus_swap else "")
+                                                        or ca.get("exclude_clips") or None))
         tb = None
     else:
         cond = pickle.load(open(f"{a.data_root}/_cond_normalized_J144.pkl", "rb"))
@@ -307,7 +343,7 @@ def main():
     # different target window, corpus root or conditioning surface than the run was trained on
     # makes the visual acceptance meaningless, and visual acceptance is this project's only
     # quality gate.
-    for k_ in ("target_frames", "ktjd_root"):
+    for k_ in ("target_frames",):                  # ktjd_root is back-filled BEFORE the loader above
         if k_ in ca and getattr(a, k_) != ca[k_]:
             print(f"[render] {k_}: {getattr(a, k_)!r} -> {ca[k_]!r} (from ckpt)", flush=True)
             setattr(a, k_, ca[k_])
@@ -474,7 +510,9 @@ def main():
                      f"root_ric={jit_root:.3f}x root_fk={jfk_root:.3f}x{static_warn}"
                      f"\tcaption: {cap}\tdemo={item['demo_id']} target={item['motion_id']}")
     (out / "summary.txt").write_text(
-        f"ckpt={a.ckpt} epoch={ep} steps={a.steps} seed={a.seed} cfg_text={a.cfg_text} smooth_mincutoff={a.smooth_mincutoff} smooth_beta={a.smooth_beta} panels=demo|gen_ric|gen_fk|gt\n" + "\n".join(lines) + "\n")
+        f"ckpt={a.ckpt} epoch={ep} steps={a.steps} seed={a.seed} cfg_text={a.cfg_text} smooth_mincutoff={a.smooth_mincutoff} smooth_beta={a.smooth_beta} panels=demo|gen_ric|gen_fk|gt\n"
+        + (f"{corpus_swap_note}\n" if a.corpus == "ktjd17" and corpus_swap_note else "")
+        + "\n".join(lines) + "\n")
     print(f"[render] DONE -> {out}", flush=True)
 
 

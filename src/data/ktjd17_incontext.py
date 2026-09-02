@@ -168,7 +168,52 @@ class Ktjd17Base:
             if float((sd_ + _STD_FLOOR).min()) <= 0.0:
                 raise RuntimeError(f"per-cell stats for {r_!r} have a non-positive effective std")
 
-        rows = [json.loads(l) for l in open(self.root / "manifests" / "clips.jsonl")]
+        # A DERIVED TRAINING VIEW (e.g. the per-species LoRA corpus, 2026-09-02) keeps the parent's
+        # frozen generation.json but ships its own manifest. It must declare itself: derivation.json
+        # names the parent generation and the exact manifest bytes it serves, we verify both and
+        # pin them, so a manifest swapped under an unchanged generation cannot pass a launch, a
+        # resume or a render (codex 2026-09-02 P0-2).
+        self.derivation = None
+        deriv_p = self.root / "derivation.json"
+        manifest_p = self.root / "manifests" / "clips.jsonl"
+        manifest_sha = hashlib.sha256(manifest_p.read_bytes()).hexdigest()
+        if deriv_p.is_file():
+            self.derivation = json.loads(deriv_p.read_text())
+            if str(self.derivation.get("parent_generation_id")) != self.generation_id:
+                raise RuntimeError(f"derivation.json names parent generation "
+                                   f"{self.derivation.get('parent_generation_id')}, corpus generation.json "
+                                   f"says {self.generation_id}")
+            if str(self.derivation.get("derived_manifest_sha256")) != manifest_sha:
+                raise RuntimeError(f"derived manifest {manifest_p} hashes {manifest_sha[:16]}, derivation.json "
+                                   f"pins {str(self.derivation.get('derived_manifest_sha256'))[:16]} -- the "
+                                   f"training view was edited after it was declared")
+            # the declared inputs must be the ones actually served: parent generation.json copy, the
+            # rig table, and -- when this loader is handed them -- the stats / texts / exclusion files
+            _want = {
+                "generation.json": (self.root / "generation.json", self.derivation.get("parent_generation_json_sha256")),
+                "rig_table": (self.root / "splits" / "lora_v1" / "rig_table.json",
+                              (self.derivation.get("split") or {}).get("rig_table_sha256")),
+                "norm_stats": (Path(percell_stats), (self.derivation.get("norm_stats") or {}).get("sha256")),
+                "texts_json": (Path(texts_json), (self.derivation.get("texts_json") or {}).get("sha256")),
+            }
+            if exclude_clips:
+                # fail-closed: a derived view may only be cut by an exclusion artifact its
+                # derivation declares (codex 2026-09-02 round 3) -- an undeclared cut is refused
+                declared = self.derivation.get("exclusions") or {}
+                if str(exclude_clips) not in declared:
+                    raise RuntimeError(f"exclusion {exclude_clips} is not declared in {deriv_p} "
+                                       f"(declared: {sorted(declared)[:6]}...) -- refusing an undeclared cut "
+                                       f"on a derived view")
+                _want["exclusion"] = (Path(exclude_clips), declared[str(exclude_clips)])
+            for what, (path, want) in _want.items():
+                if want is None or not path.is_file():
+                    raise RuntimeError(f"derivation.json does not pin {what} ({path}) -- refusing an unverifiable view")
+                have = hashlib.sha256(path.read_bytes()).hexdigest()
+                if have != str(want):
+                    raise RuntimeError(f"derived view {what} {path} hashes {have[:16]}, derivation.json pins "
+                                       f"{str(want)[:16]}")
+            self.derivation_sha256 = hashlib.sha256(deriv_p.read_bytes()).hexdigest()
+        rows = [json.loads(l) for l in open(manifest_p)]
         rows = [r for r in rows if r.get("status") == "accept"]
         _drop = load_exclusions(exclude_clips)
         if _drop:
@@ -310,6 +355,10 @@ class Ktjd17Base:
             "percell_sha256": hashlib.sha256(Path(percell_stats).read_bytes()).hexdigest(),
             "percell_std_floor": float(self.percell_meta.get("std_floor", -1)),
             "percell_convention": str(self.percell_meta.get("convention")),
+            # derived training views only (keys ABSENT for a frozen parent corpus, so existing
+            # checkpoints' pins keep resuming unchanged)
+            **({"manifest_sha256": manifest_sha, "derivation_sha256": self.derivation_sha256}
+               if self.derivation is not None else {}),
         }
 
     # ------------------------------------------------------------------ per-rig statics

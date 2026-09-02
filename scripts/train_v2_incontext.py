@@ -13,7 +13,8 @@ Validation = bucket A (seen rigs, unseen clips), with a RESET RNG stream each pa
 sees the identical demo/crop choices and the numbers are comparable across epochs.
 Checkpoints are written atomically (tmp + rename); best is tracked on val flow loss.
 """
-import argparse, hashlib, json, math, os, pickle, sys, time
+import argparse
+import io, hashlib, json, math, os, pickle, sys, time
 from pathlib import Path
 
 import numpy as np
@@ -397,7 +398,22 @@ def main():
                          "bridge, detached in training -> body tower). ktjd17 only.")
     ap.add_argument("--root_dim", type=int, default=192,
                     help="two_stage root tower width (depth fixed at 4)")
+    # ---- per-species LoRA fine-tuning (user 2026-09-02) ----
+    ap.add_argument("--init_from", default="",
+                    help="load ONLY the model weights of this checkpoint (no optimizer/epoch/pins): "
+                         "the frozen backbone a LoRA run adapts")
+    ap.add_argument("--lora_r", type=int, default=0, help="LoRA rank; 0 = no LoRA (full training)")
+    ap.add_argument("--lora_alpha", type=float, default=64.0, help="LoRA scale numerator (scale = alpha / r)")
+    ap.add_argument("--lora_dropout", type=float, default=0.0)
+    ap.add_argument("--lora_targets", default="attn,ffn,cond",
+                    help="comma list of src.models.v2.lora.TARGET_GROUPS keys")
     a = ap.parse_args()
+    if a.lora_r > 0 and not a.init_from:
+        raise SystemExit("[refuse] --lora_r needs --init_from <backbone ckpt>: a LoRA adapts a trained model")
+    if a.lora_r > 0 and a.resume:
+        raise SystemExit("[refuse] --resume is not supported for LoRA runs (they are short; restart from --init_from)")
+    if a.lora_r > 0 and a.two_stage:
+        raise SystemExit("[refuse] LoRA is wired for InContextMotionDiT only")
     # Objective-shaping knobs are validated UNCONDITIONALLY: they reach cfm_loss on every corpus,
     # so a guard inside the ktjd17 branch would let another corpus pass an invalid value straight
     # through (codex 2026-08-22 hygiene). 2/s-1 is only defined on (0, 1].
@@ -465,7 +481,14 @@ def main():
         #   PZ+Human 312  self-bound: generation.json.full_conversion_authorized, with the visual
         #                 gate pinned by sha inside the corpus (no external file exists)
         genj = json.loads((Path(a.ktjd_root) / "generation.json").read_text())
-        if "full_conversion_authorized" in genj:
+        # Layout detection by the artifact that actually exists, not by a key name: the TrueBones
+        # generation.json ALSO carries `full_conversion_authorized`, so keying on it sent every
+        # TrueBones-derived corpus (e.g. the per-species LoRA root) down the PZ branch and refused
+        # it for a status string that layout never uses (2026-09-02).
+        tb_gate_p = Path(a.ktjd_root).parent / "KTJD17_TRUEBONES_RELEASE_GATE.json"
+        tb_layout = tb_gate_p.is_file() and str(json.loads(tb_gate_p.read_text())["generation"]
+                                               ["generation_id"]) == str(genj.get("generation_id"))
+        if not tb_layout:
             vg_p = Path(a.ktjd_root) / "evidence" / "visual_gate.json"
             vg_sha = hashlib.sha256(vg_p.read_bytes()).hexdigest()
             if vg_sha != str(genj.get("visual_gate_sha256")):
@@ -482,7 +505,7 @@ def main():
             ready = genj.get("full_conversion_authorized") is True
             gate_desc = "generation.json full_conversion_authorized (visual gate pass, sha-bound)"
         else:
-            gate_p = Path(a.ktjd_root).parent / "KTJD17_TRUEBONES_RELEASE_GATE.json"
+            gate_p = tb_gate_p
             gate = json.loads(gate_p.read_text())
             gate_generation = str(gate["generation"]["generation_id"])
             ready = bool(gate.get("ready_for_training", False))
@@ -527,9 +550,22 @@ def main():
         # the calibration measured gradient shares THROUGH the loss code; if that code changed,
         # the artifact no longer describes this objective (codex round-S8 fail-open #2). Recorded
         # but never compared was the defect.
-        code_now = hashlib.sha256(
-            Path("src/models/v2/dit_motion.py").read_bytes()
-            + Path("scripts/_measure_ktjd17_gamma_calibration.py").read_bytes()).hexdigest()
+        # exactly two measuring scripts may vouch for an artifact, anchored to THIS repo (the one
+        # the trainer is imported from), not to the CWD: no absolute paths, no symlinks, no
+        # resolve() outside the repo root (codex 2026-09-02 round 4)
+        _REPO = Path(__file__).resolve().parents[1]
+        _CALIB_SCRIPTS = {(_REPO / x).resolve() for x in ("scripts/_measure_ktjd17_gamma_calibration.py",
+                                                          "scripts/_measure_ktjd17_gamma_calibration_view.py")}
+        _rel = str(calib["hashes"].get("code_script", "scripts/_measure_ktjd17_gamma_calibration.py"))
+        _calib_script = _REPO / _rel
+        if (Path(_rel).is_absolute() or ".." in Path(_rel).parts        # no escape-and-return paths
+                or _calib_script.is_symlink() or not _calib_script.is_file()
+                or _calib_script.resolve() not in _CALIB_SCRIPTS
+                or _REPO not in _calib_script.resolve().parents):
+            raise SystemExit(f"[refuse] gamma calibration names a measuring script outside the repo allowlist: "
+                             f"{_rel!r}")
+        _dit_src = _REPO / "src" / "models" / "v2" / "dit_motion.py"
+        code_now = hashlib.sha256(_dit_src.read_bytes() + _calib_script.read_bytes()).hexdigest()
         if str(calib["hashes"].get("code_sha256")) != code_now and not a.allow_calib_code_drift:
             raise SystemExit("[refuse] gamma calibration was measured against different loss code "
                              "(dit_motion.py / the calibration script changed since). Recalibrate, "
@@ -539,6 +575,23 @@ def main():
             if calib["hashes"][hk] != base.provenance[hk]:
                 raise SystemExit(f"[refuse] gamma calibration {hk} mismatch -- artifact was "
                                  f"measured against different data statistics")
+        # Bind the calibration to the TRAINING VIEW, not just the generation (codex 2026-09-02 P1):
+        # the same frozen generation serves many cuts (per-species LoRA), and a gamma set measured
+        # on another cut / another manifest must not pass. Calibrations carrying these keys are
+        # compared strictly; a derived view REQUIRES them (an old-format artifact cannot vouch).
+        _train_ids_sha = hashlib.sha256("\n".join(sorted(names["train"])).encode()).hexdigest()
+        _view_now = {"exclusion_sha256": (base.provenance_exclusion or {}).get("sha256") or "none",
+                     "train_ids_sha256": _train_ids_sha,
+                     "manifest_sha256": hashlib.sha256(
+                         (Path(a.ktjd_root) / "manifests" / "clips.jsonl").read_bytes()).hexdigest()}
+        for hk, now in _view_now.items():
+            have = calib["hashes"].get(hk)
+            if have is None and getattr(base, "derivation", None) is not None:
+                raise SystemExit(f"[refuse] this corpus is a derived training view but the gamma "
+                                 f"calibration carries no hashes.{hk}; recalibrate on this view")
+            if have is not None and str(have) != now:
+                raise SystemExit(f"[refuse] gamma calibration hashes.{hk} mismatch: measured on a different "
+                                 f"training view (cut / clip set / manifest) -- recalibrate")
         # The mechanism check certifies the calibration ONLY under the objective it ran with.
         # v_space reweights gradient energy by w(t)^2 and the residual profile is t-dependent,
         # so a check run under a different v_space/sigma_min/t_sampler certifies a DIFFERENT
@@ -688,6 +741,10 @@ def main():
                        # _pick ignores the index, so no target is systematically excluded.
                        drop_last=True,
                        persistent_workers=(a.num_workers > 0) and (tr_sampler is not None))
+    if len(dl_tr) == 0:
+        raise SystemExit(f"[refuse] {len(ds_tr)} training targets < batch {a.batch}: with drop_last every "
+                         f"epoch would have ZERO steps and checkpoints would be written for a model that "
+                         f"never updated (codex 2026-09-02 P0-3)")
     dl_va = DataLoader(ds_va, batch_size=a.batch, shuffle=False, num_workers=0,
                        collate_fn=collate, pin_memory=True)
 
@@ -742,6 +799,31 @@ def main():
     # checkpoints keep clean keys (a compiled wrapper prefixes everything with `_orig_mod.` and
     # every earlier checkpoint would fail to load).
     raw_model = model
+    lora_paths = []
+    init_from_sha256, init_from_epoch = None, None
+    if a.init_from:
+        # weights only, strict: the LoRA backbone must be EXACTLY the trained model (same arch args)
+        # hash the bytes actually loaded: best_model.pt is replaced atomically by the still-running
+        # backbone, so the path alone does not identify the initialization
+        _init_bytes = Path(a.init_from).read_bytes()
+        init_from_sha256 = hashlib.sha256(_init_bytes).hexdigest()
+        ck0 = torch.load(io.BytesIO(_init_bytes), map_location="cpu", weights_only=False)
+        del _init_bytes
+        raw_model.load_state_dict(ck0["model"], strict=True)
+        init_from_epoch = ck0.get("epoch", None)
+        if is_main:
+            print(f"[init_from] {a.init_from} (epoch {init_from_epoch}, sha256 {init_from_sha256[:16]}) -> "
+                  f"model weights loaded, optimizer/epoch/pins NOT restored", flush=True)
+        del ck0
+    if a.lora_r > 0:
+        from src.models.v2.lora import inject_lora, freeze_non_lora
+        lora_paths = inject_lora(raw_model, [g for g in a.lora_targets.split(",") if g],
+                                 a.lora_r, a.lora_alpha, a.lora_dropout)
+        n_lora, n_all = freeze_non_lora(raw_model)
+        if is_main:
+            print(f"[lora] r={a.lora_r} alpha={a.lora_alpha} targets={a.lora_targets}: "
+                  f"{len(lora_paths)} Linear layers adapted, {n_lora/1e6:.2f}M trainable of "
+                  f"{n_all/1e6:.2f}M ({100*n_lora/n_all:.2f}%)", flush=True)
     if a.compile:
         # compile BEFORE DDP wraps it. Order matters and the previous arrangement was a no-op:
         # rebinding `raw_model` after DDP already captured the module leaves DDP running the
@@ -757,7 +839,25 @@ def main():
         # outright would break strict state_dict loading of every run-1 checkpoint.
         model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
     n_par = sum(p.numel() for p in raw_model.parameters())
-    opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.wd)
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    opt = torch.optim.AdamW(trainable, lr=a.lr, weight_decay=a.wd)
+
+    def model_state_for_ckpt():
+        """Plain backbone state_dict: with LoRA the adapters are FOLDED into the weights so every
+        existing consumer (renderer, gen-eval, skinning generator) loads it unchanged."""
+        if a.lora_r > 0:
+            from src.models.v2.lora import merged_state_dict
+            return merged_state_dict(raw_model)
+        return raw_model.state_dict()
+
+    def lora_extra():
+        if a.lora_r <= 0:
+            return {}
+        from src.models.v2.lora import lora_state_dict
+        return {"lora": lora_state_dict(raw_model),
+                "lora_cfg": {"r": a.lora_r, "alpha": a.lora_alpha, "dropout": a.lora_dropout,
+                             "targets": a.lora_targets, "paths": lora_paths, "init_from": a.init_from,
+                             "init_from_sha256": init_from_sha256, "init_from_epoch": init_from_epoch}}
     start_ep, best_val, gstep = 0, float("inf"), 0
     resumed_strikes = 0
     # Initialised BEFORE the resume block, which overwrites it: placing it after would wipe the
@@ -1030,7 +1130,9 @@ def main():
                   f"(rng {'restored' if rng else 'fresh'})", flush=True)
     if is_main:
         (out / "args.json").write_text(json.dumps(
-            {**vars(a), "params": n_par,
+            {**vars(a), "params": n_par, "trainable_params": sum(p.numel() for p in trainable),
+             **({"lora_paths": lora_paths} if a.lora_r > 0 else {}),
+             **({"init_from_sha256": init_from_sha256, "init_from_epoch": init_from_epoch} if a.init_from else {}),
              # EFFECTIVE objective config (codex round-S0: recording KIMODO_GAMMAS on a KTJD run
              # misdocumented the lineage): gammas actually applied + spec + mask policy + pins.
              "gammas": ktjd_gammas if a.corpus == "ktjd17" else KIMODO_GAMMAS,
@@ -1093,7 +1195,7 @@ def main():
         # ds_va shares `base`; the toggle is safe because the val loader is num_workers=0.
         rc_saved = base.random_caption
         base.random_caption = False
-        vtot, vn, vfk, vfkd, vsr, vsrn = 0.0, 0, 0.0, 0.0, 0.0, 0
+        vtot, vn, vfk, vfkd, vsr, vsrn, vacc = 0.0, 0, 0.0, 0.0, 0.0, 0, 0.0
         with fixed_torch_rng(10_000 + a.seed):
             with torch.no_grad():
                 for vb in dl_va:
@@ -1126,6 +1228,7 @@ def main():
                                                  return_parts=True, **vextra, **vkt,
                                                  **cond_of(vb))
                             vfk += vp.get("fk_consist", 0.0); vfkd += vp.get("fk_dist", 0.0)
+                            vacc += vp.get("acc_match", 0.0)
                             # speed_ratio is the ONLINE frozen-pose monitor (1.0 = GT speed)
                             # sum-of-ratios / count-of-windows, NEVER mean-of-batch-means:
                             # static-GT batches contribute no ratio at all (codex round-S3)
@@ -1150,6 +1253,9 @@ def main():
         base.random_caption = rc_saved
         fk_str = (f" | fk={vfk / max(vn, 1):.4f} fkdist={vfkd / max(vn, 1):.3f}bl"
                   if a.gamma_fk > 0 else "")
+        # independent of fk_str: acc can be active with the FK term off
+        if a.gamma_acc > 0:
+            fk_str += f" acc={vacc / max(vn, 1):.4f}"
         if a.gamma_vel > 0 or a.gamma_lock > 0:
             # THE gate the ep250 collapse had no online equivalent of: 1.0 = GT speed, ~0 = frozen
             fk_str += (f" | artic={vsr / vsrn:.3f}xGT({vsrn}w)" if vsrn else " | artic=n/a")
@@ -1200,7 +1306,7 @@ def main():
                                 f"instead of training a frozen model to {a.epochs} epochs.")
         rng_state = {"cpu": torch.get_rng_state(), "cuda": torch.cuda.get_rng_state_all(),
                      "np": np.random.get_state()}
-        state = {"model": raw_model.state_dict(), "opt": opt.state_dict(), "epoch": ep,
+        state = {"model": model_state_for_ckpt(), **lora_extra(), "opt": opt.state_dict(), "epoch": ep,
                  "gstep": gstep, "val": v,
                  # only an ELIGIBLE checkpoint may lower the recorded best: otherwise a resume
                  # inherits a best score no saved file corresponds to, and every later legitimate
@@ -1418,7 +1524,7 @@ def main():
             if a.val_every_steps > 0 and gstep % a.val_every_steps == 0:
                 run_validation(ep, at_epoch_end=False)
             if a.ckpt_snapshot_steps > 0 and gstep % a.ckpt_snapshot_steps == 0 and is_main:
-                atomic_save({"model": raw_model.state_dict(), "opt": opt.state_dict(),
+                atomic_save({"model": model_state_for_ckpt(), **lora_extra(), "opt": opt.state_dict(),
                              "epoch": ep, "gstep": gstep, "best_val": best_val, "args": vars(a),
                          "artic_strikes": artic_strikes,
                              # MID-epoch: resume must refuse this even if the file is renamed
@@ -1461,7 +1567,7 @@ def main():
         # that discards the remainder of the interrupted epoch -- statistically harmless here
         # because draws are random (balanced or shuffled), while gstep/lr/warmup continue exactly.
         if (ep + 1) % a.ckpt_every == 0 and is_main:
-            atomic_save({"model": raw_model.state_dict(), "opt": opt.state_dict(),
+            atomic_save({"model": model_state_for_ckpt(), **lora_extra(), "opt": opt.state_dict(),
                          "epoch": ep, "gstep": gstep, "best_val": best_val, "args": vars(a),
                          "artic_strikes": artic_strikes,
                          "at_epoch_end": True,   # epoch boundary: resume-safe
