@@ -104,7 +104,9 @@ T_SAMPLER = os.environ["T_SAMPLER"]
 # magnitude -- no hard tolerance, because the acc gradient has no analytic share model
 # (codex 2026-08-28 item 2: the artifact must characterize the objective it certifies).
 GAMMA_ACC = float(os.environ["GAMMA_ACC"])
-VERIFY_STEPS, VERIFY_TOL = 30, 1.25    # mechanism check band, recorded verbatim in the artifact
+VERIFY_STEPS, VERIFY_TOL = int(os.environ.get("VERIFY_STEPS", "30")), 1.25    # mechanism check band, recorded verbatim
+if VERIFY_STEPS <= 0:
+    raise SystemExit("[FAIL] VERIFY_STEPS must be a positive integer (the mechanism check cannot be skipped)")
 ARM = dict(dim=384, depth=7, heads=8)  # the Step-1 arm config the gammas will train
 
 
@@ -232,6 +234,14 @@ def main():
     it = iter(vdl)
     err_sum = {g: 0.0 for g in _GROUP_SPEC_KTJD17}
     err_cnt = {g: 0 for g in _GROUP_SPEC_KTJD17}
+    # Batch-wise predictor of the gradient energy, using the SAME denominators the grouped loss uses
+    # in every batch (dit_motion.py grouped loss: part_g = sum(e*mm)/count_g, weight gamma_g *
+    # sqrt(count_g/n_total)): per-element grad in g ~ gamma_g*sqrt(count_g/n_total)*d huber/count_g,
+    # so the batch's gradient energy in g ~ gamma_g^2 * sum(e2*mm)_g / (count_g * n_total). A
+    # predictor built from GLOBAL E_err (all batches pooled) equals this only when every batch has the
+    # same counts -- false for a cycling small cohort whose tail batch holds 2 windows (codex
+    # 2026-09-02: the mechanism check must compare like with like).
+    pred_sum = {g: 0.0 for g in _GROUP_SPEC_KTJD17}
     sat_hit = sat_tot = 0            # how often the knee actually binds, on RESIDUALS not targets
     for step in range(VERIFY_STEPS):
         try:
@@ -277,10 +287,14 @@ def main():
                 e2 = e2 * (w ** 2)[:, None, None, None]
             sat_hit += int(((r.abs() > HUBER) & (mm > 0)).sum()) if HUBER > 0 else 0
             sat_tot += int((mm > 0).sum())
+        b_cnt = {gname: float(mm[:, :, js][..., cs].sum()) for gname, (js, cs) in _GROUP_SPEC_KTJD17.items()}
+        b_ntot = max(sum(b_cnt.values()), 1.0)
         for gname, (js, cs) in _GROUP_SPEC_KTJD17.items():
             g_sum[gname] += float((gr[:, :, js][..., cs] ** 2).sum())
-            err_sum[gname] += float((e2[:, :, js][..., cs] * mm[:, :, js][..., cs]).sum())
-            err_cnt[gname] += int(mm[:, :, js][..., cs].sum())
+            b_e = float((e2[:, :, js][..., cs] * mm[:, :, js][..., cs]).sum())
+            err_sum[gname] += b_e
+            err_cnt[gname] += int(b_cnt[gname])
+            pred_sum[gname] += gammas[gname] ** 2 * b_e / (max(b_cnt[gname], 1.0) * b_ntot)
     e_err = {g: err_sum[g] / max(err_cnt[g], 1) for g in err_sum}
     sat_frac = sat_hit / max(sat_tot, 1)
     print(f"[verify-diag] Huber knee delta={HUBER}: residual saturation {sat_frac:.3e} of "
@@ -306,12 +320,24 @@ def main():
     # from the data-energy profile by construction -- and would in Kimodo's own setup too.
     # Its value is catching wiring bugs (a group silently dropped, a gamma not reaching the
     # loss, a mask zeroing a group), which it does exactly.
-    pred_g = {g: gammas[g] ** 2 * e_err[g] for g in e_err}
+    # the asserted predictor is the BATCH-WISE one (same denominators as the loss, see the verify
+    # loop); the pooled-E_err form stays as a printed diagnostic only
+    pred_g = dict(pred_sum)
     tp = sum(pred_g.values())
+    pred_global = {g: gammas[g] ** 2 * e_err[g] for g in e_err}
+    tpg = sum(pred_global.values())
+    print("[verify-diag] batch-wise predicted shares (asserted): "
+          + " ".join(f"{g}={pred_g[g] / tp:.3f}" for g in pred_g))
+    print("[verify-diag] pooled-E_err predicted shares (diagnostic only): "
+          + " ".join(f"{g}={pred_global[g] / tpg:.3f}" for g in pred_global))
+    for g in measured:                      # every group must have real support -- no vacuous pass
+        if not (err_cnt[g] > 0 and np.isfinite(pred_g[g]) and pred_g[g] > 0 and np.isfinite(measured[g]) and measured[g] > 0):
+            raise SystemExit(f"[FAIL] group {g} has no finite positive support in the verify pass "
+                             f"(cells {err_cnt[g]}, predicted {pred_g[g]}, measured {measured[g]})")
     mech_bad = {g for g in measured
                 if not (pred_g[g] / tp / VERIFY_TOL <= measured[g] <= pred_g[g] / tp * VERIFY_TOL)}
     if mech_bad:
-        raise SystemExit(f"[FAIL] implemented weighting deviates from gamma^2*E_err mechanism "
+        raise SystemExit(f"[FAIL] implemented weighting deviates from the batch-wise gamma^2*E_err mechanism "
                          f"for {sorted(mech_bad)}: measured="
                          f"{ {g: round(measured[g],3) for g in mech_bad} } predicted="
                          f"{ {g: round(pred_g[g]/tp,3) for g in mech_bad} }")
@@ -351,7 +377,8 @@ def main():
                     "note": "diagnostic only -- no analytic prediction exists for the acc term"}
         print(f"[acc-diag] acc_match(init)={acc_diag['acc_match_mean']:.4f} "
               f"shares with acc: " + " ".join(f"{f}={fam2[f]:.3f}" for f in fam2))
-    print("[verify] PASS (mechanism): measured shares match gamma^2*E_err within 25% per group")
+    print("[verify] PASS (mechanism): measured shares match the batch-wise gamma^2*E_err prediction within "
+          "25% for all groups")
 
     code_sha = hashlib.sha256(
         Path("src/models/v2/dit_motion.py").read_bytes()
@@ -377,6 +404,7 @@ def main():
                      "anchor": {ANCHOR_FAMILY: ANCHOR_GAMMA},
                      "mask_policy_version": KTJD17_MASK_POLICY,
                      "verify": {"steps": VERIFY_STEPS, "tolerance_x": VERIFY_TOL,
+                                "predictor": "batch-wise gamma^2*sum(e2*mm)/(count_g*n_total), same denominators as the loss",
                                 "arm_model": ARM}},
         "counts": e_cnt, "energies": {g: round(v, 6) for g, v in energies.items()},
         "target_family_shares": {f: round(v, 6) for f, v in ts.items()},
@@ -400,8 +428,12 @@ def main():
                          "(diagnostic: catches wiring bugs; CANNOT verify the design target, "
                          "because init E_err carries an untrained-output-variance transient)",
             "init_error_energies": {g: round(v, 6) for g, v in e_err.items()},
+            "predicted_grad_shares_init_batchwise": {g: round(pred_g[g] / tp, 6) for g in pred_g},
+            "predicted_grad_shares_init_pooledEerr_diagnostic": {g: round(pred_global[g] / tpg, 6) for g in pred_global},
             "measured_grad_shares_init": {g: round(v, 6) for g, v in measured.items()},
             "measured_family_shares_init": {f: round(v, 6) for f, v in fam_measured.items()},
+            "verify_effective_cells": {g: int(err_cnt[g]) for g in err_cnt},
+            "asserted_groups": sorted(measured),
         },
         "gammas": gammas,
         "hashes": {"gains_sha256": base.provenance["gains_sha256"],
