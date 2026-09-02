@@ -4,7 +4,9 @@ _ktjd17_to_bvh.py --gen_npy. Same inference surface as v2_render_incontext.py /
 _eval_v2_gen_in_evalspace.py (ckpt-derived PK, per-rig channel_valid/heading, anchor,
 deployment cfg_text=2 / 20 steps by default). Target clip per rig: --pick longest or
 energetic (max GT motion energy = mean frame-to-frame displacement of the DE-NORMALIZED
-KTJD positions over the target window, the v2_render_incontext.py definition).
+KTJD positions over the target window, the v2_render_incontext.py definition), or an
+explicit --targets rig:clip_id,... list (demo selection; each clip must be a val clip of
+its rig, refused otherwise).
 """
 from __future__ import annotations
 
@@ -39,14 +41,29 @@ def gt_energy(base, rig, gt_it, Tt):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--ckpt", required=True)
-    ap.add_argument("--rigs", required=True, help="comma-separated rig ids")
+    ap.add_argument("--rigs", default=None, help="comma-separated rig ids (or use --targets)")
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--cfg_text", type=float, default=2.0)
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--pick", choices=("longest", "energetic"), default="energetic",
                     help="target clip per rig (energetic = the render scripts' max-GT-motion-energy rule)")
+    ap.add_argument("--targets", default=None,
+                    help="explicit rig:clip_id[,rig:clip_id...]; overrides --pick and --rigs for those rigs")
     a = ap.parse_args()
+    targets = {}
+    if a.targets is not None:            # '' is an explicit (bad) request, not 'absent'
+        for tok in a.targets.split(","):
+            rig, _, cid = tok.partition(":")
+            rig, cid = rig.strip(), cid.strip()
+            if not rig or not cid or "," in cid or ":" in cid:
+                raise SystemExit(f"[refuse] bad --targets token {tok!r} (want rig:clip_id)")
+            if rig in targets:
+                raise SystemExit(f"[refuse] --targets lists rig {rig} twice ({targets[rig]} and {cid}); one clip per rig")
+            targets[rig] = cid
+        a.rigs = ",".join(targets)
+    if not a.rigs:
+        raise SystemExit("[refuse] give --rigs (with --pick) or --targets rig:clip_id,...")
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)
@@ -87,8 +104,17 @@ def main():
     for rig in [r.strip() for r in a.rigs.split(",") if r.strip()]:
         pos = [i for i, (ot, _) in enumerate(ds.index) if ot == rig]
         if not pos:
+            if rig in targets:
+                raise SystemExit(f"[refuse] {rig}: unknown rig or no val targets (0 matches for {targets[rig]})")
             print(f"[gen] SKIP {rig}: no val targets", flush=True); continue
-        if a.pick == "longest":
+        if rig in targets:
+            # ds.index holds (rig, base row); the clip id lives on the base row
+            hits = [i for i in pos if str(base._rows[ds.index[i][1]]["clip_id"]) == targets[rig]]
+            if len(hits) != 1:
+                raise SystemExit(f"[refuse] {rig}: clip {targets[rig]} is not a val target of this rig "
+                                 f"({len(hits)} matches)")
+            p = hits[0]
+        elif a.pick == "longest":
             p = max(pos, key=lambda i: int(base[ds.index[i][1]]["num_frames"]))
         else:
             p = max(pos, key=lambda i: gt_energy(base, rig, base[ds.index[i][1]], ds.Tt))
@@ -119,7 +145,7 @@ def main():
         npy_path = out / f"{rig}__{cid}.npy"
         np.save(npy_path, arr)
         rec = {"rig": rig, "clip_id": cid, "frames": T, "joints": J, "cfg_text": a.cfg_text, "steps": a.steps,
-               "seed": a.seed, "pick": a.pick, "caption": str(item.get("caption_text", item.get("caption", ""))),
+               "seed": a.seed, "pick": ("target" if rig in targets else a.pick), "caption": str(item.get("caption_text", item.get("caption", ""))),
                "npy_sha256": hashlib.sha256(npy_path.read_bytes()).hexdigest(),
                "ckpt": a.ckpt, "ckpt_sha256": ckpt_sha, "ckpt_epoch": int(ck.get("epoch", -1)),
                "percell_stats": percell_path, "percell_sha256": percell_sha, "ktjd_pins": pins}
