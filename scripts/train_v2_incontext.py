@@ -176,6 +176,39 @@ def connectivity_probe(model, b, demo_frames=DEMO_FRAMES, ktjd_lut=None, ktjd_ga
             "text": float(g_t.norm()), "joint_sem": float(g_s.norm())}
 
 
+def _calib_batch_gate(proto, run_batch, calib_sha, calib_path, resume):
+    """protocol.batch must be a positive integer (bool / float are not) equal to --batch, for every view:
+    the grouped loss normalises per batch, so the mechanism check certifies the objective only at the
+    batch it ran with (codex 2026-09-03). Single exception, announced not silent: a --resume whose
+    checkpoint already trained at exactly this --batch under exactly this artifact (path AND byte sha
+    pinned in ktjd_pins) -- the run predates the rule and continues without a batch-matched certificate.
+    Returns the warning text when the exception is taken, None when the batch matches; refuses otherwise."""
+    pb = proto.get("batch")
+    if isinstance(pb, bool) or not isinstance(pb, int) or pb <= 0:
+        raise SystemExit(f"[refuse] gamma calibration protocol.batch={pb!r} is not a positive integer; "
+                         f"recalibrate with CALIB_BATCH={run_batch}")
+    ra = rp = None
+    if resume is not None:
+        # the RAW loaded checkpoint: a non-mapping payload or non-mapping args / ktjd_pins is refused here,
+        # whether or not the batch matches (codex 2026-09-03 r4)
+        ra, rp = (resume.get("args"), resume.get("ktjd_pins")) if isinstance(resume, dict) else (None, None)
+        if not isinstance(ra, dict) or not isinstance(rp, dict):
+            raise SystemExit("[refuse] the checkpoint to resume carries malformed args / ktjd_pins metadata -- it "
+                             "cannot certify what it trained under")
+    if pb == run_batch:
+        return None
+    if resume is not None:
+        rb = ra.get("batch")
+        # type(rb) is int: 16.0 == 16 and True == 1 are Python truths but not the same training batch
+        if (type(rb) is int and rb == run_batch and str(ra.get("ktjd_gamma_calib")) == str(calib_path)
+                and str(rp.get("gamma_calib_sha256")) == str(calib_sha)):
+            return (f"[calib] LEGACY: resuming a checkpoint that already trained at --batch {run_batch} under this "
+                    f"exact artifact ({calib_path}, sha {calib_sha[:12]}, mechanism-checked at batch {pb}); the run "
+                    f"predates the batch-matched protocol and carries NO batch-matched certificate")
+    raise SystemExit(f"[refuse] gamma calibration was mechanism-checked at batch {pb} but this run uses "
+                     f"--batch {run_batch}; recalibrate with CALIB_BATCH={run_batch}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_root", default="data/animo4d_L4TB_plus_human_v4b272neutral")
@@ -627,6 +660,20 @@ def main():
         if drift:
             raise SystemExit("[refuse] gamma calibration objective-protocol mismatch: "
                              + "; ".join(drift) + " -- recalibrate under this objective")
+        # The grouped loss normalises per BATCH, so the mechanism check certifies the objective only
+        # at the batch it ran with (codex 2026-09-03 r1/r2): EVERY view is bound and protocol.batch must
+        # be a positive integer equal to --batch. The one announced exception is a --resume of a
+        # checkpoint that already trained under exactly this (batch, artifact path+sha) pair -- a run
+        # that predates the rule (run12: B16 on the B8 pilot artifact) continues, but never gains a
+        # batch-matched certificate.
+        # the raw checkpoint object goes to the gate untouched (mmap: tensors are not read); the gate
+        # refuses a non-mapping payload / args / ktjd_pins instead of tripping over .get here
+        _peek = torch.load(a.resume, map_location="cpu", weights_only=False, mmap=True) if a.resume else None
+        _legacy = _calib_batch_gate(proto, int(a.batch), hashlib.sha256(calib_p.read_bytes()).hexdigest(),
+                                    str(a.ktjd_gamma_calib), _peek)
+        del _peek
+        if _legacy:
+            print(_legacy, flush=True)
         ktjd_gammas = {k: float(v) for k, v in calib["gammas"].items()}
         if sorted(ktjd_gammas) != sorted(_GROUP_SPEC_KTJD17):
             raise SystemExit(f"[refuse] calibration gamma groups {sorted(ktjd_gammas)} != "
@@ -922,6 +969,9 @@ def main():
         # the PARSER DEFAULT of its era, so it must be compared against ap.get_default -- comparing
         # against the runtime value would wave through exactly the drift this check exists to catch
         # (legacy ckpt + new flag => missing key silently "equals" the new flag).
+        if type(old_args.get("batch")) is not int:
+            raise SystemExit(f"[resume] ckpt args.batch={old_args.get('batch')!r} is not an int -- a float/bool "
+                             f"would compare equal to --batch {a.batch} without being the same batch")
         bad = [k for k in crit if old_args.get(k, ap.get_default(k)) != getattr(a, k)]
         # restored BEFORE the append below -- appending first and restoring afterwards silently
         # discarded the very record the mechanism exists to keep (codex 2026-08-26)
@@ -1185,7 +1235,7 @@ def main():
     def run_validation(ep, at_epoch_end=True):
         """rank-0 val + probe + best/last ckpt. Callable from the epoch boundary or mid-epoch
         (step cadence); barrier counts are 2/2 on both sides either way."""
-        nonlocal best_val
+        nonlocal best_val, artic_strikes, last_health, last_vob
         if ddp:
             dist.barrier()
         if not is_main:
@@ -1194,6 +1244,25 @@ def main():
             _collective_abort()
             return
         model.eval(); reset_val_stream(ds_va)
+        if len(ds_va) == 0:
+            # ALL-TRAIN fine-tune (user 2026-09-03: every clip of the rig in train): there is nothing
+            # to validate, so no probe, no artic gate and no best_model.pt -- last_model.pt is the
+            # deliverable. The barrier protocol below is kept intact for DDP peers.
+            print(f"  [val] skipped -- no val targets (all-train run) | g{gstep}", flush=True)
+            state = {"model": model_state_for_ckpt(), **lora_extra(), "opt": opt.state_dict(), "epoch": ep,
+                     "gstep": gstep, "val": None, "best_val": best_val, "args": vars(a),
+                     "rng": {"cpu": torch.get_rng_state(), "cuda": torch.cuda.get_rng_state_all(),
+                             "np": np.random.get_state()},
+                     "ktjd_pins": ktjd_pins, "artic": None, "artic_windows": 0, "artic_strikes": artic_strikes,
+                     "at_epoch_end": bool(at_epoch_end), "guard_history": guard_history,
+                     "schedule_history": schedule_history, "calib_history": calib_history,
+                     "val_over_best": 1.0, "healthy": True, "no_val": True}
+            atomic_save(state, out / ("last_model.pt" if at_epoch_end else "last_step_snapshot.pt"))
+            model.train()
+            if ddp:
+                dist.barrier()
+            _collective_abort()
+            return
         # Fixed captions for val: rotation would make the val text a moving target across passes.
         # ds_va shares `base`; the toggle is safe because the val loader is num_workers=0.
         rc_saved = base.random_caption
@@ -1269,7 +1338,6 @@ def main():
         # project has hit twice. Printing it was not enough: a collapsed checkpoint could still be
         # crowned "best" on flow loss alone, and the run would burn 500 epochs producing a frozen
         # animal. So the ratio now gates BOTH.
-        nonlocal artic_strikes
         artic_now = (vsr / vsrn) if vsrn else float("nan")
         # BEST-ELIGIBILITY IS GATED FROM THE FIRST VALIDATION (codex round-S10 blocker): the
         # epoch-30 grace period exists so an untrained model is not aborted, but it must not also
@@ -1339,7 +1407,6 @@ def main():
         # carries a gstep that no longer matches the epoch counter -- which also desynchronizes the
         # lr schedule from an uninterrupted run. Only epoch-boundary checkpoints may be written to
         # last_model.pt; step-level validations still record a snapshot for inspection.
-        nonlocal last_health, last_vob
         last_health, last_vob = state["healthy"], state["val_over_best"]
         if at_epoch_end:
             atomic_save(state, out / "last_model.pt")
@@ -1569,7 +1636,9 @@ def main():
         # RESUME POLICY: resume always restarts at epoch ck["epoch"]+1. For a MID-epoch snapshot
         # that discards the remainder of the interrupted epoch -- statistically harmless here
         # because draws are random (balanced or shuffled), while gstep/lr/warmup continue exactly.
-        if (ep + 1) % a.ckpt_every == 0 and is_main:
+        # no-val (all-train) runs keep last_model.pt only: periodic epNNNN snapshots would carry no
+        # val/health fields and cost ~1.9 GB each (codex 2026-09-03)
+        if (ep + 1) % a.ckpt_every == 0 and is_main and len(ds_va) > 0:
             atomic_save({"model": model_state_for_ckpt(), **lora_extra(), "opt": opt.state_dict(),
                          "epoch": ep, "gstep": gstep, "best_val": best_val, "args": vars(a),
                          "artic_strikes": artic_strikes,

@@ -105,6 +105,12 @@ T_SAMPLER = os.environ["T_SAMPLER"]
 # (codex 2026-08-28 item 2: the artifact must characterize the objective it certifies).
 GAMMA_ACC = float(os.environ["GAMMA_ACC"])
 VERIFY_STEPS, VERIFY_TOL = int(os.environ.get("VERIFY_STEPS", "30")), 1.25    # mechanism check band, recorded verbatim
+# The grouped loss normalises per BATCH (count_g / n_total of that batch), so the mechanism check certifies
+# the objective only at the batch size the run will use (codex 2026-09-03). CALIB_BATCH is recorded in
+# protocol.batch and the trainer refuses a derived-view run whose --batch differs from it.
+CALIB_BATCH = int(os.environ.get("CALIB_BATCH", "8"))
+if CALIB_BATCH <= 0:
+    raise SystemExit("[FAIL] CALIB_BATCH must be a positive integer")
 if VERIFY_STEPS <= 0:
     raise SystemExit("[FAIL] VERIFY_STEPS must be a positive integer (the mechanism check cannot be skipped)")
 ARM = dict(dim=384, depth=7, heads=8)  # the Step-1 arm config the gammas will train
@@ -141,7 +147,7 @@ def main():
     # ---- pass 1: energies over the full train cohort ----
     from torch.utils.data import DataLoader
     gen = torch.Generator(); gen.manual_seed(0)
-    dl = DataLoader(ds, batch_size=8, shuffle=False, num_workers=24, collate_fn=collate,
+    dl = DataLoader(ds, batch_size=CALIB_BATCH, shuffle=False, num_workers=24, collate_fn=collate,
                     generator=gen)
     e_sum = {g: 0.0 for g in _GROUP_SPEC_KTJD17}
     e_cnt = {g: 0 for g in _GROUP_SPEC_KTJD17}
@@ -229,7 +235,7 @@ def main():
     # unshuffled head-240 slice is one corner of the corpus (first run: r_p share off 2x on
     # exactly that bias). Fixed-seed shuffle, preregistered.
     vgen = torch.Generator(); vgen.manual_seed(1)
-    vdl = DataLoader(ds, batch_size=8, shuffle=True, generator=vgen, num_workers=2,
+    vdl = DataLoader(ds, batch_size=CALIB_BATCH, shuffle=True, generator=vgen, num_workers=2,
                      collate_fn=collate)
     it = iter(vdl)
     err_sum = {g: 0.0 for g in _GROUP_SPEC_KTJD17}
@@ -347,7 +353,7 @@ def main():
         g_sum2 = {g: 0.0 for g in _GROUP_SPEC_KTJD17}
         acc_vals = []
         vgen2 = torch.Generator(); vgen2.manual_seed(1)
-        vdl2 = DataLoader(ds, batch_size=8, shuffle=True, generator=vgen2, num_workers=2,
+        vdl2 = DataLoader(ds, batch_size=CALIB_BATCH, shuffle=True, generator=vgen2, num_workers=2,
                           collate_fn=collate)
         it2 = iter(vdl2)
         for step in range(VERIFY_STEPS):
@@ -393,7 +399,7 @@ def main():
         "protocol": {"cohort": "train_all_targets_one_pass",
                      "cohort_windows": n_windows, "cohort_rigs": n_rigs,
                      "weighting": "clip_balanced",
-                     "seed": 0, "batch": 8, "huber_delta": HUBER, "windows": "demo_random_rebased/target_head",
+                     "seed": 0, "batch": CALIB_BATCH, "huber_delta": HUBER, "windows": "demo_random_rebased/target_head",
                      "crop_rebase_active": True, "space": "normalized_model_space",
                      "t_sampler": T_SAMPLER, "v_space": V_SPACE, "sigma_min": SIGMA_MIN,
                      "gamma_acc": GAMMA_ACC,

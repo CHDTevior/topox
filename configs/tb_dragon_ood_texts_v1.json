@@ -1,0 +1,162 @@
+{
+ "DRAGON_OOD_01.npy": {
+  "primary_caption": "The dragon lands on the ground and folds its wings",
+  "captions": [
+   "The dragon lands on the ground and folds its wings"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_01",
+  "frames": 240,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_02.npy": {
+  "primary_caption": "The dragon takes off from the ground with powerful wing beats",
+  "captions": [
+   "The dragon takes off from the ground with powerful wing beats"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_02",
+  "frames": 240,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_03.npy": {
+  "primary_caption": "The dragon walks forward on all fours",
+  "captions": [
+   "The dragon walks forward on all fours"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_03",
+  "frames": 240,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_04.npy": {
+  "primary_caption": "The dragon turns left while flying",
+  "captions": [
+   "The dragon turns left while flying"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_04",
+  "frames": 200,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_05.npy": {
+  "primary_caption": "The dragon turns right while gliding",
+  "captions": [
+   "The dragon turns right while gliding"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_05",
+  "frames": 200,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_06.npy": {
+  "primary_caption": "The dragon rears up on its hind legs and roars",
+  "captions": [
+   "The dragon rears up on its hind legs and roars"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_06",
+  "frames": 180,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_07.npy": {
+  "primary_caption": "The dragon flies in a wide circle",
+  "captions": [
+   "The dragon flies in a wide circle"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_07",
+  "frames": 240,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_08.npy": {
+  "primary_caption": "The dragon climbs steeply into the sky",
+  "captions": [
+   "The dragon climbs steeply into the sky"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_08",
+  "frames": 200,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_09.npy": {
+  "primary_caption": "The dragon dives towards the ground and pulls up at the last moment",
+  "captions": [
+   "The dragon dives towards the ground and pulls up at the last moment"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_09",
+  "frames": 200,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_10.npy": {
+  "primary_caption": "The dragon glides low over the ground",
+  "captions": [
+   "The dragon glides low over the ground"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_10",
+  "frames": 240,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_11.npy": {
+  "primary_caption": "The dragon stands still and stretches its wings",
+  "captions": [
+   "The dragon stands still and stretches its wings"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_11",
+  "frames": 180,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_12.npy": {
+  "primary_caption": "The dragon shakes its head and flaps its wings twice",
+  "captions": [
+   "The dragon shakes its head and flaps its wings twice"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_12",
+  "frames": 150,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_13.npy": {
+  "primary_caption": "The dragon flies backward while hovering",
+  "captions": [
+   "The dragon flies backward while hovering"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_13",
+  "frames": 200,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_14.npy": {
+  "primary_caption": "The dragon lowers its head to drink from a lake",
+  "captions": [
+   "The dragon lowers its head to drink from a lake"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_14",
+  "frames": 200,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_15.npy": {
+  "primary_caption": "The dragon lies down and sleeps curled up",
+  "captions": [
+   "The dragon lies down and sleeps curled up"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_15",
+  "frames": 240,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ },
+ "DRAGON_OOD_16.npy": {
+  "primary_caption": "The dragon runs forward and leaps into the air",
+  "captions": [
+   "The dragon runs forward and leaps into the air"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "DRAGON_OOD_16",
+  "frames": 200,
+  "note": "authored 2026-09-03 for the Dragon LoRA text-OOD probe; no GT motion exists"
+ }
+}

@@ -63,7 +63,9 @@ def ktjd17_split_names(root: str | Path, exclude: str | Path | None = None
                        ) -> dict[str, set[str]]:
     """{'train'|'val'|'held_representative'|'held_stress': {clip_id,...}} from clips.jsonl."""
     drop = load_exclusions(exclude)
-    out: dict[str, set[str]] = {}
+    # train/val always present (possibly empty): an all-train cut (user 2026-09-03) leaves a rig
+    # with no val clip, and every consumer indexes names["val"]
+    out: dict[str, set[str]] = {"train": set(), "val": set()}
     for line in open(Path(root) / "manifests" / "clips.jsonl"):
         row = json.loads(line)
         if row.get("status") != "accept" or str(row["clip_id"]) in drop:

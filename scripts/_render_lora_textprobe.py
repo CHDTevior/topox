@@ -178,9 +178,16 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--rig", default="Buffalo", help="TrueBones rig whose skeleton receives the PZ captions")
-    ap.add_argument("--pz_clips", required=True,
+    ap.add_argument("--pz_clips", default=None,
                     help="comma-separated PZ clip ids, optionally clip:k for caption variant k (default: the first "
                          "variant no ancestor trained on, else variant 0)")
+    ap.add_argument("--custom_texts", default=None,
+                    help="AUTHORED captions instead of PZ clips: a captions json in the corpus format "
+                         "({'<id>.npy': {'primary_caption', 'captions', 'frames'}}); no reference motion exists, so the "
+                         "GIF has three panels and the caption is checked against the lineage's training texts only")
+    ap.add_argument("--custom_cache", default=None,
+                    help="LLM2Vec sidecar prefix for --custom_texts (keys '<id>__cap0'), built with "
+                         "scripts/_build_caption_llm2vec.py from the same json")
     ap.add_argument("--allow_seen", action="store_true",
                     help="render probes whose clip / exact caption text the lineage trained on (labelled SEEN-BY-LINEAGE / TEXT-SEEN)")
     ap.add_argument("--pz_root", default="dataset/ktjd17_pzh312_noik_v2")
@@ -192,6 +199,10 @@ def main():
     ap.add_argument("--cfg_text", type=float, default=2.0)
     ap.add_argument("--seed", type=int, default=7)
     a = ap.parse_args()
+    if bool(a.pz_clips) == bool(a.custom_texts):
+        raise SystemExit("[refuse] pass exactly one of --pz_clips or --custom_texts")
+    if a.custom_texts and not a.custom_cache:
+        raise SystemExit("[refuse] --custom_texts needs --custom_cache (its LLM2Vec sidecar)")
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
 
@@ -228,8 +239,17 @@ def main():
     ds = InContextPairs(base, names["val"], names["train"], object_types=[a.rig], balance_skeletons=False,
                         seed=a.seed, **PK)
     positions = [i for i, (ot, _) in enumerate(ds.index) if ot == a.rig]
+    carrier_split = "val"
     if not positions:
-        raise SystemExit(f"[refuse] rig {a.rig} has no val target in the checkpoint's view")
+        # an ALL-TRAIN view has no val clip for the rig; the carrier only lends skeleton / rest demo /
+        # semantics (its motion is zeroed before sampling), so a train clip serves equally well
+        ds = InContextPairs(base, names["train"], names["train"], object_types=[a.rig], balance_skeletons=False,
+                            seed=a.seed, **PK)
+        positions = [i for i, (ot, _) in enumerate(ds.index) if ot == a.rig]
+        carrier_split = "train"
+        print(f"[probe] rig {a.rig} has no val target in this view; carrier taken from TRAIN", flush=True)
+    if not positions:
+        raise SystemExit(f"[refuse] rig {a.rig} has no target at all in the checkpoint's view")
     ds._wrng_key = None
     item = ds[positions[0]]                                   # carrier: skeleton, rest demo, semantics
     J = int(item["n_joints"])
@@ -246,6 +266,11 @@ def main():
     chain.append(f"{Path(a.ckpt).name} <- {ca['ktjd_root']} (train {own_n}, cut {ca.get('exclude_clips')}) [this checkpoint]")
     print(f"[probe] lineage: {' ; '.join(chain)} -> ancestors {len(anc_ids)} clips / {len(anc_caps)} captions, "
           f"own stage {len(own_ids)} / {len(own_caps)}, union {len(seen_ids)} / {len(seen_caps)}", flush=True)
+
+    if a.custom_texts:
+        run_custom_texts(a, ck, ca, ep, model, base, item, J, Td, Tt, tb_val_energy, tb_srig, anc_caps, own_caps,
+                         seen_caps, chain, anc_ids, own_ids, out, dev, carrier_split, str(item["motion_id"]))
+        return
 
     # ---- PZ side: caption embeddings + reference GT on the PZ rig ----
     # If the requested PZ root is one of the VERIFIED lineage views, the reference, the caption texts and the
@@ -375,6 +400,92 @@ def main():
         f"SEEN-BY-LINEAGE(who) = clip in the train set of <who> (ancestor / own)\n"
         f"energy = mean frame-to-frame world displacement over all joints (canonical units); cross-rig energy is a "
         f"how-much-it-moves diagnostic, NOT an action-fidelity metric (different s_rig / joint count / topology)\n"
+        + "\n".join(lines) + "\n")
+    print(f"[probe] DONE -> {out}", flush=True)
+
+
+def run_custom_texts(a, ck, ca, ep, model, base, item, J, Td, Tt, carrier_energy, tb_srig, anc_caps, own_caps,
+                     seen_caps, chain, anc_ids, own_ids, out, dev, carrier_split, carrier_id):
+    """AUTHORED captions (user 2026-09-03: OOD text written in the PZ caption style) on the carrier rig. There is
+    no source motion, hence no reference panel; each caption is checked against every training text in the lineage
+    (ancestors + this LoRA stage) and refused when identical unless --allow_seen."""
+    import hashlib
+    texts = json.loads(Path(a.custom_texts).read_text())
+    E = np.load(Path(a.custom_cache).with_suffix(".embs.npy"), mmap_mode="r")
+    keys = json.load(open(Path(a.custom_cache).with_suffix(".keys.json")))
+    row_of = {k: i for i, k in enumerate(keys)}
+    meta_p = Path(a.custom_cache).with_suffix(".meta.json")
+    if not meta_p.is_file():
+        raise SystemExit(f"[refuse] {meta_p} missing -- the caption cache cannot be tied to its captions json")
+    meta = json.loads(meta_p.read_text())
+    tsha = hashlib.sha256(Path(a.custom_texts).read_bytes()).hexdigest()
+    if str(meta.get("captions_json_sha256", "")) != tsha:
+        raise SystemExit(f"[refuse] {a.custom_cache} was encoded from a different captions json "
+                         f"({str(meta.get('captions_json_sha256'))[:12]} != {tsha[:12]})")
+    tb_par = [int(p) for p in item_parents(base, a.rig, J)]
+    demo_w, _ = world_of_ktjd(item["x"][:Td, :J].numpy(), base, a.rig, strict_gt=True)
+    lines = []
+    for fname, ent in texts.items():
+        cid = fname[:-4] if fname.endswith(".npy") else fname
+        caps = ordered_captions(ent)
+        if not caps:
+            raise SystemExit(f"[refuse] {cid} has no caption")
+        cap = caps[0]; key = f"{cid}__cap0"
+        if key not in row_of:
+            raise SystemExit(f"[refuse] {key} not in {a.custom_cache}")
+        frames = int(ent.get("frames", Tt))
+        if not 2 <= frames <= Tt:
+            raise SystemExit(f"[refuse] {cid}: frames {frames} outside [2, {Tt}]")
+        text_by = [s for s, cs in (("ancestor", anc_caps), ("own", own_caps)) if norm_text(cap) in cs]
+        if text_by and not a.allow_seen:
+            raise SystemExit(f"[refuse] {cid}: caption text was trained on by {text_by} -- not OOD text (pass --allow_seen)")
+        flag = f"TEXT-SEEN({'+'.join(text_by)})" if text_by else "AUTHORED-OOD-TEXT"
+        emb = torch.as_tensor(np.asarray(E[row_of[key]])).float()
+        x = item["x"].clone(); x[Td:] = 0.0
+        is_t = torch.zeros_like(item["is_target"]); is_t[Td:Td + frames] = True
+        fv = torch.zeros_like(item["frame_valid"]); fv[:Td] = True; fv[Td:Td + frames] = True
+        it2 = dict(item); it2.update(x=x, is_target=is_t, frame_valid=fv, text=emb)
+        b = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in collate([it2]).items()}
+        torch.manual_seed(a.seed)
+        with torch.no_grad():
+            g2kw = {k: b[k] for k in ("struct_feats", "updown") if k in b}
+            cvj = torch.from_numpy(base.static_masks(a.rig)["channel_valid"]).to(dev)
+            cv = torch.zeros(1, b["x"].shape[2], 17, dtype=torch.bool, device=dev); cv[0, :cvj.shape[0]] = cvj
+            g2kw["channel_valid"] = cv
+            g2kw["heading_valid"] = b["x"][:, :, 0, 17] > 0.5
+            gen = sample(model, b["x"][..., :17].contiguous(), b["is_target"], a.steps, cfg_text=a.cfg_text,
+                         demo_frames=Td, joint_bias=b["joint_bias"], frame_valid=b["frame_valid"],
+                         joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"], **g2kw)
+        gen = gen[0].float().cpu().numpy()
+        gen_ric, gen_fk = world_of_ktjd(gen[Td:Td + frames, :J], base, a.rig, strict_gt=False)
+        e_gen = energy(gen_ric)
+        root_path = float(np.linalg.norm(np.diff(gen_ric[:, 0], axis=0), axis=-1).sum())
+        root_y = float(np.ptp(gen_ric[:, 0, 1]))
+        fk_gap = float(np.linalg.norm(gen_ric - gen_fk, axis=-1).mean())
+        name = f"{a.rig}__{cid}"
+        render_gif_multi(out / f"{name}.gif",
+                         [("demo", f"DEMO rest {a.rig}", demo_w, tb_par),
+                          ("gen_ric", f"GEN pos ep{ep} s{a.steps} [{flag}]", gen_ric, tb_par),
+                          ("gen_fk", f"GEN fk ep{ep} s{a.steps} - AUTHORED CAPTION, NO GT", gen_fk, tb_par)],
+                         cap, f"[textprobe {flag}] {a.rig} (J={J}) <- {key} ({frames}f)")
+        print(f"[probe] {name}.gif  {flag}  T={frames}  energy gen {e_gen:.4f} ({e_gen / tb_srig:.5f}/s_rig) / carrier "
+              f"{carrier_split} clip GT {carrier_energy:.4f}  root path {root_path:.2f}  root y range {root_y:.2f}  pos-vs-fk gap {fk_gap:.3f}  | {cap}",
+              flush=True)
+        lines.append(f"{name}\t{flag}\ttext_seen_by={'+'.join(text_by) or 'none'}\tcaption_key={key}\tT={frames}\tJ_gen={J}"
+                     f"\ts_rig_gen={tb_srig:.4f}\tenergy_gen={e_gen:.4f}\tenergy_gen_over_s_rig={e_gen / tb_srig:.5f}"
+                     f"\tcarrier_gt_energy={carrier_energy:.4f}\tcarrier_split={carrier_split}\tcarrier_clip={carrier_id}\troot_path={root_path:.3f}\troot_y_range={root_y:.3f}"
+                     f"\tpos_fk_gap={fk_gap:.4f}\tcaption: {cap}")
+    (out / "summary.txt").write_text(
+        f"ckpt={a.ckpt} epoch={ep} rig={a.rig} steps={a.steps} seed={a.seed} cfg_text={a.cfg_text} "
+        f"panels=demo|gen_ric|gen_fk (AUTHORED captions: no source motion, no reference panel)\n"
+        f"custom_texts={a.custom_texts} sha256={tsha} custom_cache={a.custom_cache} encoder={meta.get('encoder')} "
+        f"gen_view={ca['ktjd_root']} gen_generation={base.generation_id}\n"
+        f"lineage (each hop sha-verified against lora_cfg.init_from_sha256, each view against its ktjd_pins): "
+        f"{' ; '.join(chain)} -> ancestors {len(anc_ids)} clips / {len(anc_caps)} captions, own stage {len(own_ids)} / "
+        f"{len(own_caps)}; flags: AUTHORED-OOD-TEXT = caption string not trained on by any ancestor or this LoRA stage; "
+        f"TEXT-SEEN(who) = identical caption string trained on by <who>\n"
+        f"energy = mean frame-to-frame world displacement over all joints (canonical units), a how-much-it-moves diagnostic; "
+        f"carrier_gt_energy = GT energy of the carrier clip ({carrier_split} split, {carrier_id}) whose skeleton/rest demo the probe borrows, for scale\n"
         + "\n".join(lines) + "\n")
     print(f"[probe] DONE -> {out}", flush=True)
 
