@@ -12,7 +12,7 @@ no subsampling.
 
 Read-only w.r.t. training state; writes GIFs + summary.txt (jitter for both recoveries).
 """
-import argparse, json, pickle, sys
+import argparse, hashlib, json, pickle, sys
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +34,14 @@ PANEL_W, PANEL_H, GAP, FOOT = 300, 360, 12, 66
 # GT needs one panel only (the two families agree to 0.000% on real data).
 COLS = {"demo": (13, 110, 100), "gen_ric": (176, 61, 8),
         "gen_fk": (91, 44, 184), "gt": (185, 28, 28)}
+
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 24), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def world_of(norm_txjc, mean, std, recover="ric", parents=None, offsets=None):
@@ -212,6 +220,9 @@ def main():
                          "conditional). The text-dropped branch was trained (p_drop_text 0.1), "
                          "the demo axis was NOT (p_drop_demo 0) -- so only cfg_text is exposed.")
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--dump_world", action="store_true",
+                    help="also write <name>.world.npz next to each gif: gen_ric / gen_fk / gt_w / demo_w world positions "
+                         "[T,J,3], joint names, parents, fps -- the input of scripts/_compare_external_bvh_geometry.py")
     ap.add_argument("--corpus", choices=("truebones", "pzh", "ktjd17"), default="truebones")
     ap.add_argument("--ktjd_root", default="dataset/ktjd17_truebones")
     ap.add_argument("--demo_frames", type=int, default=DEMO_FRAMES)
@@ -282,8 +293,11 @@ def main():
     model.load_state_dict(ck["model"]); model.eval()
     ep = ck.get("epoch", -1)
     print(f"[render] ckpt {a.ckpt} (epoch {ep}) on {dev}", flush=True)
+    # --dump_world provenance (codex 2026-09-04): a dump must say which checkpoint produced it
+    dump_ckpt_sha = _sha256_file(a.ckpt) if a.dump_world else ""
 
     corpus_swap_note = ""
+    eff_pc, eff_excl = "", None          # effective per-cell stats / clip cut actually used (dumped with hashes)
     if a.corpus == "ktjd17":
         from src.data.ktjd17_incontext import Ktjd17Base, ktjd17_split_names
         pins_ck = ck.get("ktjd_pins") or {}
@@ -296,15 +310,17 @@ def main():
                 if k_ in ca and getattr(a, k_) != ca[k_]:
                     print(f"[render] {k_}: {getattr(a, k_)!r} -> {ca[k_]!r} (from ckpt)", flush=True)
                     setattr(a, k_, ca[k_])
+        # the EFFECTIVE stats and cut, resolved ONCE and dumped as such (codex 2026-09-04 round 2: the dump used
+        # to record the CLI value, which is empty for a LoRA ckpt whose cut comes from the checkpoint). The cut
+        # comes from the CKPT, never a render-time default: rendering a model against data it was not trained
+        # on is the drift this refuses -- except for an explicit zero-shot corpus swap, whose own cut applies.
+        eff_pc = a.percell_stats or ca.get("ktjd_percell_stats", "data/ktjd17_percell_stats_v1.npz")
+        # swap: the CLI cut verbatim (none given == no cut) -- a ckpt's cut names clips of ANOTHER corpus and must
+        # never leak into a swap (codex 2026-09-04 round 3); no swap: the ckpt's own cut
+        eff_excl = (a.exclude_clips or None) if a.allow_corpus_swap else (ca.get("exclude_clips") or None)
         base = Ktjd17Base(a.ktjd_root, caption_emb_cache=a.caption_cache,
                           joint_semantics=a.joint_sem, texts_json=a.texts_json,
-                          percell_stats=(a.percell_stats or ca.get("ktjd_percell_stats",
-                                                                    "data/ktjd17_percell_stats_v1.npz")),
-                          # the cut comes from the CKPT, never a render-time default: rendering a
-                          # model against data it was not trained on is the drift this refuses --
-                          # except for an explicit zero-shot corpus swap, whose own cut applies.
-                          exclude_clips=((a.exclude_clips if a.allow_corpus_swap else "")
-                                         or ca.get("exclude_clips") or None))
+                          percell_stats=eff_pc, exclude_clips=eff_excl)
         # `exclusion` is NOT in base.provenance -- it lives on base.provenance_exclusion -- so a
         # key-intersection drift check silently misses a swapped cut file at the same path, which
         # changes render/eval membership under an unchanged checkpoint (codex 2026-08-21 (A)4).
@@ -325,8 +341,7 @@ def main():
                              f"trained on: {drift}. Rendering a model against replaced artifacts "
                              f"produces a picture of nothing (pass --allow_corpus_swap for a "
                              f"deliberate zero-shot baseline on another corpus).")
-        names = ktjd17_split_names(a.ktjd_root, exclude=((a.exclude_clips if a.allow_corpus_swap else "")
-                                                        or ca.get("exclude_clips") or None))
+        names = ktjd17_split_names(a.ktjd_root, exclude=eff_excl)
         tb = None
     else:
         cond = pickle.load(open(f"{a.data_root}/_cond_normalized_J144.pkl", "rb"))
@@ -496,6 +511,27 @@ def main():
 
         cap = str(t_item.get("caption", ""))
         name = f"{bucket}_{rig}__{item['motion_id'][:48]}"
+        if a.dump_world:
+            _jn = [str(x) for x in base._skeleton(rig)["joint_names"]][:J] if a.corpus == "ktjd17" else [f"j{i}" for i in range(J)]
+            _gen_id = (json.loads((Path(a.ktjd_root) / "generation.json").read_text())["generation_id"]
+                       if a.corpus == "ktjd17" else "")
+            np.savez(out / f"{name}.world.npz", gen_ric=gen_ric, gen_fk=gen_fk, gt_w=gt_w, demo_w=demo_w,
+                     joint_names=np.array(_jn), parents=np.array(parents, dtype=np.int64),
+                     fps=np.array(30.0 if a.corpus == "ktjd17" else 20.0), rig=np.array(rig),
+                     motion_id=np.array(str(item["motion_id"])), caption=np.array(cap),
+                     # provenance (codex 2026-09-04): the consumer must be able to tell WHICH model, sampler and
+                     # corpus produced a dump, and refuse to pool dumps that disagree
+                     dump_format=np.array("world-dump-v3"), ckpt=np.array(str(a.ckpt)),
+                     ckpt_sha256=np.array(dump_ckpt_sha), epoch=np.array(int(ep)), steps=np.array(int(a.steps)),
+                     cfg_text=np.array(float(a.cfg_text)), seed=np.array(int(a.seed)),
+                     smooth_mincutoff=np.array(float(a.smooth_mincutoff)), smooth_beta=np.array(float(a.smooth_beta)),
+                     corpus=np.array(a.corpus), ktjd_root=np.array(str(a.ktjd_root) if a.corpus == "ktjd17" else ""),
+                     generation_id=np.array(_gen_id),
+                     percell_stats=np.array(str(eff_pc or "")),
+                     percell_sha256=np.array(_sha256_file(eff_pc) if eff_pc else ""),
+                     exclude_clips=np.array(str(eff_excl or "")),
+                     exclude_sha256=np.array(_sha256_file(eff_excl) if eff_excl else ""),
+                     units=np.array("source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"))
         render_gif(out / f"{name}.gif",
                    [("demo", f"DEMO {item['demo_id']}", demo_w),
                     ("gen_ric", f"GEN pos ep{ep} s{a.steps}", gen_ric),
