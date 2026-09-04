@@ -228,9 +228,11 @@ def main():
 
     # ---- verification: 30 optimizer-free steps on the real arm model ----
     torch.manual_seed(0)
+    # grad_ckpt: activation checkpointing only (recompute, bit-identical gradients) -- the B13 x T=304 Spider
+    # demo-64 check OOMed an 80 GB A100 without it (2026-09-04); same setting as the non-view producer
     model = InContextMotionDiT(in_ch=17, dim=ARM["dim"], depth=ARM["depth"],
                                n_heads=ARM["heads"], d_text=4096, d_joint_sem=4096,
-                               use_struct_feats=True, use_dir_bias=True).to(dev).train()
+                               use_struct_feats=True, use_dir_bias=True, grad_ckpt=True).to(dev).train()
     holder = {}
     def hook(_m, _i, out):
         out.retain_grad(); holder["out"] = out
@@ -417,7 +419,7 @@ def main():
                      "mask_policy_version": KTJD17_MASK_POLICY,
                      "verify": {"steps": VERIFY_STEPS, "tolerance_x": VERIFY_TOL,
                                 "predictor": "batch-wise gamma^2*sum(e2*mm)/(count_g*n_total), same denominators as the loss",
-                                "arm_model": ARM}},
+                                "arm_model": ARM, "arm_grad_ckpt": True}},
         "counts": e_cnt, "energies": {g: round(v, 6) for g, v in energies.items()},
         "target_family_shares": {f: round(v, 6) for f, v in ts.items()},
         "solve_consistency_check": {

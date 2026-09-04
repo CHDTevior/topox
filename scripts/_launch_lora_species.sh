@@ -14,6 +14,8 @@ cd /scratch/ts1v23/workspace/noKslot_clean
 # trainer argv and exits before srun: the launch that runs is the launch that was checked.
 PREFLIGHT=${PREFLIGHT:-0}
 if [ -n "${VIEW_ENV:-}" ]; then [ -s "$VIEW_ENV" ] || { echo "[lora] missing VIEW_ENV $VIEW_ENV"; exit 1; }; source "$VIEW_ENV"; fi
+# BB_ENV=configs/lora_backbone_<name>.env selects the BACKBONE (init ckpt + arch + demo condition); default = run12
+if [ -n "${BB_ENV:-}" ]; then [ -s "$BB_ENV" ] || { echo "[lora] missing BB_ENV $BB_ENV"; exit 1; }; source "$BB_ENV"; fi
 [ "$PREFLIGHT" = 1 ] || : "${SKIN_JOBID:?alloc id}"
 # GROUP mode (user 2026-09-03 "flying group"): GROUP=<name> trains ONE LoRA on the usable clips of several
 # rigs; the cut is configs/tb_lora_group_<name>_exclusions.json (written by scripts/_make_tb_group_exclusion.py
@@ -24,6 +26,15 @@ if [ -n "${GROUP:-}" ]; then RIG=group_${GROUP}; fi
 : "${RIG:?TrueBones rig id, e.g. Buffalo (or GROUP=...)}"
 SMOKE=${SMOKE:-0}
 INIT=${INIT:-runs/v2_noik_run12_896_r1acc/best_model.pt}
+# Backbone architecture and demo condition (user 2026-09-04: repeat zero-shot + LoRA on the 36M rest-demo and
+# demo-64 pilots). --init_from loads STRICTLY, so DIM/DEPTH/HEADS must equal the backbone's; DEMO_REST/DEMO_FRAMES
+# must equal what the backbone was trained with (the trainer's calibration gate also binds them to CALIB).
+# Defaults reproduce the run12 launches byte-for-byte (896/14/14, qk-norm, grad_ckpt, 1-frame rest demo).
+DIM=${DIM:-896}; DEPTH=${DEPTH:-14}; HEADS=${HEADS:-14}; QK_NORM=${QK_NORM:-1}; GRAD_CKPT=${GRAD_CKPT:-1}
+DEMO_REST=${DEMO_REST:-1}; DEMO_FRAMES=${DEMO_FRAMES:-1}
+for v in DEMO_REST QK_NORM GRAD_CKPT; do case "${!v}" in 0|1) ;; *) echo "[lora] $v must be 0 or 1 (got '${!v}')"; exit 1;; esac; done
+for v in DIM DEPTH HEADS DEMO_FRAMES; do [[ "${!v}" =~ ^[1-9][0-9]*$ ]] || { echo "[lora] $v must be a positive integer (got '${!v}')"; exit 1; }; done
+if [ "$DEMO_REST" = 1 ] && [ "$DEMO_FRAMES" != 1 ]; then echo "[lora] rest demo implies DEMO_FRAMES=1"; exit 1; fi
 # LoRA knobs (rank 64 per user; alpha defaults to r -> scale 1 whatever the rank (codex 2026-09-03 r3);
 # lr 1e-4 is the usual LoRA lr, ~0.7x the backbone's peak 1.5e-4; short constant-then-cosine schedule)
 LORA_R=${LORA_R:-64}; LORA_ALPHA=${LORA_ALPHA:-$LORA_R}; LORA_TARGETS=${LORA_TARGETS:-attn,ffn,cond}
@@ -32,7 +43,14 @@ LORA_R=${LORA_R:-64}; LORA_ALPHA=${LORA_ALPHA:-$LORA_R}; LORA_TARGETS=${LORA_TAR
 # runs/lora_tb_<rig>_r64_v1, dataset/ktjd17_truebones_lora_v2_mainbody -> runs/lora_tb_<rig>_r128_v2_mainbody.
 KTJD_ROOT=${KTJD_ROOT:-dataset/ktjd17_truebones_lora_v1}
 VIEW_TAG=$(basename "$KTJD_ROOT"); VIEW_TAG=${VIEW_TAG#ktjd17_truebones_lora_}
-OUT=${OUT:-runs/lora_tb_${RIG}_r${LORA_R}_${VIEW_TAG}}
+OUT=${OUT:-runs/lora_tb_${RIG}_r${LORA_R}_${VIEW_TAG}${BB_TAG:+_$BB_TAG}}
+BATCH=${BATCH:-8}
+# Calibration artifact: the main-body view binds it to (rig, LoRA batch, demo condition) -- the trainer refuses a
+# batch or demo mismatch -- so it is derived here unless CALIB is given; other views keep the legacy default.
+_calib_tag=$([ "$DEMO_REST" = 1 ] && echo rest1 || echo demo${DEMO_FRAMES})
+if [ -z "${CALIB:-}" ] && [ "$VIEW_TAG" = "v2_mainbody" ]; then
+  CALIB=configs/tb_$(echo "$RIG" | tr 'A-Z' 'a-z')_mainbody_gamma_calibration_b${BATCH}_${_calib_tag}_v1.json
+fi
 CALIB=${CALIB:-configs/tb_$(echo "$RIG" | tr 'A-Z' 'a-z')_gamma_calibration_v1.json}
 CUT=configs/tb_lora_${RIG}_only_exclusions.json   # written only for ELIGIBLE rigs by the builder
 [ -n "${GROUP:-}" ] && CUT=configs/tb_lora_group_${GROUP}_exclusions.json
@@ -56,7 +74,7 @@ done
 # --balance clip (each clip exactly once per epoch, no replacement) and drop_last, an epoch is
 # every clip once; the lr follows the linear scaling rule from the B8 / 1e-4 reference and is NOT
 # free -- an LR override that breaks the rule is refused.
-BATCH=${BATCH:-8}; LR_REF=1e-4; BATCH_REF=8
+LR_REF=1e-4; BATCH_REF=8
 LR=$(python -c "print(f'{${LR_REF} * ${BATCH} / ${BATCH_REF}:.6g}')")
 if [ -n "${LR_OVERRIDE:-}" ]; then LR=$LR_OVERRIDE; echo "[lora] WARNING: LR_OVERRIDE=$LR breaks the linear-scaling contract on purpose"; fi
 # the cosine decay spans 5/6 of the run unless pinned (300 -> 250 as before; 900 -> 750; 200 -> 166):
@@ -117,18 +135,19 @@ RIGCHECK
 # regression was never marked complete in the artifact, while its own visual gate (66/66 rigs,
 # verdict pass) and fixed QA (986 clips, 0 fail) both passed. Training here is the user's explicit
 # OOD experiment (2026-09-02); the flag records that authorization without touching the artifact.
+echo "[lora] backbone dim=$DIM depth=$DEPTH heads=$HEADS qk_norm=$QK_NORM grad_ckpt=$GRAD_CKPT demo_rest=$DEMO_REST demo_frames=$DEMO_FRAMES"
 echo "[lora] rig=$RIG out=$OUT view=$KTJD_ROOT stats=$PERCELL sem=$JOINT_SEM init=$INIT calib=$CALIB cut=$CUT r=$LORA_R alpha=$LORA_ALPHA targets=$LORA_TARGETS lr=$LR epochs=$EPOCHS warmup_steps=$WARMUP lr_decay_epochs=$LR_DECAY_EPOCHS"
 CMD=(python scripts/train_v2_incontext.py
   --out "$OUT" --corpus ktjd17 --ktjd_root "$KTJD_ROOT"
   --joint_sem "$JOINT_SEM" --caption_cache data/tb_caption_llm2vec_pzstyle_v1
   --texts_json data/tb_motion_texts_pzstyle_v1.json --ktjd_percell_stats "$PERCELL"
   --ktjd_gamma_calib "$CALIB" --exclude_clips "$CUT"
-  --dim 896 --depth 14 --heads 14 --qk_norm --grad_ckpt
+  --dim "$DIM" --depth "$DEPTH" --heads "$HEADS" $([ "$QK_NORM" = 1 ] && echo --qk_norm) $([ "$GRAD_CKPT" = 1 ] && echo --grad_ckpt)
   --lr "$LR" --batch "$BATCH" --epochs "$EPOCHS" --warmup_steps "$WARMUP" --wd 0.01 --grad_clip 1.0
   --lr_scheduler half_cosine --lr_decay_epochs "$LR_DECAY_EPOCHS" --eta_min_ratio 0.01 --grad_spike_reject 200
   --v_space --sigma_min 0.2 --huber_delta 10 --bf16 --t_sampler uniform
   --gamma_fk 0.07 --fk_warmup_steps "$FK_WARMUP" --gamma_vel 0.01 --gamma_lock 0.01 --gamma_acc 1.0
-  --demo_rest --demo_frames 1 --struct_feats --dir_bias --anchor none --balance clip
+  $([ "$DEMO_REST" = 1 ] && echo --demo_rest) --demo_frames "$DEMO_FRAMES" --struct_feats --dir_bias --anchor none --balance clip
   --p_drop_text 0.1 --p_drop_demo 0.0 --p_drop_both 0.0 --target_frames 240
   --init_from "$INIT" --lora_r "$LORA_R" --lora_alpha "$LORA_ALPHA" --lora_targets "$LORA_TARGETS"
   --ckpt_every "${CKPT_EVERY:-1000000}"
@@ -136,8 +155,28 @@ CMD=(python scripts/train_v2_incontext.py
   ${EXTRA:-})
 if [ "$PREFLIGHT" = 1 ]; then echo "[lora] PREFLIGHT OK -- would run: ${CMD[*]}"; exit 0; fi
 mkdir -p "$OUT"
-srun --jobid="$SKIN_JOBID" --ntasks=1 --cpus-per-task=${CPUS:-8} --gres=gpu:1 --mem=${MEM:-96G} \
-  /usr/bin/env HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 "${CMD[@]}" 2>&1 | tee "$OUT/train.log" | { grep -E '^\[(lora|init_from|train|resume|ktjd|calib)\]|=== epoch|\[val\]|SPIKE|FATAL|refuse|Traceback|Error|error' || true; } | cut -c1-200
+# Shared alloc (user 2026-09-04): GPU_PIN=<k> pins the run to ONE card of an alloc other work is using -- --gres=gpu:1
+# alone does not avoid busy cards -- with an --overlap step over all GPUS_TOTAL cards, CUDA_VISIBLE_DEVICES=k, and a
+# fail-closed gate: any compute process already on card k refuses the launch (no card sharing across projects).
+GRES_ARGS=(--gres=gpu:1)
+if [ -n "${GPU_PIN:-}" ]; then
+  GPUS_TOTAL=${GPUS_TOTAL:-4}
+  [[ "$GPU_PIN" =~ ^[0-9]+$ && "$GPUS_TOTAL" =~ ^[1-9][0-9]*$ ]] && [ "$GPU_PIN" -lt "$GPUS_TOTAL" ] \
+    || { echo "[lora] refuse: GPU_PIN='$GPU_PIN' must be an integer in [0, GPUS_TOTAL=$GPUS_TOTAL)"; exit 1; }
+  # one launcher per (alloc, card) at a time: the lock is held for the whole run, so a second cooperative launcher
+  # cannot pass the idle probe between our probe and our training step (TOCTOU, codex 2026-09-04)
+  mkdir -p .aris/meta; exec 8>".aris/meta/.gpu_pin_${SKIN_JOBID}_${GPU_PIN}.lock"
+  flock -n 8 || { echo "[lora] refuse: GPU$GPU_PIN of alloc $SKIN_JOBID is being launched on by another launcher"; exit 1; }
+  # the probe itself must succeed: a failed srun/nvidia-smi is NOT an idle card
+  probe=$(srun --jobid="$SKIN_JOBID" --overlap --gres=gpu:${GPUS_TOTAL} -N1 -n1 nvidia-smi --query-compute-apps=pid --format=csv,noheader -i "$GPU_PIN" 2>&1); st=$?
+  [ "$st" -eq 0 ] || { echo "[lora] refuse: GPU probe failed (rc=$st): $probe"; exit 1; }
+  busy=$(printf '%s\n' "$probe" | grep -c '[0-9]')
+  [ "$busy" -eq 0 ] || { echo "[lora] refuse: GPU$GPU_PIN of alloc $SKIN_JOBID has $busy compute process(es)"; exit 1; }
+  GRES_ARGS=(--overlap --gres=gpu:${GPUS_TOTAL} -N1)
+  echo "[lora] pinned to GPU$GPU_PIN of alloc $SKIN_JOBID (idle at launch, lock held)"
+fi
+srun --jobid="$SKIN_JOBID" --ntasks=1 --cpus-per-task=${CPUS:-8} "${GRES_ARGS[@]}" --mem=${MEM:-96G} \
+  /usr/bin/env ${GPU_PIN:+CUDA_VISIBLE_DEVICES=$GPU_PIN} HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 "${CMD[@]}" 2>&1 | tee "$OUT/train.log" | { grep -E '^\[(lora|init_from|train|resume|ktjd|calib)\]|=== epoch|\[val\]|SPIKE|FATAL|refuse|Traceback|Error|error' || true; } | cut -c1-200
 rc=${PIPESTATUS[0]}
 echo "[lora] rc=$rc (full log: $OUT/train.log)"
 exit "$rc"
