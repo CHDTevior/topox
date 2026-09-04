@@ -4,7 +4,8 @@
 PREREGISTERED PROTOCOL (fixed BEFORE measurement; every field is recorded in the artifact):
   cohort          ALL train-split targets, ONE full pass, clip-balanced
                   (InContextPairs balance_skeletons=False, seed 0, num_workers 4)
-  windows         exactly the training crop policy: demo = random re-based window,
+  windows         exactly the training crop policy: demo = the run's demo condition (DEMO_REST=1:
+                  1-frame rest pose; DEMO_REST=0: random re-based DEMO_FRAMES-frame window),
                   target = head window; energies measured on TARGET frames only
                   (that is where the loss lives). Crop re-base ACTIVE (post-fix).
   space           normalized model space (s_rig + frozen train gains), v_space=False,
@@ -33,7 +34,7 @@ PREREGISTERED PROTOCOL (fixed BEFORE measurement; every field is recorded in the
                     CONSTRUCTION of the solve: it gates solve/serialization correctness, and is
                     explicitly NOT evidence that the profile is attained during training.
                   [mechanism] 30 optimizer-free steps on the REAL arm model (dim384/depth7/
-                    heads8, struct+dir ON, B8): per-group share of sum |dLoss/d x1_pred|^2 must
+                    heads8, struct+dir ON, B=CALIB_BATCH, default 8): per-group share of sum |dLoss/d x1_pred|^2 must
                     match gamma^2 * E_err within 25%. This catches wiring bugs (dropped group,
                     gamma not reaching the loss, mask zeroing a group). It deliberately does NOT
                     compare against the Kimodo profile: the init error energy carries an
@@ -63,6 +64,13 @@ from src.data.ktjd17_incontext import Ktjd17Base, ktjd17_split_names            
 from src.models.v2.dit_motion import (InContextMotionDiT, cfm_loss,                       # noqa: E402
                                       _GROUP_SPEC_KTJD17, KTJD17_MASK_POLICY)
 from scripts.train_v2_incontext import ktjd_channel_lut, ktjd_prep, cond_of, to_dev       # noqa: E402
+
+# The grouped loss normalises per BATCH, so the mechanism check certifies the objective only at the batch
+# size the run will use (codex 2026-09-03, mirrors the view script). Recorded as protocol.batch; the
+# trainer refuses a run whose --batch differs.
+CALIB_BATCH = int(os.environ.get("CALIB_BATCH", "8"))
+if CALIB_BATCH <= 0:
+    raise SystemExit("[FAIL] CALIB_BATCH must be a positive integer")
 
 OUT = Path(os.environ.get("CALIB_OUT", "configs/pzh312_gamma_calibration_v5.json"))
 # Kimodo Eq.1 families -> KTJD groups, with the Eq.1-implied share profile (gamma^2-normalized:
@@ -96,6 +104,13 @@ T_SAMPLER = os.environ["T_SAMPLER"]
 GAMMA_ACC = float(os.environ["GAMMA_ACC"])
 VERIFY_STEPS, VERIFY_TOL = 30, 1.25    # mechanism check band, recorded verbatim in the artifact
 ARM = dict(dim=384, depth=7, heads=8)  # the Step-1 arm config the gammas will train
+# Demo condition of the mechanism check (codex 2026-09-04 P0): the arm model is driven with the SAME demo
+# the run trains with -- 1-frame rest (legacy default) or a DEMO_FRAMES-frame real clip of the same rig.
+# Recorded as protocol.demo_rest / demo_frames; the trainer refuses a run whose demo differs.
+DEMO_REST = int(os.environ.get("DEMO_REST", "1"))
+DEMO_FRAMES = int(os.environ.get("DEMO_FRAMES", "1"))
+if DEMO_REST not in (0, 1) or DEMO_FRAMES < 1 or (DEMO_REST == 1 and DEMO_FRAMES != 1):
+    raise SystemExit("[FAIL] DEMO_REST must be 0/1 and DEMO_FRAMES >= 1 (rest demo implies exactly 1 frame)")
 
 
 def main():
@@ -110,7 +125,7 @@ def main():
                   exclude_clips=EXCLUDE)
     names = ktjd17_split_names(R, exclude=EXCLUDE)
     ds = InContextPairs(base, names["train"], names["train"], balance_skeletons=False, seed=0,
-                        emit_graph_v2=True, demo_rest=True, demo_frames=1)
+                        emit_graph_v2=True, demo_rest=bool(DEMO_REST), demo_frames=DEMO_FRAMES)
     lut = ktjd_channel_lut(base)
 
     # ---- tiling assertion: per rig, the 9 groups cover channel_valid cells EXACTLY once ----
@@ -129,7 +144,7 @@ def main():
     # ---- pass 1: energies over the full train cohort ----
     from torch.utils.data import DataLoader
     gen = torch.Generator(); gen.manual_seed(0)
-    dl = DataLoader(ds, batch_size=8, shuffle=False, num_workers=24, collate_fn=collate,
+    dl = DataLoader(ds, batch_size=CALIB_BATCH, shuffle=False, num_workers=24, collate_fn=collate,
                     generator=gen)
     e_sum = {g: 0.0 for g in _GROUP_SPEC_KTJD17}
     e_cnt = {g: 0 for g in _GROUP_SPEC_KTJD17}
@@ -205,9 +220,11 @@ def main():
 
     # ---- verification: 30 optimizer-free steps on the real arm model ----
     torch.manual_seed(0)
+    # grad_ckpt: activation checkpointing only (recompute, bit-identical gradients); at CALIB_BATCH=16
+    # the fp32 arm model without it exceeds a 140 GB H200 on the J=142 rigs (2026-09-04).
     model = InContextMotionDiT(in_ch=17, dim=ARM["dim"], depth=ARM["depth"],
                                n_heads=ARM["heads"], d_text=4096, d_joint_sem=4096,
-                               use_struct_feats=True, use_dir_bias=True).to(dev).train()
+                               use_struct_feats=True, use_dir_bias=True, grad_ckpt=True).to(dev).train()
     holder = {}
     def hook(_m, _i, out):
         out.retain_grad(); holder["out"] = out
@@ -217,7 +234,7 @@ def main():
     # unshuffled head-240 slice is one corner of the corpus (first run: r_p share off 2x on
     # exactly that bias). Fixed-seed shuffle, preregistered.
     vgen = torch.Generator(); vgen.manual_seed(1)
-    it = iter(DataLoader(ds, batch_size=8, shuffle=True, generator=vgen, num_workers=2,
+    it = iter(DataLoader(ds, batch_size=CALIB_BATCH, shuffle=True, generator=vgen, num_workers=2,
                          collate_fn=collate))
     err_sum = {g: 0.0 for g in _GROUP_SPEC_KTJD17}
     err_cnt = {g: 0 for g in _GROUP_SPEC_KTJD17}
@@ -306,7 +323,7 @@ def main():
         g_sum2 = {g: 0.0 for g in _GROUP_SPEC_KTJD17}
         acc_vals = []
         vgen2 = torch.Generator(); vgen2.manual_seed(1)
-        it2 = iter(DataLoader(ds, batch_size=8, shuffle=True, generator=vgen2, num_workers=2,
+        it2 = iter(DataLoader(ds, batch_size=CALIB_BATCH, shuffle=True, generator=vgen2, num_workers=2,
                               collate_fn=collate))
         for step in range(VERIFY_STEPS):
             b = to_dev(next(it2), dev)
@@ -346,7 +363,9 @@ def main():
         "protocol": {"cohort": "train_all_targets_one_pass",
                      "cohort_windows": n_windows, "cohort_rigs": n_rigs,
                      "weighting": "clip_balanced",
-                     "seed": 0, "batch": 8, "huber_delta": HUBER, "windows": "demo_random_rebased/target_head",
+                     "seed": 0, "batch": CALIB_BATCH, "huber_delta": HUBER,
+                     "windows": ("demo_rest1/target_head" if DEMO_REST else "demo_random_rebased/target_head"),
+                     "demo_rest": bool(DEMO_REST), "demo_frames": DEMO_FRAMES,
                      "crop_rebase_active": True, "space": "normalized_model_space",
                      "t_sampler": T_SAMPLER, "v_space": V_SPACE, "sigma_min": SIGMA_MIN,
                      "gamma_acc": GAMMA_ACC,
@@ -357,7 +376,7 @@ def main():
                      "anchor": {ANCHOR_FAMILY: ANCHOR_GAMMA},
                      "mask_policy_version": KTJD17_MASK_POLICY,
                      "verify": {"steps": VERIFY_STEPS, "tolerance_x": VERIFY_TOL,
-                                "arm_model": ARM}},
+                                "arm_model": ARM, "arm_grad_ckpt": True}},
         "counts": e_cnt, "energies": {g: round(v, 6) for g, v in energies.items()},
         "target_family_shares": {f: round(v, 6) for f, v in ts.items()},
         "solve_consistency_check": {
@@ -387,7 +406,12 @@ def main():
         "hashes": {"gains_sha256": base.provenance["gains_sha256"],
                    "schema_sha256": base.provenance["schema_sha256"],
                    "joint_sem_sha256": base.provenance["joint_sem_sha256"],
-                   "code_sha256": code_sha},
+                   "code_sha256": code_sha,
+                   "code_script": "scripts/_measure_ktjd17_gamma_calibration.py",
+                   # cut / cohort / manifest seals, same as the view producer (codex 2026-09-04 P0)
+                   "exclusion_sha256": (base.provenance_exclusion or {}).get("sha256") or "none",
+                   "train_ids_sha256": hashlib.sha256("\n".join(sorted(names["train"])).encode()).hexdigest(),
+                   "manifest_sha256": hashlib.sha256((Path(R) / "manifests" / "clips.jsonl").read_bytes()).hexdigest()},
     }, indent=2))
     print(f"[OK] wrote {OUT}")
 

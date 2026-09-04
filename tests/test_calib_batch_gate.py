@@ -14,6 +14,7 @@ _spec = importlib.util.spec_from_file_location("train_v2_incontext", ROOT / "scr
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 gate = _mod._calib_batch_gate
+demo_drift = _mod._calib_demo_drift
 
 SHA = "a" * 64
 PATH = "configs/x_gamma_calibration.json"
@@ -70,6 +71,43 @@ class CalibBatchGateTests(unittest.TestCase):
                     {"args": [13], "ktjd_pins": {}}, "not-a-mapping", [], 7, {}):
             with self.subTest(res=res), self.assertRaisesRegex(SystemExit, "malformed"):
                 gate({"batch": 13}, 13, SHA, PATH, res)   # protocol.batch == --batch, still refused
+
+
+class CalibDemoDriftTests(unittest.TestCase):
+    def test_legacy_artifact_means_one_frame_rest_demo(self):
+        self.assertEqual(demo_drift({"batch": 8}, True, 1), [])                 # no fields: rest/1 -> matches a rest run
+        self.assertTrue(demo_drift({"batch": 8}, False, 64))                    # ... but not a 64-frame motion-demo run
+
+    def test_recorded_demo_condition_is_compared_exactly(self):
+        self.assertEqual(demo_drift({"demo_rest": False, "demo_frames": 64}, False, 64), [])
+        self.assertTrue(demo_drift({"demo_rest": False, "demo_frames": 64}, True, 1))
+        self.assertTrue(demo_drift({"demo_rest": False, "demo_frames": 32}, False, 64))
+        msg = demo_drift({"demo_rest": True, "demo_frames": 1}, False, 64)[0]
+        self.assertIn("DEMO_REST=0 DEMO_FRAMES=64", msg)
+
+    def test_malformed_fields_are_refused_even_when_coercion_would_match(self):
+        for proto in ({"demo_rest": False, "demo_frames": 64.9}, {"demo_rest": False, "demo_frames": "64"},
+                      {"demo_rest": [], "demo_frames": 64}, {"demo_rest": 0, "demo_frames": 64},
+                      {"demo_rest": False, "demo_frames": True}, {"demo_rest": False, "demo_frames": 0},
+                      {"demo_rest": True, "demo_frames": 64}, {"demo_rest": "false", "demo_frames": 64}):
+            with self.subTest(proto=proto):
+                msgs = demo_drift(proto, False, 64)
+                self.assertTrue(msgs and "malformed" in msgs[0])
+
+    def test_coercible_run_inputs_are_refused(self):
+        art = {"demo_rest": False, "demo_frames": 64}
+        for run in ((0, 64), (1, 1), (False, 64.9), (False, "64"), (False, True), (False, 0), (True, 64), ("0", 64)):
+            with self.subTest(run=run), self.assertRaisesRegex(SystemExit, "run demo condition malformed"):
+                demo_drift(art, *run)
+        self.assertEqual(demo_drift(art, False, 64), [])                       # parser-native bool / int passes
+        self.assertIn("DEMO_REST=0 DEMO_FRAMES=64", demo_drift({"demo_rest": True, "demo_frames": 1}, False, 64)[0])
+
+    def test_partial_record_is_refused_not_defaulted(self):
+        for proto in ({"demo_rest": False}, {"demo_frames": 64}, {"demo_rest": True}, {"demo_frames": 1}):
+            with self.subTest(proto=proto):
+                for run in ((True, 1), (False, 64)):
+                    msgs = demo_drift(proto, *run)
+                    self.assertTrue(msgs and "half-recorded" in msgs[0])
 
 
 if __name__ == "__main__":

@@ -14,7 +14,8 @@ KTJD-17 gamma calibration -- versioned artifact builder (codex round-S0 item 3).
 PREREGISTERED PROTOCOL (fixed BEFORE measurement; every field is recorded in the artifact):
   cohort          ALL train-split targets, ONE full pass, clip-balanced
                   (InContextPairs balance_skeletons=False, seed 0, num_workers 4)
-  windows         exactly the training crop policy: demo = random re-based window,
+  windows         exactly the training crop policy: demo = the run's demo condition (DEMO_REST=1:
+                  1-frame rest pose; DEMO_REST=0: random re-based DEMO_FRAMES-frame window),
                   target = head window; energies measured on TARGET frames only
                   (that is where the loss lives). Crop re-base ACTIVE (post-fix).
   space           normalized model space (s_rig + frozen train gains), v_space=False,
@@ -43,7 +44,7 @@ PREREGISTERED PROTOCOL (fixed BEFORE measurement; every field is recorded in the
                     CONSTRUCTION of the solve: it gates solve/serialization correctness, and is
                     explicitly NOT evidence that the profile is attained during training.
                   [mechanism] 30 optimizer-free steps on the REAL arm model (dim384/depth7/
-                    heads8, struct+dir ON, B8): per-group share of sum |dLoss/d x1_pred|^2 must
+                    heads8, struct+dir ON, B=CALIB_BATCH, default 8): per-group share of sum |dLoss/d x1_pred|^2 must
                     match gamma^2 * E_err within 25%. This catches wiring bugs (dropped group,
                     gamma not reaching the loss, mask zeroing a group). It deliberately does NOT
                     compare against the Kimodo profile: the init error energy carries an
@@ -109,6 +110,10 @@ VERIFY_STEPS, VERIFY_TOL = int(os.environ.get("VERIFY_STEPS", "30")), 1.25    # 
 # the objective only at the batch size the run will use (codex 2026-09-03). CALIB_BATCH is recorded in
 # protocol.batch and the trainer refuses a derived-view run whose --batch differs from it.
 CALIB_BATCH = int(os.environ.get("CALIB_BATCH", "8"))
+DEMO_REST = int(os.environ.get("DEMO_REST", "1"))      # demo condition of the mechanism check (codex 2026-09-04)
+DEMO_FRAMES = int(os.environ.get("DEMO_FRAMES", "1"))
+if DEMO_REST not in (0, 1) or DEMO_FRAMES < 1 or (DEMO_REST == 1 and DEMO_FRAMES != 1):
+    raise SystemExit("[FAIL] DEMO_REST must be 0/1 and DEMO_FRAMES >= 1 (rest demo implies exactly 1 frame)")
 if CALIB_BATCH <= 0:
     raise SystemExit("[FAIL] CALIB_BATCH must be a positive integer")
 if VERIFY_STEPS <= 0:
@@ -128,7 +133,7 @@ def main():
                   exclude_clips=EXCLUDE)
     names = ktjd17_split_names(R, exclude=EXCLUDE)
     ds = InContextPairs(base, names["train"], names["train"], balance_skeletons=False, seed=0,
-                        emit_graph_v2=True, demo_rest=True, demo_frames=1)
+                        emit_graph_v2=True, demo_rest=bool(DEMO_REST), demo_frames=DEMO_FRAMES)
     lut = ktjd_channel_lut(base)
 
     # ---- tiling assertion: per rig, the 9 groups cover channel_valid cells EXACTLY once ----
@@ -399,7 +404,8 @@ def main():
         "protocol": {"cohort": "train_all_targets_one_pass",
                      "cohort_windows": n_windows, "cohort_rigs": n_rigs,
                      "weighting": "clip_balanced",
-                     "seed": 0, "batch": CALIB_BATCH, "huber_delta": HUBER, "windows": "demo_random_rebased/target_head",
+                     "seed": 0, "batch": CALIB_BATCH, "demo_rest": bool(DEMO_REST), "demo_frames": DEMO_FRAMES, "huber_delta": HUBER,
+                     "windows": ("demo_rest1/target_head" if DEMO_REST else "demo_random_rebased/target_head"),
                      "crop_rebase_active": True, "space": "normalized_model_space",
                      "t_sampler": T_SAMPLER, "v_space": V_SPACE, "sigma_min": SIGMA_MIN,
                      "gamma_acc": GAMMA_ACC,

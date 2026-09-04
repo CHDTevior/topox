@@ -176,6 +176,38 @@ def connectivity_probe(model, b, demo_frames=DEMO_FRAMES, ktjd_lut=None, ktjd_ga
             "text": float(g_t.norm()), "joint_sem": float(g_s.norm())}
 
 
+def _calib_demo_drift(proto, run_demo_rest, run_demo_frames):
+    """The mechanism check drives the arm model with a demo; the artifact certifies the objective only under
+    that demo condition (codex 2026-09-04). Artifacts written before the field existed were all measured with
+    the 1-frame rest demo, so absence means exactly that -- a 64-frame motion-demo run must recalibrate."""
+    has_r, has_f = "demo_rest" in proto, "demo_frames" in proto
+    if not has_r and not has_f:
+        art = (True, 1)          # legacy artifact: both fields absent == measured with the 1-frame rest demo
+    elif has_r and has_f:
+        r, f = proto["demo_rest"], proto["demo_frames"]
+        # exact types, no coercion (codex 2026-09-04 round 2): 64.9 / "64" / [] / 0 must not pass as 64 / False
+        if (not isinstance(r, bool) or isinstance(f, bool) or not isinstance(f, int) or f < 1
+                or (r and f != 1)):
+            return [f"demo condition malformed in the calibration artifact (demo_rest={r!r}, "
+                    f"demo_frames={f!r}); expected a bool and a positive int with rest => frames == 1 -- recalibrate"]
+        art = (r, f)
+    else:
+        return ["demo condition half-recorded in the calibration artifact (only one of demo_rest / "
+                "demo_frames is present) -- recalibrate"]
+    # the run side is compared parser-native as well (codex 2026-09-04 round 3): --demo_rest is a store_true bool,
+    # --demo_frames a non-bool positive int; anything else is an invocation error, not a drift to explain away
+    if (not isinstance(run_demo_rest, bool) or isinstance(run_demo_frames, bool)
+            or not isinstance(run_demo_frames, int) or run_demo_frames < 1
+            or (run_demo_rest and run_demo_frames != 1)):
+        raise SystemExit(f"[refuse] run demo condition malformed (demo_rest={run_demo_rest!r}, "
+                         f"demo_frames={run_demo_frames!r}); expected a bool and a positive int with rest => frames == 1")
+    run = (run_demo_rest, run_demo_frames)
+    if art != run:
+        return [f"demo condition (rest={art[0]}, frames={art[1]}) != run (rest={run[0]}, frames={run[1]}) "
+                f"-- recalibrate with DEMO_REST={'1' if run[0] else '0'} DEMO_FRAMES={run[1]}"]
+    return []
+
+
 def _calib_batch_gate(proto, run_batch, calib_sha, calib_path, resume):
     """protocol.batch must be a positive integer (bool / float are not) equal to --batch, for every view:
     the grouped loss normalises per batch, so the mechanism check certifies the objective only at the
@@ -568,7 +600,11 @@ def main():
             raise SystemExit(f"[refuse] KTJD gamma calibration artifact {calib_p} missing -- "
                              f"run scripts/_measure_ktjd17_gamma_calibration.py first; "
                              f"placeholder gammas do not train (codex round-S0)")
-        calib = json.loads(calib_p.read_text())
+        # ONE snapshot of the artifact: parsed, hashed for the batch gate and pinned into the checkpoint from the
+        # same bytes (codex 2026-09-04 round 2: re-reading the file for each hash left a TOCTOU window)
+        calib_bytes = calib_p.read_bytes()
+        calib = json.loads(calib_bytes)
+        calib_sha = hashlib.sha256(calib_bytes).hexdigest()
         if str(calib["generation_id"]) != base.generation_id:
             raise SystemExit(f"[refuse] gamma calibration measured on generation "
                              f"{calib['generation_id']}, corpus is {base.generation_id}")
@@ -657,6 +693,7 @@ def main():
                              "recalibrate with the HUBER env set")
         if abs(float(proto["huber_delta"]) - float(a.huber_delta)) > 1e-9:
             drift.append(f"huber_delta {proto['huber_delta']} != {a.huber_delta}")
+        drift += _calib_demo_drift(proto, a.demo_rest, a.demo_frames)     # parser-native bool / int
         if drift:
             raise SystemExit("[refuse] gamma calibration objective-protocol mismatch: "
                              + "; ".join(drift) + " -- recalibrate under this objective")
@@ -669,8 +706,7 @@ def main():
         # the raw checkpoint object goes to the gate untouched (mmap: tensors are not read); the gate
         # refuses a non-mapping payload / args / ktjd_pins instead of tripping over .get here
         _peek = torch.load(a.resume, map_location="cpu", weights_only=False, mmap=True) if a.resume else None
-        _legacy = _calib_batch_gate(proto, int(a.batch), hashlib.sha256(calib_p.read_bytes()).hexdigest(),
-                                    str(a.ktjd_gamma_calib), _peek)
+        _legacy = _calib_batch_gate(proto, int(a.batch), calib_sha, str(a.ktjd_gamma_calib), _peek)
         del _peek
         if _legacy:
             print(_legacy, flush=True)
@@ -701,7 +737,7 @@ def main():
                     for k, v in _GROUP_SPEC_KTJD17.items()}
         ktjd_pins = {**base.provenance,
                      "gamma_calib_version": str(calib.get("version", "?")),
-                     "gamma_calib_sha256": hashlib.sha256(calib_p.read_bytes()).hexdigest(),
+                     "gamma_calib_sha256": calib_sha,
                      "gamma_calib_code_sha256": calib.get("hashes", {}).get("code_sha256"),
                      "gammas": ktjd_gammas,
                      "group_spec": spec_ser,

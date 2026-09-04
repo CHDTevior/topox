@@ -165,7 +165,9 @@ ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${RDZV_PORT}\$" \
   || { echo "[orch] PREFLIGHT FAIL: --resume target $RESUME does not exist"; exit 1; }
 
 SMOKE_ARGS=""
-[ "$SMOKE" = 1 ] && SMOKE_ARGS="--epochs 1 --val_every 1000 --ckpt_every 1000 --limit_train_clips 64"
+# the smoke must still take real optimizer steps: with drop_last the trainer refuses a
+# clip budget below one global batch (codex 2026-09-02 P0-3), so the cap scales with BATCH x ranks x 2
+[ "$SMOKE" = 1 ] && SMOKE_ARGS="--epochs 1 --val_every 1000 --ckpt_every 1000 --limit_train_clips $(( BATCH * GPUS_PER * 2 * 2 ))"
 RES_ARG=""; [ -n "$RESUME" ] && RES_ARG="--resume $RESUME"
 
 echo "[orch] $(date -u +%FT%TZ) master=$MASTER_NODE($JOB_A) worker=$WORKER_NODE($JOB_B)"
