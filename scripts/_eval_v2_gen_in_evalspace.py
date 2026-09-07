@@ -43,6 +43,10 @@ def parse_args():
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--gen_batch", type=int, default=16)
+    ap.add_argument("--tf32", action="store_true",
+                    help="enable TF32 tensor-core matmul and cuDNN TF32 (user 2026-09-07: fastest path, small numeric change accepted). "
+                         "Without it the process keeps PyTorch's defaults (matmul TF32 off, cuDNN TF32 on). Both flags are recorded in "
+                         "protocol.runtime and --merge refuses shards whose runtime differs, so --merge must be run with the same flag")
     ap.add_argument("--encode_batch", type=int, default=64)
     ap.add_argument("--pool", type=int, default=64)   # protocol pin (user 2026-09-07: 主表暂定用 64; was 32 until then)
     # Exact multi-GPU split (2026-09-03): the 302M model needs ~7.3 h for the 3,899-clip val on one
@@ -68,6 +72,13 @@ def parse_args():
     ap.add_argument("--merge", default=None,
                     help="comma-separated shard .npz files to score instead of generating here")
     a = ap.parse_args()
+    if os.environ.get("NVIDIA_TF32_OVERRIDE") is not None:
+        # the driver-level override changes TF32 behaviour underneath PyTorch and is invisible to the runtime record below
+        # (codex 2026-09-07 r3 P3): a shard set generated under it could be merged with one that was not
+        raise SystemExit("[refuse] NVIDIA_TF32_OVERRIDE is set; unset it -- the runtime record cannot see it")
+    if a.tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     # The protocol is FROZEN (user 2026-08-29: full val; deployment inference 20-step/cfg2; pool 32 until 2026-09-07, then the
     # user moved the main-table pool to 64 after the pool sweep -- 32 is now reached through --protocol_variant pool like 16/128).
     # Changing any of these is a protocol change -> edit this pin on purpose.

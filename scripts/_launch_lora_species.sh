@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Per-species LoRA fine-tune of the run12 backbone on ONE TrueBones rig (user 2026-09-02).
-#   SKIN_JOBID=<alloc> RIG=Buffalo BATCH=5 bash scripts/_launch_lora_species.sh [SMOKE=1]
+#   SKIN_JOBID=<alloc> GPU_PIN=<card> GPUS_TOTAL=<cards in alloc> RIG=Buffalo BATCH=5 bash scripts/_launch_lora_species.sh [SMOKE=1]   (GPU_PIN is mandatory: per-(alloc, card) ownership lock)
 # BATCH must divide the rig's n_train (rig_table.json); LR is derived by linear scaling from B8/1e-4.
 # Single GPU, one srun step inside our own allocation. Every objective / architecture flag is the
 # run12 keeper recipe (configs/run12_896_r1acc_env.sh) verbatim -- the only differences are the
@@ -159,6 +159,9 @@ mkdir -p "$OUT"
 # alone does not avoid busy cards -- with an --overlap step over all GPUS_TOTAL cards, CUDA_VISIBLE_DEVICES=k, and a
 # fail-closed gate: any compute process already on card k refuses the launch (no card sharing across projects).
 GRES_ARGS=(--gres=gpu:1)
+# unpinned launches skip the (alloc, card) ownership lock and the idle probe below, so a launch could slip between another
+# launcher's probe and its step on the same alloc (codex 2026-09-07 gen-eval queue r5 P2): every launch must pin a card
+[ -n "${GPU_PIN:-}" ] || { echo "[lora] refuse: GPU_PIN=<card> is required (per-(alloc, card) ownership lock; unpinned launches are not allowed)"; exit 1; }
 if [ -n "${GPU_PIN:-}" ]; then
   GPUS_TOTAL=${GPUS_TOTAL:-4}
   [[ "$GPU_PIN" =~ ^[0-9]+$ && "$GPUS_TOTAL" =~ ^[1-9][0-9]*$ ]] && [ "$GPU_PIN" -lt "$GPUS_TOTAL" ] \
