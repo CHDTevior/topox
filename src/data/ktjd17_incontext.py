@@ -81,9 +81,18 @@ class Ktjd17Base:
                  texts_json: str | Path = "motion_texts_by_file_clean_v1.json",
                  percell_stats: str | Path = "data/ktjd17_percell_stats_v1.npz",
                  exclude_clips: str | Path | None = None,
-                 random_caption: bool = False):
+                 random_caption: bool = False,
+                 normalization: str = "percell"):
         self.root = Path(root)
         self.random_caption = bool(random_caption)
+        # representation ablation (user 2026-09-06): "percell" = per-(rig, joint, channel) mean/std (the method);
+        # "scale_only" = the KTJD spec's scale-only normalization (mean 0, std = s_rig/gain per channel family,
+        # see _std_eff) -- the OLD representation, served through the same convention raw = x*(std+floor)+mean so
+        # every consumer (trainer, calibration, renderer, evaluator conversion) stays unchanged.
+        if normalization not in ("percell", "scale_only"):
+            raise ValueError(f"normalization must be 'percell' or 'scale_only', got {normalization!r}")
+        self.normalization = str(normalization)
+        self._pc_so: dict = {}
 
         # ---- generation identity + frozen schema (codex round-S0: pin the EXACT generation and
         # let the official validator, not this adapter, define schema validity) ----
@@ -355,7 +364,10 @@ class Ktjd17Base:
             "joint_sem_sha256": hashlib.sha256(Path(joint_semantics).read_bytes()).hexdigest(),
             # target parameterization: resuming a pre-centering ckpt into centered data (or the
             # reverse) trains against a different objective under one lineage -- pin it.
-            "target_centering": TARGET_CENTERING,
+            # the normalisation variant rides in THIS existing key (no new pin key: every checkpoint written before the
+            # variant existed must keep matching its view under the bidirectional pin check of the trainer / renderer / eval)
+            "target_centering": (TARGET_CENTERING if self.normalization == "percell"
+                                 else "ktjd_spec_scale_only_v1"),
             "percell_stats_cohort": str(self.percell_meta.get("cohort")),
             # pin the ARTIFACT, not just its description: an NPZ swapped under the same path must
             # not pass a fresh launch or a resume (codex round-S7 blocker 4)
@@ -382,6 +394,10 @@ class Ktjd17Base:
                                    f"built against a different KTJD joint ordering")
             self._skel[rig] = sk
         return self._skel[rig]
+
+    def skeleton(self, rig: str) -> dict:
+        """The rig's skeleton npz fields at their stored precision (float64); item fields are float32 copies."""
+        return self._skeleton(rig)
 
     def _geodesic(self, rig: str) -> np.ndarray:
         if rig not in self._geo:
@@ -441,7 +457,7 @@ class Ktjd17Base:
         see, because it measured BEFORE the crop.
         """
         if vm.any():
-            mu, sd = self._pc[rig]
+            mu, sd = self._stats(rig)
             J = w.shape[1]
             f0 = int(np.argmax(vm))
             off = w[f0, 0, 13:15] + mu[0, 13:15] / (sd[0, 13:15] + _STD_FLOOR)
@@ -449,6 +465,24 @@ class Ktjd17Base:
                 w = w.copy()
                 w[vm, 0, 13:15] -= off
         return w
+
+    def _stats(self, rig: str) -> tuple[np.ndarray, np.ndarray]:
+        """(mean [J,17], std [J,17]) of the serving normalization: raw = x * (std + _STD_FLOOR) + mean."""
+        if self.normalization == "percell":
+            return self._pc[rig]
+        if rig not in self._pc_so:
+            J = len(self._skeleton(rig)["parents"])
+            mu = np.zeros((J, 17), np.float32)
+            # exact-constant cells leave supervision AND the model input (static_masks), so the sampler holds them at
+            # normalized 0; decoding must restore the constant, exactly as per-cell decoding does -- the scale-only mean is
+            # therefore the constant on those cells and 0 everywhere else (codex 2026-09-06 r2 P1: 13 such cells on 4 rigs).
+            sup = self._sup.get(rig)
+            if sup is not None:
+                mu_pc, _ = self._pc[rig]
+                keep = ~np.asarray(sup[:J], dtype=bool)
+                mu[keep] = np.asarray(mu_pc[:J], dtype=np.float32)[keep]
+            self._pc_so[rig] = (mu, np.ascontiguousarray(self._std_eff(rig)[:, :17]).astype(np.float32))
+        return self._pc_so[rig]
 
     def _std_eff(self, rig: str) -> np.ndarray:
         """[J,18] de-normalization scale minus _STD_FLOOR (plane 17 = identity scale)."""
@@ -551,7 +585,7 @@ class Ktjd17Base:
             raw[0, 15] = 1.0                                   # heading [1,0] = facing +Z
             cv = self.static_masks(rig)["channel_valid"]
             raw[~cv] = 0.0
-            mu, sd = self._pc[rig]
+            mu, sd = self._stats(rig)
             n = (raw.astype(np.float32) - mu[:J]) / (sd[:J] + _STD_FLOOR)
             self._restf[rig] = np.concatenate(
                 [n, np.ones((J, 1), np.float32)], axis=1).astype(np.float32)
@@ -588,7 +622,7 @@ class Ktjd17Base:
         # scale-only normalization, so undo it first and standardize the RAW values: the artifact's
         # mean/std were measured on raw payloads, and the repo-wide de-normalization convention
         # x*(std+_STD_FLOOR)+mean must return RAW for the official decoder to work.
-        mu, sd = self._pc[rig]
+        mu, sd = self._stats(rig)
         x = x.copy()
         raw17 = motion[:, :J, :17].astype(np.float32)            # the untouched payload
         x[..., :17] = (raw17 - mu[None, :J]) / (sd[None, :J] + _STD_FLOOR)

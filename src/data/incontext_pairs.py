@@ -49,6 +49,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from src.data.anytop_dataset import _STD_FLOOR
 from torch.utils.data import Dataset
 
 from src.data.anytop_dataset import AnyTopDataset
@@ -165,8 +166,15 @@ class InContextPairs(Dataset):
     def __init__(self, base: AnyTopDataset, target_names, demo_names, *,
                  object_types=None, demo_frames=DEMO_FRAMES, target_frames=TARGET_FRAMES,
                  balance_skeletons=True, seed=0, emit_fk_fields=False, emit_graph_v2=False,
-                 identity_p=0.0, emit_ref_text=False, demo_rest=False):
+                 identity_p=0.0, emit_ref_text=False, demo_rest=False, augment=None):
         self.base = base
+        # skeleton-robustness augmentation (src/data/ktjd17_augment.py, user 2026-09-07): per-sample
+        # sub-skeleton / rest-convention / description-noise / statistics perturbations, applied to the
+        # target AND its demo. KTJD-17 only (needs static_masks + the FK fields). None or p == 0 = off,
+        # byte-identical items; active = every item also carries its own channel_valid [J,17].
+        self.aug = augment if (augment is not None and augment.active) else None
+        if self.aug is not None and not hasattr(base, "static_masks"):
+            raise ValueError("skeleton augmentation needs a KTJD-17 base (static_masks / FK fields)")
         self.Td, self.Tt = int(demo_frames), int(target_frames)
         self.balance = bool(balance_skeletons)
         self.seed = int(seed)
@@ -336,6 +344,7 @@ class InContextPairs(Dataset):
             demo_idx = tgt_idx          # same clip: demo window (random) vs target head window
 
         t_item, t_x, J, t_T = self._raw(tgt_idx)
+        J0 = J                                    # the rig's joint count before any augmentation
         if (self.demo_rest and not self.emit_ref_text
                 and not getattr(self.base, "random_caption", False)):
             # The demo slot carries the rig's REST POSE; the demo clip's motion is loaded and then
@@ -354,9 +363,33 @@ class InContextPairs(Dataset):
                 raise ValueError(f"{ot}: demo has {dJ} joints, target {J} -- joint-count "
                                  f"augmentation must be off for in-context pairs")
 
+        tr = None
+        if self.aug is not None and float(rng.random()) < self.aug.p:
+            from src.data.ktjd17_augment import make_transform, apply_motion
+            cv0 = np.asarray(self.base.static_masks(ot)["channel_valid"], dtype=bool)[:J0]
+            mu0 = np.asarray(t_item["anytop_mean"], dtype=np.float32)[:J0, :17]
+            sd0 = np.asarray(t_item["anytop_std"], dtype=np.float32)[:J0, :17]
+            # joints that make contact in the target clip are never dropped (raw contact flag > 0.5)
+            contact = ((t_x[:t_T, :, 12] * (sd0[None, :, 12] + _STD_FLOOR) + mu0[None, :, 12]) > 0.5).any(0)
+            sk = self.base.skeleton(ot)                  # float64 skeleton (item fields are float32 copies)
+            tr = make_transform(rng, self.aug, parents=np.asarray(sk["parents"])[:J0],
+                                P_rest_global=np.asarray(sk["P_rest_global"])[:J0],
+                                R_rest_global=np.asarray(sk["R_rest_global"])[:J0],
+                                offset_parent_local=np.asarray(sk["offset_parent_local"])[:J0],
+                                channel_valid=cv0, mu=mu0, sd=sd0, contact_joints=contact)
+            t_x = apply_motion(t_x, tr)
+            if not self.demo_rest:
+                d_x = apply_motion(d_x, tr)
+            J = len(tr.keep)
+
         if self.demo_rest:
-            d_crop = np.asarray(self.base.rest_frame_normalized(ot),
-                                dtype=np.float32)[None, :J]           # [1,J,C]
+            # a PRIVATE copy: the clamp below used to run in place on the cached frame, which was harmless while the
+            # clamp was the only consumer (idempotent) but would feed an already-clipped frame to the augmentation
+            # (codex 2026-09-07 P1: a 20 -> 5 clipped rotation cell moved the transformed demo by 4 normalized units)
+            d_crop = np.array(np.asarray(self.base.rest_frame_normalized(ot))[:J0], dtype=np.float32, copy=True)   # [J,C]
+            if tr is not None:
+                d_crop = apply_motion(d_crop, tr)
+            d_crop = d_crop[None]                                     # [1,J,C]
             # The rest pose is a REFERENCE, not a motion sample, so it need not lie inside the
             # motion distribution its statistics describe. Four rigs have a root rot6d component
             # that is numerically zero on every stored frame, so the analytic rest identity
@@ -385,7 +418,11 @@ class InContextPairs(Dataset):
         is_target = np.concatenate([np.zeros(self.Td, bool), t_valid])
         frame_valid = np.concatenate([d_valid, t_valid])
 
-        geo = np.asarray(t_item["geodesic_dist"])[:J, :J].astype(np.float32)
+        if tr is not None:
+            from src.data.ktjd17_augment import hop_matrix
+            geo = hop_matrix(tr.parents)
+        else:
+            geo = np.asarray(t_item["geodesic_dist"])[:J, :J].astype(np.float32)
         out = {
             "x": torch.from_numpy(x),
             "is_target": torch.from_numpy(is_target),
@@ -416,8 +453,25 @@ class InContextPairs(Dataset):
         out["is_identity"] = bool(is_identity)
         sem = t_item.get("joint_semantics")          # order-hash checked inside the dataset
         if sem is not None:
-            out["joint_sem"] = torch.as_tensor(np.asarray(sem))[:J].float()
-        if self.emit_fk_fields:
+            if tr is not None:
+                from src.data.ktjd17_augment import apply_semantics
+                out["joint_sem"] = torch.from_numpy(apply_semantics(sem, tr, rng)).float()
+            else:
+                out["joint_sem"] = torch.as_tensor(np.asarray(sem))[:J].float()
+        if self.aug is not None:
+            # per-sample static channel mask: the trainer's per-rig LUT cannot describe a sub-skeleton
+            cv_now = tr.channel_valid if tr is not None else \
+                np.asarray(self.base.static_masks(ot)["channel_valid"], dtype=bool)[:J]
+            out["channel_valid"] = torch.from_numpy(np.ascontiguousarray(cv_now))
+        if self.emit_fk_fields and tr is not None:
+            out["anytop_mean"] = torch.from_numpy(np.concatenate(
+                [tr.mu, np.zeros((J, 1), np.float32)], axis=1)).float()          # plane 17 carries no offset
+            out["anytop_std"] = torch.from_numpy(np.concatenate(
+                [tr.sd, np.ones((J, 1), np.float32) - _STD_FLOOR], axis=1)).float()
+            out["parents"] = torch.from_numpy(tr.parents.astype(np.int64))
+            out["rest_offsets"] = torch.from_numpy(tr.offsets.astype(np.float32))
+            out["R_rest_global"] = torch.from_numpy(tr.R_rest.astype(np.float32))
+        elif self.emit_fk_fields:
             # Same fields, same [:J] slice, same source item as scripts/v2_preflight_bz1.py's
             # FK==RIC gate -- i.e. already in the served (permuted) joint order. Only the TARGET
             # item's rig matters: gamma_fk applies to target frames, and demo shares the rig.
@@ -431,7 +485,11 @@ class InContextPairs(Dataset):
                 # rotations (decoder.py:70); the 13ch corpus has no such field, so flag-free.
                 out["R_rest_global"] = torch.as_tensor(
                     np.asarray(t_item["R_rest_global"])[:J]).float()
-        if self.emit_graph_v2:
+        if self.emit_graph_v2 and tr is not None:
+            feats, ud = _graph_v2_tables(tr.parents, tr.offsets, geo)   # this sample's tree, uncached
+            out["struct_feats"] = torch.from_numpy(feats)
+            out["updown"] = torch.from_numpy(ud)
+        elif self.emit_graph_v2:
             if ot not in self._g2cache:
                 # geodesic_raw is the UN-clipped served-order Floyd matrix -- the self-check
                 # inside _graph_v2_tables pins the LCA decomposition to it exactly.
@@ -503,6 +561,11 @@ def collate(batch):
             for k, b in enumerate(batch):
                 rr[k, :b["n_joints"]] = b["R_rest_global"]
             out["R_rest_global"] = rr
+    if "channel_valid" in batch[0]:
+        cvb = torch.zeros(B, Jm, batch[0]["channel_valid"].shape[1], dtype=torch.bool)
+        for k, b in enumerate(batch):
+            cvb[k, :b["n_joints"]] = b["channel_valid"]
+        out["channel_valid"] = cvb
     if "struct_feats" in batch[0]:
         # graph-v2 fields, padded to Jm. Padded rows are zeros; padded PAIRS are irrelevant
         # because the -1e4 PAD_BIAS already excludes them from attention, and zero-index lookups

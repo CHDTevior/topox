@@ -107,6 +107,9 @@ ARM = dict(dim=384, depth=7, heads=8)  # the Step-1 arm config the gammas will t
 # Demo condition of the mechanism check (codex 2026-09-04 P0): the arm model is driven with the SAME demo
 # the run trains with -- 1-frame rest (legacy default) or a DEMO_FRAMES-frame real clip of the same rig.
 # Recorded as protocol.demo_rest / demo_frames; the trainer refuses a run whose demo differs.
+REP_NORM = os.environ.get("REP_NORM", "percell")          # representation ablation: percell | scale_only
+if REP_NORM not in ("percell", "scale_only"):
+    raise SystemExit(f"[FAIL] REP_NORM must be percell or scale_only, got {REP_NORM!r}")
 DEMO_REST = int(os.environ.get("DEMO_REST", "1"))
 DEMO_FRAMES = int(os.environ.get("DEMO_FRAMES", "1"))
 if DEMO_REST not in (0, 1) or DEMO_FRAMES < 1 or (DEMO_REST == 1 and DEMO_FRAMES != 1):
@@ -122,7 +125,7 @@ def main():
                       percell_stats=os.environ.get("PERCELL", "data/pzh312_norm_stats_v4.npz"),
                       texts_json=os.environ.get(
                           "TEXTS_JSON", "motion_texts_by_file_clean_v1.json"),
-                  exclude_clips=EXCLUDE)
+                  exclude_clips=EXCLUDE, normalization=REP_NORM)
     names = ktjd17_split_names(R, exclude=EXCLUDE)
     ds = InContextPairs(base, names["train"], names["train"], balance_skeletons=False, seed=0,
                         emit_graph_v2=True, demo_rest=bool(DEMO_REST), demo_frames=DEMO_FRAMES)
@@ -366,6 +369,7 @@ def main():
                      "seed": 0, "batch": CALIB_BATCH, "huber_delta": HUBER,
                      "windows": ("demo_rest1/target_head" if DEMO_REST else "demo_random_rebased/target_head"),
                      "demo_rest": bool(DEMO_REST), "demo_frames": DEMO_FRAMES,
+                     "normalization": REP_NORM,
                      "crop_rebase_active": True, "space": "normalized_model_space",
                      "t_sampler": T_SAMPLER, "v_space": V_SPACE, "sigma_min": SIGMA_MIN,
                      "gamma_acc": GAMMA_ACC,

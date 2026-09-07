@@ -25,6 +25,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.data.anytop_dataset import AnyTopDataset                               # noqa: E402
+from src.data.ktjd17_augment import AugConfig                                    # noqa: E402
 from src.data.incontext_pairs import (InContextPairs, collate, read_split,      # noqa: E402
                                       truebones_types, pzh_types, DEMO_FRAMES, TARGET_FRAMES)
 from src.models.v2.dit_motion import (InContextMotionDiT, cfm_loss,             # noqa: E402
@@ -108,10 +109,14 @@ def ktjd_prep(b, lut, gammas):
     x17 = x[..., :17].contiguous()
     heading = x[:, :, 0, 17] > 0.5                                  # [B,T]
     B, Jm = x.shape[0], x.shape[2]
-    cv = torch.zeros(B, Jm, 17, dtype=torch.bool, device=x.device)
-    for k, ot in enumerate(b["object_type"]):
-        m = lut[ot]
-        cv[k, :m.shape[0]] = m.to(x.device)
+    if "channel_valid" in b:
+        # augmented batches carry their own per-sample masks (a sub-skeleton has no entry in the rig LUT)
+        cv = b["channel_valid"].to(x.device)
+    else:
+        cv = torch.zeros(B, Jm, 17, dtype=torch.bool, device=x.device)
+        for k, ot in enumerate(b["object_type"]):
+            m = lut[ot]
+            cv[k, :m.shape[0]] = m.to(x.device)
     return x17, dict(channel_valid=cv, heading_valid=heading,
                      gammas=gammas, group_spec=_GROUP_SPEC_KTJD17)
 
@@ -342,6 +347,23 @@ def main():
                          "flag records an EXPLICIT user authorization to train anyway (user "
                          "2026-08-20: gate override (b), data artifact untouched). Without it, "
                          "ktjd17 training refuses to start.")
+    ap.add_argument("--rep_norm", choices=("percell", "scale_only"), default="percell",
+                    help="representation ablation (user 2026-09-06): per-cell mean/std (the method) or the KTJD "
+                         "spec's scale-only normalization (the old representation); recorded in ktjd_pins as "
+                         "target_centering/normalization and must match the gamma calibration's protocol")
+    # skeleton-robustness augmentation (user 2026-09-07; src/data/ktjd17_augment.py). ktjd17 + train split only;
+    # --aug_p 0 (default) = off and byte-identical batches. Recorded in ktjd_pins.augmentation and compared with
+    # the gamma calibration's protocol.augmentation (absent there = measured without augmentation).
+    ap.add_argument("--aug_p", type=float, default=0.0, help="probability a training sample is augmented (0 = off)")
+    ap.add_argument("--aug_drop_max_frac", type=float, default=0.0,
+                    help="sub-skeleton: max fraction of droppable joints removed (root / contact joints never)")
+    ap.add_argument("--aug_drop_mode", choices=("any", "tips"), default="any",
+                    help="sub-skeleton: 'any' joint (children re-parented) or 'tips' (prune leaves only; FK stays exact)")
+    ap.add_argument("--aug_rest_deg", type=float, default=0.0, help="rest-convention: max per-joint rotation, degrees")
+    ap.add_argument("--aug_sem_noise", type=float, default=0.0, help="description embeddings: noise std / row RMS")
+    ap.add_argument("--aug_sem_drop_p", type=float, default=0.0, help="description embeddings: P(zero the whole table)")
+    ap.add_argument("--aug_stats_logsd", type=float, default=0.0, help="statistics: log-normal std factor sigma")
+    ap.add_argument("--aug_stats_shift", type=float, default=0.0, help="statistics: mean shift sigma (in stds)")
     ap.add_argument("--ktjd_gamma_calib", default="configs/ktjd17_gamma_calibration_v5.json",
                     help="versioned KTJD gamma calibration artifact (energies + gammas + hashes); "
                          "ktjd17 training REFUSES to start without it (codex round-S0)")
@@ -473,6 +495,14 @@ def main():
     ap.add_argument("--lora_targets", default="attn,ffn,cond",
                     help="comma list of src.models.v2.lora.TARGET_GROUPS keys")
     a = ap.parse_args()
+    aug_cfg = AugConfig(p=a.aug_p, drop_max_frac=a.aug_drop_max_frac, drop_mode=a.aug_drop_mode, rest_deg=a.aug_rest_deg,
+                        sem_noise=a.aug_sem_noise, sem_drop_p=a.aug_sem_drop_p,
+                        stats_logsd=a.aug_stats_logsd, stats_shift=a.aug_stats_shift)
+    if aug_cfg.active and a.corpus != "ktjd17":
+        raise SystemExit("[refuse] --aug_* is ktjd17-only (needs static_masks and the FK skeleton fields)")
+    if aug_cfg.active and a.anchor == "rest":
+        raise SystemExit("[refuse] --anchor rest keeps a per-rig rest anchor; a sub-skeleton sample has no entry "
+                         "in that table -- use --anchor none/demo with --aug_p > 0")
     if a.lora_r > 0 and not a.init_from:
         raise SystemExit("[refuse] --lora_r needs --init_from <backbone ckpt>: a LoRA adapts a trained model")
     if a.lora_r > 0 and a.resume:
@@ -534,7 +564,7 @@ def main():
                           joint_semantics=a.joint_sem, texts_json=a.texts_json,
                           percell_stats=a.ktjd_percell_stats,
                           exclude_clips=(a.exclude_clips or None),
-                          random_caption=a.random_caption)
+                          random_caption=a.random_caption, normalization=a.rep_norm)
         names = ktjd17_split_names(a.ktjd_root, exclude=(a.exclude_clips or None))
         types = None                       # all KTJD rigs; splits already carve train/val/held
         # ---- external release gate (codex round-S0): optimization against this corpus is gated
@@ -685,6 +715,10 @@ def main():
         # which is exactly the gamma_acc=0 objective) -- so absence certifies only acc-off runs
         if abs(float(proto.get("gamma_acc", 0.0)) - float(a.gamma_acc)) > 1e-9:
             drift.append(f"gamma_acc {proto.get('gamma_acc', 0.0)} != {a.gamma_acc}")
+        # normalization: the energies were measured in the serving normalization; an artifact written before the
+        # field existed was measured under per-cell mean/std (the only normalization that existed then)
+        if str(proto.get("normalization", "percell")) != str(a.rep_norm):
+            drift.append(f"normalization {proto.get('normalization', 'percell')!r} != {a.rep_norm!r}")
         # huber_delta shapes the gradient the mechanism check measured through -- a calibration
         # verified under the knee does not certify the knee-free (MSE) objective, and vice versa
         # (gap found 2026-08-28 when step-2 Huber->MSE landed; the three-key guard predated it)
@@ -694,6 +728,10 @@ def main():
         if abs(float(proto["huber_delta"]) - float(a.huber_delta)) > 1e-9:
             drift.append(f"huber_delta {proto['huber_delta']} != {a.huber_delta}")
         drift += _calib_demo_drift(proto, a.demo_rest, a.demo_frames)     # parser-native bool / int
+        # augmentation changes the served distribution the energies were measured on; an artifact without
+        # the field was measured without augmentation and certifies only an unaugmented run
+        if proto.get("augmentation") != aug_cfg.protocol():
+            drift.append(f"augmentation {proto.get('augmentation')!r} != {aug_cfg.protocol()!r}")
         if drift:
             raise SystemExit("[refuse] gamma calibration objective-protocol mismatch: "
                              + "; ".join(drift) + " -- recalibrate under this objective")
@@ -747,7 +785,8 @@ def main():
                      # resuming or rendering against a different cut is a data change, and the
                      # drift check must catch it like any other payload hash.
                      "exclusion": base.provenance_exclusion,
-                     "gate_override": bool(a.ktjd_training_authorized)}
+                     "gate_override": bool(a.ktjd_training_authorized),
+                     "augmentation": aug_cfg.protocol()}
     else:
         cond = pickle.load(open(f"{a.data_root}/_cond_normalized_J144.pkl", "rb"))
         types = truebones_types(cond.keys()) if a.corpus == "truebones" else pzh_types(cond.keys())
@@ -791,7 +830,7 @@ def main():
                            emit_fk_fields=(a.gamma_fk > 0 or a.gamma_vel > 0 or a.gamma_lock > 0),
                            emit_graph_v2=(a.struct_feats or a.dir_bias),
                            identity_p=a.identity_p, emit_ref_text=a.ref_text,
-                           demo_rest=a.demo_rest)
+                           demo_rest=a.demo_rest, augment=aug_cfg)
     ds_va = InContextPairs(base, names["val"], names["train"], object_types=types,
                            demo_frames=a.demo_frames, target_frames=a.target_frames,
                            balance_skeletons=False, seed=a.seed + 1,
@@ -994,7 +1033,9 @@ def main():
                 # under settings nothing in the lineage records.
                 "huber_delta", "sigma_min", "grad_clip", "exclude_clips", "ktjd_gamma_calib",
                 "lr_scheduler", "eta_min_ratio", "lr_decay_epochs", "grad_ckpt", "epochs",
-                "artic_min", "artic_gate_after", "artic_gate_strikes", "val_every")
+                "artic_min", "artic_gate_after", "artic_gate_strikes", "val_every",
+                "aug_p", "aug_drop_max_frac", "aug_drop_mode", "aug_rest_deg", "aug_sem_noise", "aug_sem_drop_p",
+                "aug_stats_logsd", "aug_stats_shift")
         core = ("dim", "depth", "heads", "batch", "lr", "seed", "data_root", "splits_dir",
                 "joint_sem", "caption_cache", "texts_json")
         missing = [k for k in core if k not in old_args]
