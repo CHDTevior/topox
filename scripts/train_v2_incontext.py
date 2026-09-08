@@ -354,6 +354,15 @@ def main():
     # skeleton-robustness augmentation (user 2026-09-07; src/data/ktjd17_augment.py). ktjd17 + train split only;
     # --aug_p 0 (default) = off and byte-identical batches. Recorded in ktjd_pins.augmentation and compared with
     # the gamma calibration's protocol.augmentation (absent there = measured without augmentation).
+    ap.add_argument("--freeze_zero_joint_sem", action="store_true",
+                    help="simplified-baseline arm (user 2026-09-08): zero the joint-description projection at init and freeze it, so the "
+                         "model never receives joint semantics; the checkpoint stays loadable by every consumer (the projection is zero)")
+    ap.add_argument("--require_uniform_gammas", action="store_true",
+                    help="simplified-baseline arm (codex baseline r3 #3): refuse any calibration artifact whose group weights are "
+                         "not all exactly 1.0, so an inherited or re-measured CALIB path cannot restore the calibrated weights")
+    ap.add_argument("--no_geo_bias", dest="geo_bias", action="store_false",
+                    help="simplified-baseline arm (codex baseline r1 #1): the spatial attention receives no geodesic-distance bias "
+                         "(padding mask kept); recorded as geo_bias=False in the checkpoint args and enforced inside the model")
     ap.add_argument("--aug_p", type=float, default=0.0, help="probability a training sample is augmented (0 = off)")
     ap.add_argument("--aug_drop_max_frac", type=float, default=0.0,
                     help="sub-skeleton: max fraction of droppable joints removed (root / contact joints never)")
@@ -755,6 +764,25 @@ def main():
         if not all(np.isfinite(v) and v > 0 for v in ktjd_gammas.values()):
             raise SystemExit(f"[refuse] calibration gammas must be finite and positive: "
                              f"{ktjd_gammas}")
+        if a.require_uniform_gammas:
+            # the simplified baseline's third removed ingredient IS the calibrated weighting: any artifact whose weights are not
+            # all exactly 1.0 restores it, however validly it was measured (codex baseline r3 #3)
+            _nonuni = {k: v for k, v in ktjd_gammas.items() if v != 1.0}
+            if _nonuni:
+                raise SystemExit(f"[refuse] --require_uniform_gammas: {a.ktjd_gamma_calib} weights are not all 1.0 ({_nonuni}); "
+                                 f"this arm trains with fixed uniform group weights (measure the artifact with GAMMA_SOLVE=uniform)")
+            if str(calib.get("protocol", {}).get("gamma_solve")) != "uniform":
+                raise SystemExit(f"[refuse] --require_uniform_gammas: {a.ktjd_gamma_calib} records gamma_solve="
+                                 f"{calib.get('protocol', {}).get('gamma_solve')!r}, not 'uniform'")
+            # the artifact's evidence was measured ON A MODEL: for this arm it must be THIS arm's model, or the mechanism check
+            # and the acceleration diagnostic certify a denoiser that still has the ingredients we removed (codex baseline r4 #2)
+            _arm = (calib.get("protocol", {}).get("verify", {}) or {}).get("arm_model", {}) or {}
+            _want = {"struct_feats": bool(a.struct_feats), "dir_bias": bool(a.dir_bias), "geo_bias": bool(a.geo_bias),
+                     "freeze_zero_joint_sem": bool(a.freeze_zero_joint_sem)}
+            _got = {k: _arm.get(k) for k in _want}
+            if _got != _want:
+                raise SystemExit(f"[refuse] --require_uniform_gammas: {a.ktjd_gamma_calib} was measured on a model with "
+                                 f"{_got}, this run builds {_want} -- re-measure it with the matching ARM_* conditioning")
         calib_huber = float(calib.get("protocol", {}).get("huber_delta", 0.0))
         if abs(calib_huber - a.huber_delta) > 1e-9:
             raise SystemExit(f"[refuse] gamma calibration measured the objective at huber_delta="
@@ -914,12 +942,12 @@ def main():
                                      d_text=4096, d_joint_sem=4096,
                                      use_struct_feats=a.struct_feats,
                                      use_dir_bias=a.dir_bias, grad_ckpt=a.grad_ckpt,
-                                     use_ref_text=a.ref_text, qk_norm=a.qk_norm).to(dev)
+                                     use_ref_text=a.ref_text, qk_norm=a.qk_norm, use_geo_bias=a.geo_bias).to(dev)
     else:
         model = InContextMotionDiT(in_ch=in_ch, dim=a.dim, depth=a.depth, n_heads=a.heads,
                                    d_text=4096, d_joint_sem=4096,
                                    use_struct_feats=a.struct_feats, use_dir_bias=a.dir_bias, grad_ckpt=a.grad_ckpt,
-                                   use_ref_text=a.ref_text, qk_norm=a.qk_norm).to(dev)
+                                   use_ref_text=a.ref_text, qk_norm=a.qk_norm, use_geo_bias=a.geo_bias).to(dev)
     # raw_model stays the UNCOMPILED module: it is what state_dict()/load_state_dict() use, so
     # checkpoints keep clean keys (a compiled wrapper prefixes everything with `_orig_mod.` and
     # every earlier checkpoint would fail to load).
@@ -940,6 +968,16 @@ def main():
             print(f"[init_from] {a.init_from} (epoch {init_from_epoch}, sha256 {init_from_sha256[:16]}) -> "
                   f"model weights loaded, optimizer/epoch/pins NOT restored", flush=True)
         del ck0
+    if a.freeze_zero_joint_sem:
+        # no joint semantics: the projection is exactly zero and frozen (excluded from the optimiser below), so h += 0 for every
+        # joint; a checkpoint of this arm loads into the unchanged architecture and decodes/evaluates with no special case.
+        # Applied AFTER --init_from so an initialisation checkpoint cannot restore a non-zero projection (codex baseline r1 #2).
+        with torch.no_grad():
+            raw_model.joint_sem.weight.zero_(); raw_model.joint_sem.bias.zero_()
+        for p_ in raw_model.joint_sem.parameters():
+            p_.requires_grad_(False)
+        if is_main:
+            print("[model] --freeze_zero_joint_sem: joint-description projection zeroed and frozen (no joint semantics reach the model)", flush=True)
     if a.lora_r > 0:
         from src.models.v2.lora import inject_lora, freeze_non_lora
         lora_paths = inject_lora(raw_model, [g for g in a.lora_targets.split(",") if g],
@@ -1035,7 +1073,9 @@ def main():
                 "lr_scheduler", "eta_min_ratio", "lr_decay_epochs", "grad_ckpt", "epochs",
                 "artic_min", "artic_gate_after", "artic_gate_strikes", "val_every",
                 "aug_p", "aug_drop_max_frac", "aug_drop_mode", "aug_rest_deg", "aug_sem_noise", "aug_sem_drop_p",
-                "aug_stats_logsd", "aug_stats_shift")
+                "aug_stats_logsd", "aug_stats_shift",
+                # simplified-baseline knobs (codex baseline r1 #2): both define the arm
+                "geo_bias", "freeze_zero_joint_sem")
         core = ("dim", "depth", "heads", "batch", "lr", "seed", "data_root", "splits_dir",
                 "joint_sem", "caption_cache", "texts_json")
         missing = [k for k in core if k not in old_args]
@@ -1141,18 +1181,22 @@ def main():
                             out[pre + k] = v
                     return out
                 sem_bad = []
+                # leaves that are METADATA, not measurements: compared for exact equality after a
+                # type check (codex baseline r2 #1 -- float() on a list marked every artifact,
+                # including an artifact compared with itself, as malformed and blocked every reswap)
+                # keyed by the LEAF name, so every section's metadata is covered (codex baseline r3 #1)
+                _EXACT_LEAVES = {"asserted_groups": list, "skipped": bool, "statement": str,
+                                 "scope": str, "rationale": str, "note": str}
                 def _num_eq(sect, k, ov, nv):
-                    # exactly ONE text leaf is legitimate: mechanism_check.statement (fixed
-                    # generator prose; changed wording = changed check semantics). Text anywhere
-                    # else in a numeric section is a malformed artifact (codex r4).
-                    if f"{sect}.{k}" == "mechanism_check.statement":
-                        # this leaf must BE text on both sides -- a numeric statement is a
-                        # malformed artifact, not a number to compare (codex r5)
-                        if not (isinstance(ov, str) and isinstance(nv, str)):
+                    want = _EXACT_LEAVES.get(k.rsplit(".", 1)[-1])
+                    if want is not None:
+                        if not (isinstance(ov, want) and isinstance(nv, want)):
                             sem_bad.append(f"{sect}.{k}:malformed")
                         elif ov != nv:
-                            sem_bad.append(f"{sect}.{k}:text")
+                            sem_bad.append(f"{sect}.{k}")
                         return
+                    # every OTHER leaf of these sections is a measurement: text there is a malformed
+                    # artifact, not a number to compare (codex r4/r5)
                     if isinstance(ov, str) or isinstance(nv, str):
                         sem_bad.append(f"{sect}.{k}:malformed")
                         return
@@ -1171,9 +1215,21 @@ def main():
                         sem_bad.append(f"{sect}.{k}")
                 # numeric sections AND mechanism_check: leaf sets must match EXACTLY -- a leaf
                 # deleted from either side is a schema change, not a free pass
+                # ALL of the artifact's evidence, not a subset: the mechanism check, the solve/skip record and the
+                # acceleration diagnostic each certify part of the objective this checkpoint trained under, and a section
+                # left out of the comparison is a section a re-measurement may silently change (codex baseline r3 #1)
+                # residual_saturation_at_init is a top-level measurement, not a section (codex baseline r4 #3)
+                _num_eq("root", "residual_saturation_at_init", oldc.get("residual_saturation_at_init"),
+                        calib.get("residual_saturation_at_init"))
                 for section in ("gammas", "energies", "counts", "target_family_shares",
-                                "mechanism_check"):
-                    o, n = _flat(oldc.get(section)), _flat(calib.get(section))
+                                "mechanism_check", "solve_consistency_check", "acc_diagnostic"):
+                    ov_, nv_ = oldc.get(section), calib.get(section)
+                    if ov_ is None and nv_ is None:
+                        continue          # acc_diagnostic is null when the arm trains with gamma_acc=0 (codex baseline r5 #1)
+                    if (ov_ is None) != (nv_ is None):
+                        sem_bad.append(f"{section}:present_on_one_side")
+                        continue
+                    o, n = _flat(ov_), _flat(nv_)
                     if not o or not n or set(o) != set(n):
                         sem_bad.append(f"{section}:keys")
                         continue

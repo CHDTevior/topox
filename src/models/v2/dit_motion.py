@@ -176,7 +176,7 @@ class InContextMotionDiT(nn.Module):
 
     def __init__(self, in_ch=13, dim=256, depth=6, n_heads=8, d_text=4096, d_blueprint=16,
                  d_joint_sem=4096, mlp_ratio=4.0, use_struct_feats=False, use_dir_bias=False,
-                 local_root_dim=0, use_ref_text=False, grad_ckpt=False, qk_norm=False):
+                 local_root_dim=0, use_ref_text=False, grad_ckpt=False, qk_norm=False, use_geo_bias=True):
         super().__init__()
         # Activation checkpointing recomputes each block's activations in the backward pass
         # instead of storing them: ~60-70% less activation memory for ~30% more compute. It is
@@ -193,6 +193,12 @@ class InContextMotionDiT(nn.Module):
         # (codex 01a01b1a fix B), silently confounding any cross-arm comparison.
         self.use_struct_feats = bool(use_struct_feats)
         self.use_dir_bias = bool(use_dir_bias)
+        self.use_geo_bias = bool(use_geo_bias)
+        if not self.use_geo_bias:
+            # simplified-baseline arm (user 2026-09-08; codex baseline r1 #1): the spatial attention keeps NO skeleton-graph prior.
+            # The flag travels with the checkpoint as a buffer, so a consumer that rebuilds the model without use_geo_bias=False
+            # fails strict loading (unexpected key) instead of silently restoring the geodesic bias at evaluation. No RNG consumed.
+            self.register_buffer("geo_bias_off", torch.ones(()))
         self.mask_token = nn.Parameter(torch.zeros(dim))          # marks "this frame is to be generated"
         # TEMPORAL POSITION. Without this the model cannot tell frame 1 from frame 16, so when the
         # input is pure noise (t->0) it has no way to know what belongs at each timestep and can only
@@ -308,6 +314,10 @@ class InContextMotionDiT(nn.Module):
                 raise ValueError("model built with use_struct_feats=True but batch has no "
                                  "struct_feats -- dataset must be built with emit_graph_v2=True")
             h = h + self.struct_mlp(struct_feats)[:, None]                      # [B,1,J,D]
+        if not self.use_geo_bias and joint_bias is not None:
+            # drop the geodesic entries (-clip(geo, 8), in [-8, 0]) but keep the PAD_BIAS (-1e4) padding entries the collator
+            # wrote, so padded joints stay masked exactly as before
+            joint_bias = torch.where(joint_bias <= -1e3, joint_bias, torch.zeros_like(joint_bias))
         if self.use_dir_bias:
             if updown is None:
                 raise ValueError("model built with use_dir_bias=True but batch has no updown")

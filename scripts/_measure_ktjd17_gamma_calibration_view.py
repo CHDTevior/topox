@@ -114,6 +114,12 @@ CALIB_BATCH = int(os.environ.get("CALIB_BATCH", "8"))
 REP_NORM = os.environ.get("REP_NORM", "percell")
 if REP_NORM not in ("percell", "scale_only", "rest"):
     raise SystemExit(f"[FAIL] REP_NORM must be percell, scale_only or rest, got {REP_NORM!r}")
+# GAMMA_SOLVE=kimodo (default): the Kimodo-implied share profile solved on the measured energies. GAMMA_SOLVE=uniform: every
+# group weight 1.0 -- the FIXED-WEIGHT baseline arm (user 2026-09-08); the energies are still measured and the mechanism check
+# still certifies the loss implementation at those weights, only the solve (and its solve-consistency gate) is bypassed.
+GAMMA_SOLVE = os.environ.get("GAMMA_SOLVE", "kimodo")
+if GAMMA_SOLVE not in ("kimodo", "uniform"):
+    raise SystemExit(f"[FAIL] GAMMA_SOLVE must be kimodo or uniform, got {GAMMA_SOLVE!r}")
 DEMO_REST = int(os.environ.get("DEMO_REST", "1"))      # demo condition of the mechanism check (codex 2026-09-04)
 DEMO_FRAMES = int(os.environ.get("DEMO_FRAMES", "1"))
 if DEMO_REST not in (0, 1) or DEMO_FRAMES < 1 or (DEMO_REST == 1 and DEMO_FRAMES != 1):
@@ -125,7 +131,14 @@ if VERIFY_STEPS <= 0:
 # the arm model of the mechanism check: from the launch config when given (ARM_DIM/ARM_DEPTH/ARM_HEADS/ARM_QK_NORM; codex 2026-09-08 r2 #6),
 # else the historical Step-1 arm (384/7/8, no qk-norm) that every earlier artifact recorded
 ARM = dict(dim=int(os.environ.get("ARM_DIM", "384")), depth=int(os.environ.get("ARM_DEPTH", "7")),
-           heads=int(os.environ.get("ARM_HEADS", "8")), qk_norm=os.environ.get("ARM_QK_NORM", "0") == "1")
+           heads=int(os.environ.get("ARM_HEADS", "8")), qk_norm=os.environ.get("ARM_QK_NORM", "0") == "1",
+           # the CONDITIONING of the arm being calibrated: the mechanism check and the acceleration diagnostic are measured on
+           # this model, so an arm that removes an ingredient must be measured without it (codex baseline r3 #2). Defaults keep
+           # every earlier artifact's model: structural features, directional bias, geodesic bias, live joint semantics.
+           struct_feats=os.environ.get("ARM_STRUCT_FEATS", "1") == "1",
+           dir_bias=os.environ.get("ARM_DIR_BIAS", "1") == "1",
+           geo_bias=os.environ.get("ARM_GEO_BIAS", "1") == "1",
+           freeze_zero_joint_sem=os.environ.get("ARM_FREEZE_ZERO_JOINT_SEM", "0") == "1")
 
 
 def main():
@@ -204,6 +217,8 @@ def main():
     raw_fam = {f: (FAMILIES[f]["share"] / max(sum(energies[g] for g in FAMILIES[f]["groups"]), 1e-8)) ** 0.5 for f in live_fam}
     scale = ANCHOR_GAMMA / raw_fam[ANCHOR_FAMILY]
     gam_fam = {f: (round(raw_fam[f] * scale, 4) if f in live_fam else 1.0) for f in FAMILIES}
+    if GAMMA_SOLVE == "uniform":
+        gam_fam = {f: 1.0 for f in FAMILIES}                                  # fixed-weight baseline: no solve
     gammas = {g: (1.0 if g in empty_groups else gam_fam[fam_of[g]]) for g in _GROUP_SPEC_KTJD17}   # every empty group: 1.0
     _tot_live = sum(FAMILIES[f]["share"] for f in live_fam)
     ts = {f: FAMILIES[f]["share"] / _tot_live for f in live_fam}          # family target shares over the live families
@@ -239,12 +254,16 @@ def main():
     # tolerance is rounding-aware: the gammas are stored to 4 decimals (that is what training
     # consumes), which perturbs the shares by ~3e-6. A real defect -- wrong family map, wrong
     # energy, wrong anchor -- moves them by >1e-2, so 1e-4 separates the two cleanly.
-    if max(off.values()) > 1e-4:
+    if GAMMA_SOLVE == "uniform":
+        print("[solve] SKIPPED: GAMMA_SOLVE=uniform writes gamma 1.0 for every group (fixed-weight baseline); the shares above are the"
+              " un-weighted energy shares, not a target profile")
+    elif max(off.values()) > 1e-4:
         raise SystemExit(f"[FAIL] gamma solve does not reproduce the preregistered Kimodo "
                          f"share profile: max deviation {max(off.values()):.2e} "
                          f"({ {f: round(ach[f], 4) for f in off} })")
-    print(f"[solve] PASS (solve/serialization consistency, max dev {max(off.values()):.1e}) "
-          f"-- NOT a claim that the profile is attained during training")
+    else:
+        print(f"[solve] PASS (solve/serialization consistency, max dev {max(off.values()):.1e}) "
+              f"-- NOT a claim that the profile is attained during training")
 
     # ---- verification: 30 optimizer-free steps on the real arm model ----
     torch.manual_seed(0)
@@ -252,7 +271,13 @@ def main():
     # demo-64 check OOMed an 80 GB A100 without it (2026-09-04); same setting as the non-view producer
     model = InContextMotionDiT(in_ch=17, dim=ARM["dim"], depth=ARM["depth"],
                                n_heads=ARM["heads"], d_text=4096, d_joint_sem=4096,
-                               use_struct_feats=True, use_dir_bias=True, grad_ckpt=True, qk_norm=ARM["qk_norm"]).to(dev).train()
+                               use_struct_feats=ARM["struct_feats"], use_dir_bias=ARM["dir_bias"],
+                               use_geo_bias=ARM["geo_bias"], grad_ckpt=True, qk_norm=ARM["qk_norm"]).to(dev).train()
+    if ARM["freeze_zero_joint_sem"]:
+        with torch.no_grad():
+            model.joint_sem.weight.zero_(); model.joint_sem.bias.zero_()
+        for _p in model.joint_sem.parameters():
+            _p.requires_grad_(False)
     holder = {}
     def hook(_m, _i, out):
         out.retain_grad(); holder["out"] = out
@@ -432,24 +457,34 @@ def main():
                      "weighting": "clip_balanced",
                      "seed": 0, "batch": CALIB_BATCH, "demo_rest": bool(DEMO_REST), "demo_frames": DEMO_FRAMES, "huber_delta": HUBER,
                      "normalization": REP_NORM,
+                     "gamma_solve": GAMMA_SOLVE,
                      "windows": ("demo_rest1/target_head" if DEMO_REST else "demo_random_rebased/target_head"),
                      "crop_rebase_active": True, "space": "normalized_model_space",
                      "t_sampler": T_SAMPLER, "v_space": V_SPACE, "sigma_min": SIGMA_MIN,
                      "gamma_acc": GAMMA_ACC,
                      "energy_stat": "mean_x1_sq_over_effective_valid_cells",
-                     "mapping": "kimodo_eq1_family_shares: share_fam ~ gamma_fam^2 * sum E_i; "
-                                "gamma_fam = sqrt(share_fam / sum E_i)",
+                     "mapping": ("uniform_fixed_weights: gamma_fam = 1.0 for every family, no solve (fixed-weight baseline)"
+                                 if GAMMA_SOLVE == "uniform" else
+                                 "kimodo_eq1_family_shares: share_fam ~ gamma_fam^2 * sum E_i; gamma_fam = sqrt(share_fam / sum E_i)"),
                      "families": {f: FAMILIES[f]["groups"] for f in FAMILIES},
                      "empty_groups": empty_groups,
                      "representation": (((getattr(base, "derivation", None) or {}).get("representation") or {}).get("id") or "ktjd17"),
-                     "anchor": {ANCHOR_FAMILY: ANCHOR_GAMMA},
+                     "anchor": (None if GAMMA_SOLVE == "uniform" else {ANCHOR_FAMILY: ANCHOR_GAMMA}),
                      "mask_policy_version": KTJD17_MASK_POLICY,
                      "verify": {"steps": VERIFY_STEPS, "tolerance_x": VERIFY_TOL,
                                 "predictor": "batch-wise gamma^2*sum(e2*mm)/(count_g*n_total), same denominators as the loss",
                                 "arm_model": ARM, "arm_grad_ckpt": True}},
         "counts": e_cnt, "energies": {g: round(v, 6) for g, v in energies.items()},
-        "target_family_shares": {f: round(v, 6) for f, v in ts.items()},
-        "solve_consistency_check": {
+        # uniform: no target exists; the section holds the family shares REALISED by gamma 1.0 (recorded for reference) so the
+        # artifact schema stays complete for the trainer's artifact-equivalence comparison (codex baseline r1 #3)
+        "target_family_shares": ({f: round(v, 6) for f, v in ach.items()} if GAMMA_SOLVE == "uniform"
+                                 else {f: round(v, 6) for f, v in ts.items()}),
+        "solve_consistency_check": ({
+            "statement": "not applicable: GAMMA_SOLVE=uniform writes gamma 1.0 for every group -- no Kimodo share profile is solved "
+                         "for or targeted; realised_family_shares_at_gamma_1 are the un-weighted energy shares",
+            "skipped": True,
+            "realised_family_shares_at_gamma_1": {f: round(v, 6) for f, v in ach.items()},
+        } if GAMMA_SOLVE == "uniform" else {
             "statement": "gamma_fam^2 * sum(E_x1) over families, normalized, == the "
                          "preregistered Kimodo Eq.1 share profile (hard gate, 1e-4)",
             "scope": "TRUE BY CONSTRUCTION of the solve -- this gate proves the solve ran on "
@@ -462,7 +497,7 @@ def main():
                          "the faithful transfer into KTJD units",
             "achieved": {f: round(v, 6) for f, v in ach.items()},
             "max_deviation": max(off.values()),
-        },
+        }),
         "acc_diagnostic": acc_diag,
         "mechanism_check": {
             "statement": "measured output-grad share == gamma^2 * E_err within 25%/group "

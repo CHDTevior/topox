@@ -77,7 +77,7 @@ def main():
                                d_text=4096, d_joint_sem=4096,
                                use_struct_feats=bool(ca.get("struct_feats", False)),
                                use_dir_bias=bool(ca.get("dir_bias", False)),
-                               qk_norm=bool(ca.get("qk_norm", False)),
+                               qk_norm=bool(ca.get("qk_norm", False)), use_geo_bias=bool(ca.get("geo_bias", True)),
                                use_ref_text=bool(ca.get("ref_text", False))).to(dev)
     model.load_state_dict(ck["model"]); model.eval()
 

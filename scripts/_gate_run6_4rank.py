@@ -69,6 +69,16 @@ if ANCHOR != "none":
     raise SystemExit(f"[gate] ANCHOR={ANCHOR} not exercised by this gate")
 if RANDOM_CAPTION:
     raise SystemExit("[gate] RANDOM_CAPTION=1 not exercised by this gate")
+# EXTRA carries the launcher's extra trainer flags: the gate must exercise them or refuse, otherwise a PASS
+# certifies a different model than the launch builds (codex baseline r2 #2)
+_EXTRA = os.environ.get("EXTRA", "").split()
+_EXTRA_KNOWN = {"--no_geo_bias", "--freeze_zero_joint_sem", "--require_uniform_gammas"}
+_unknown = [t for t in _EXTRA if t not in _EXTRA_KNOWN]
+if _unknown:
+    raise SystemExit(f"[gate] EXTRA={_EXTRA} contains flags this gate does not exercise: {_unknown}")
+GEO_BIAS = "--no_geo_bias" not in _EXTRA
+FREEZE_ZERO_JOINT_SEM = "--freeze_zero_joint_sem" in _EXTRA
+REQUIRE_UNIFORM_GAMMAS = "--require_uniform_gammas" in _EXTRA
 PERCELL, CALIB, CUT_ENV = _req("PERCELL"), _req("CALIB"), _req("CUT")
 KTJD_ROOT, JOINT_SEM = _req("KTJD_ROOT"), _req("JOINT_SEM")
 TEXTS_JSON = os.environ.get("TEXTS_JSON")
@@ -117,16 +127,26 @@ ds = InContextPairs(base, names["train"], names["train"], balance_skeletons=True
                     emit_fk_fields=True, emit_graph_v2=STRUCT_FEATS or DIR_BIAS,
                     demo_rest=DEMO_REST, demo_frames=DEMO_FRAMES)
 lut = ktjd_channel_lut(base)
-G = {k: float(v) for k, v in
-     json.loads(Path(CALIB).read_text())["gammas"].items()}
+_calib_json = json.loads(Path(CALIB).read_text())
+G = {k: float(v) for k, v in _calib_json["gammas"].items()}
+if REQUIRE_UNIFORM_GAMMAS:                       # the same refusal the trainer makes (codex baseline r4 #1)
+    _nonuni = {k: v for k, v in G.items() if v != 1.0}
+    if _nonuni or str(_calib_json.get("protocol", {}).get("gamma_solve")) != "uniform":
+        raise SystemExit(f"[gate] --require_uniform_gammas: {CALIB} has non-uniform weights {_nonuni} or gamma_solve="
+                         f"{_calib_json.get('protocol', {}).get('gamma_solve')!r}")
 m = InContextMotionDiT(in_ch=17, dim=DIM, depth=DEPTH, n_heads=HEADS, d_text=4096,
                        d_joint_sem=4096, use_struct_feats=STRUCT_FEATS, use_dir_bias=DIR_BIAS,
-                       grad_ckpt=GRAD_CKPT, qk_norm=QK_NORM).to(dev)
+                       grad_ckpt=GRAD_CKPT, qk_norm=QK_NORM, use_geo_bias=GEO_BIAS).to(dev)
 raw = m
+if FREEZE_ZERO_JOINT_SEM:                      # as the trainer does: zero + freeze, excluded from the optimiser below
+    with torch.no_grad():
+        raw.joint_sem.weight.zero_(); raw.joint_sem.bias.zero_()
+    for _p in raw.joint_sem.parameters():
+        _p.requires_grad_(False)
 if COMPILE:
     m = torch.compile(m, dynamic=True)
 m = DDP(m, device_ids=[local], find_unused_parameters=True)
-opt = torch.optim.AdamW(m.parameters(), lr=LR, weight_decay=WD)
+opt = torch.optim.AdamW([p for p in m.parameters() if p.requires_grad], lr=LR, weight_decay=WD)
 smp = DistributedSampler(ds, shuffle=True, drop_last=True); smp.set_epoch(0)
 dl = DataLoader(ds, batch_size=BATCH, sampler=smp, num_workers=3, collate_fn=collate)
 it = iter(dl)
@@ -206,7 +226,8 @@ for step in range(STEPS):
     if not torch.isfinite(gn):
         bad.append(f"rank{rank} step{step}: non-finite grad norm")
     if step == STEPS - 1:
-        nograd_names = sorted(n for n, p in raw.named_parameters() if p.grad is None)
+        # frozen parameters have no gradient BY DESIGN; the check is about parameters that should have one
+        nograd_names = sorted(n for n, p in raw.named_parameters() if p.grad is None and p.requires_grad)
     opt.step()
     # Mirror the trainer's parameter resync exactly, otherwise this gate certifies a configuration
     # that never runs and its 1e-6 equality test rejects the real one (codex 2026-08-24).
