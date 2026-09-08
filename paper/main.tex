@@ -1,0 +1,63 @@
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2027_conference,times}
+\input{math_commands.tex}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{xcolor}
+\usepackage{enumitem}
+
+% ---- project macros (rename here, once) ----
+\newcommand{\method}{\textsc{TopX}}          % TODO: final method name
+\newcommand{\rep}{KTJD-17}                    % per-joint 17-channel motion representation
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\num}[1]{\textcolor{blue}{#1}}    % numbers still to be pinned to a final run / table
+
+\title{One Model, Many Skeletons: Skeleton-Aware In-Context \\ Text-to-Motion Diffusion Across Heterogeneous Topologies}
+
+% Authors must not appear in the submitted version (double blind).
+\author{Anonymous authors\\ Paper under double-blind review}
+
+%\iclrfinalcopy % Uncomment for camera-ready version, but NOT for submission.
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Text-to-motion generation has mostly been built for one body: the joint count,
+joint order and pose parameterisation of a single human skeleton are baked into the architecture.
+We present \method{}, a text-conditioned motion diffusion transformer that serves hundreds of
+heterogeneous animal skeletons with one set of weights. Three ingredients make this work. \rep{} is
+a per-joint representation that any rigged animation can be converted to from its kinematic tree,
+rest pose and motion alone, with every (rig, joint, channel) cell normalised by its own statistics,
+so that rigs of 34 to 102 joints share one network input without a template, retargeting or
+inverse kinematics. The skeleton enters as a prompt: its rest pose is
+prepended to the sequence as a clean frame, and natural-language descriptions of its joints together
+with a graph-distance attention bias tell the network what each joint is; nothing in the model is
+specific to a skeleton, so a rig it has never seen is served by the same forward pass once its
+statistics are supplied. And a grouped flow-matching objective whose channel weights are calibrated
+from measured group energies rather than hand-tuned keeps root, body and contact channels balanced
+across rigs of very different size. We build a captioned corpus of \num{311} production animal rigs
+(\num{77{,}894} clips), train a \num{303}M-parameter model on it, and score it with a skeleton-aware
+text--motion evaluator on \num{3{,}899} held-out clips (R@1 \num{0.922} against \num{0.964} for the real clips,
+FID \num{0.005}). On the Truebones zoo, rigs outside the library, a per-rig
+low-rank adapter trained on about ten clips brings the model's rotation and position channels back
+into agreement on bodies far outside the training distribution, and we report descriptive kinematic
+statistics of the outputs next to the released AnyTop model on the same rigs.
+\end{abstract}
+
+\input{sections/introduction}
+\input{sections/related_work}
+\input{sections/method}
+\input{sections/experiments}
+\input{sections/conclusion}
+
+\bibliography{references}
+\bibliographystyle{iclr2027_conference}
+
+\newpage
+\input{sections/appendix}
+
+\end{document}

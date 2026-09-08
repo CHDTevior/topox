@@ -18,15 +18,15 @@ zoo~\citep{truebones}; UniMoGen~\citep{khani2025unimogen} is skeleton-agnostic a
 style and trajectory. Text-conditioned animal motion has been approached from a fixed 35-joint
 SMAL template by OmniMotionGPT~\citep{yang2024omnimotiongpt}, from a shared human--animal topology
 by X-MoGen~\citep{wang2025xmogen} (115 species), across topologies by OmniZoo~\citep{chen2025omnizoo}
-(a topology-aware skeleton embedding and 140 species), on one padded skeleton by AniMo~\citep{wang2025animo}, whose AniMo4D
+(a topology-aware skeleton embedding and 140 species), on a unified 30-joint skeleton by AniMo~\citep{wang2025animo}, whose AniMo4D
 captions our corpus carries, on re-captioned Truebones data by G-MDM~\citep{lee2025dragon},
 which generates Euler joint rotations without root translation, and, concurrently with this work, by
 SAMoR~\citep{samor2026}, which pools any skeleton into eight part tokens over joint positions and
-velocities and recovers rotations by inverse kinematics. Each compares against baselines retrained or
-padded onto its own data. We build on AnyTop's skeleton prompt and differ in what is generated and at
+velocities and recovers rotations by inverse kinematics. Each compares against baselines adapted or
+retrained on its own data (SAMoR for cross-topology reconstruction, with published numbers on HumanML3D). We build on AnyTop's skeleton prompt and differ in what is generated and at
 what scale: the model is text-conditioned, it denoises a per-joint representation that any rig is
-converted to without a template, retargeting or inverse kinematics, it uses natural-language
-\emph{descriptions} of the joints in place of their names, and every (rig, joint, channel) cell is
+converted to without a template, retargeting or inverse kinematics, it embeds richer natural-language
+\emph{descriptions} of the joints with LLM2Vec where AnyTop embeds cleaned joint names with T5, and every (rig, joint, channel) cell is
 normalised with its own statistics so that hundreds of rigs of very different proportions share one
 network.
 

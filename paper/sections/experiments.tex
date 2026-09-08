@@ -55,8 +55,8 @@ model reaches R@1 \num{0.922} against \num{0.964} for the real clips scored by t
 in the same pools, a text--motion matching score of \num{0.764} against \num{0.782}, and an FID of
 \num{0.005}; the \num{36}M pilot, trained on the same data with the same recipe, reaches R@1
 \num{0.897} and FID \num{0.008}. The pools follow the dataset order, so a pool holds clips of one
-rig or of neighbouring rigs and retrieval is decided by the action rather than by the species;
-the matching score and the FID do not depend on the pool composition.
+rig or of neighbouring rigs; R-precision is computed on the \num{3{,}840} clips of the 60 complete pools,
+the matching score and the FID on all \num{3{,}899}.
 
 \begin{table}[t]
 \centering\small
@@ -105,7 +105,10 @@ the seen-clip reference sits at $0.06$--$0.13$.
 
 \begin{table}[t]
 \centering\footnotesize\setlength{\tabcolsep}{3.5pt}
-\caption{Extending \method{} (\num{303}M) to four Truebones rigs. \emph{zero}: library model with
+\caption{Extending \method{} (\num{303}M) to four Truebones rigs, as a diagnostic given the rig's
+statistics: the per-cell statistics and masks of each rig are computed from all of its clips, the
+evaluation clips included, and the adapter checkpoint is the one with the lowest validation loss on
+those clips (a support-only protocol is reported in the final version). \emph{zero}: library model with
 the rig's statistics only (gap read after at most 15 adapter warm-up steps); \emph{LoRA}: per-rig
 adapter at its best validation loss; \emph{TB-only}: a \num{36}M model trained on all Truebones
 clips including these (seen-clip reference; its gap is read the same way as the zero column). Gap in bone lengths; articulation and jitter of the
@@ -132,7 +135,7 @@ same picture, and an adapter shared by eight flying rigs is worse than the speci
 
 \paragraph{Capabilities.} Table~\ref{tab:capability} (App.~\ref{app:capability}) places \method{} among the
 generators that serve more than one skeleton. AnyTop generates without text; G-MDM generates joint
-rotations but no root translation; SAMoR generates joint positions through eight part tokens and needs
+rotations and, in its current implementation, no root translation; SAMoR generates joint positions through eight part tokens and needs
 inverse kinematics to drive a rig, with the twist ambiguity its authors note; OmniZoo does not report
 whether its outputs drive a rig directly. \method{} returns per-joint rotations and a world-space root
 trajectory that the rig plays as generated, for \num{311} production rigs, and measures that geometry

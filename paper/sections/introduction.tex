@@ -20,10 +20,8 @@ model's own output on a moose run-to-walk clip.}\label{fig:teaser}
 \end{figure}
 
 The applications that most need generative motion---games, film previsualisation, virtual
-production---are populated by characters that are not human: quadrupeds with digitigrade gaits,
-reptiles that sprawl, birds with wing chains, animals with tails, trunks and shells. A studio does not
-have one skeleton; it has hundreds, each authored by a rigger with its own joint count, naming scheme
-and helper bones. Our corpus is a faithful sample of that reality: \num{311} production animal rigs
+production---are populated by characters that are not human, and a studio does not have one skeleton
+but hundreds, each authored by a rigger with its own joint count, naming scheme and helper bones. Our corpus is a faithful sample of that reality: \num{311} production animal rigs
 with \num{34} to \num{102} deformation joints (median 64), \num{108} distinct kinematic trees and
 \num{77{,}894} captioned clips (\num{6.2}M frames).\footnote{The rigs and animations are re-exported
 from the assets of a commercial zoo-management game (deformation bones only); the clips and their captions
@@ -37,14 +35,15 @@ has to be generated for the target body, and it has to come out as rotations the
 \paragraph{Our position.} A generative model should treat the skeleton as \emph{input}, not as
 architecture: told the kinematic tree, the rest pose and what each joint \emph{is}, the network needs
 no per-skeleton parameter, and adding a character becomes a data question. The interface is due to
-AnyTop~\citep{gat2025anytop}, which prepends the rest pose as a first frame and embeds joint names to
-generate, without text, for the Truebones zoo. Text-conditioned generation across skeletons has since
+AnyTop~\citep{gat2025anytop}, which prepends the rest pose and embeds joint names to generate, without
+text, for the Truebones zoo. Text-conditioned generation across skeletons has since
 been shown by OmniZoo~\citep{chen2025omnizoo} on 140 species, by G-MDM~\citep{lee2025dragon} on
 Truebones with joint rotations but no root translation, and by SAMoR~\citep{samor2026}, which pools
 any skeleton into eight part tokens over joint positions and recovers rotations by inverse
-kinematics. None of them returns, for hundreds of production rigs, the quantity a rig actually
-plays: per-joint rotations together with a world-space root trajectory, generated directly in the
-rig's own joint space. \method{} does, and this paper is about what that takes.
+kinematics. Building on skeleton-conditioned generation, we study joint-space rotation and
+root-trajectory prediction across \num{311} production rigs at 0.3B parameters, with controlled
+representation experiments and an external-rig adaptation study; the output is what a rig plays,
+per-joint rotations and a world-space root trajectory, with no inverse-kinematics fit.
 
 \paragraph{Contributions.}
 \begin{enumerate}[leftmargin=*,itemsep=1pt,topsep=2pt]
@@ -53,10 +52,10 @@ rig's own joint space. \method{} does, and this paper is about what that takes.
   delta from the rest pose, velocity, contact, plus a root-only world trajectory and heading---and
   every (rig, joint, channel) cell is standardised by its own statistics. Any rigged animation
   converts to it from its kinematic tree, rest pose and motion, with no template, retargeting,
-  tokenizer or inverse kinematics. Standardising per cell instead of per rig buys two points of R@1
-  and a third of the FID at every matched epoch, and against the 13-channel AnyTop layout derived
-  from the same clips the layout keeps leaf-joint articulation, foot contact and root travel at
-  equal retrieval (\S\ref{sec:exp:ablation}).
+  tokenizer or inverse kinematics. Standardising per cell instead of per rig raises R@1 by 2.0--2.1
+  points and lowers the FID by 22--30\% at each of three matched epochs; against the 13-channel AnyTop
+  layout derived from the same clips, the layout with its world-coordinate loss terms keeps leaf-joint
+  articulation, foot contact and root travel at equal retrieval (\S\ref{sec:exp:ablation}).
 \item \textbf{In-context skeleton conditioning} (\S\ref{sec:method:model}). The rest pose is
   prepended as one clean frame, natural-language descriptions of the joints (``left front lower
   leg'', ``tail segment 3'') are added to their tokens, and spatial attention is biased by tree
@@ -79,10 +78,7 @@ rig's own joint space. \method{} does, and this paper is about what that takes.
 \paragraph{Results.} One \num{303}M-parameter \method{} trained on all \num{311} rigs is scored by a
 skeleton-aware text--motion evaluator on \num{3{,}899} held-out clips of those rigs: R@1 \num{0.922}
 against \num{0.964} for the real clips in the same pools, FID \num{0.005} (\S\ref{sec:exp:main}); the
-\num{36}M pilot reaches \num{0.897}. On Truebones rigs never seen in training the frozen backbone
-moves with \num{2.5} to \num{13} times the jitter of the real clips; a per-rig adapter on ten to
-fifteen clips lowers the FK--pose gap---the disagreement between the rotation and position channels
-of the prediction---by \num{59}\% on a buffalo and from \num{1.215} to \num{0.146} bone lengths on a
-95-joint dragon, while the adapted outputs move less than the real clips. Every retrieval number is
-reported next to the evaluator's score on real motion, and the geometry of the generated clips is
-measured against their ground truth with the rig's own decoder.
+\num{36}M pilot reaches \num{0.897}. On Truebones rigs never seen in training, a per-rig adapter on
+ten to fifteen clips lowers the FK--pose gap (the disagreement between the rotation and position
+channels of the prediction) from \num{1.215} to \num{0.146} bone lengths on a 95-joint dragon, while
+the adapted outputs move less than the real clips.
