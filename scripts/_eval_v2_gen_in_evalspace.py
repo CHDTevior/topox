@@ -127,6 +127,14 @@ PROTOCOL_VAL_N = 3899   # frozen val size; a different corpus cut must re-pin on
 # entry). Merge records which fingerprint a shard set carries so a report always names the generation code it came from
 # (codex 2026-09-06 P1-1; exception wording codex 2026-09-07 r2 P3).
 LEGACY_SOURCE_FINGERPRINTS = {
+    "b09b82e020f9088ab24b6fa5093516c0dc42fe23343231ba2a465198919951fc":
+        "state of the 2026-09-08 representation-view hook, before the rest-normalisation branch of src/data/ktjd17_incontext.py "
+        "(a new normalization='rest' code path; percell/scale_only checkpoints serve byte-identical items) and before the "
+        "geodesic-bias switch. Shards: the AnyTop-13 arm's ep25/50/75/100 passes (runs/_final_geneval/p36a13).",
+    "8ef9d1a0e7e41fb10ed281214e0a3e3e8d9c78231edb76ebe7875908529eff22":
+        "state before the 2026-09-08 geodesic-bias switch (InContextMotionDiT(use_geo_bias=True) default, a fail-loud buffer only "
+        "when it is False, and this script passing the checkpoint's geo_bias flag): sampling is byte-identical for every checkpoint "
+        "trained without --no_geo_bias. Shards: any pass generated between the rest-normalisation commit facfe28 and this edit.",
     "305059f48da8f7da8f7e71d2e6ad610e5308de342849145f6493c93520874a2d":
         "state with the --tf32 flag and the two 2026-09-07 legacy entries, before the representation-view hook of 2026-09-08 (which only "
         "adds conversion of samples from an AnyTop-13 view and payload-shape checks; generate_all / sampler / datasets untouched for "
@@ -185,7 +193,8 @@ def load_gen_model(ck, dev):
         use_struct_feats=bool(ca.get("struct_feats", False)),
         use_dir_bias=bool(ca.get("dir_bias", False)),
         qk_norm=bool(ca.get("qk_norm", False)),
-        use_ref_text=bool(ca.get("ref_text", False))).to(dev)
+        use_ref_text=bool(ca.get("ref_text", False)),
+        use_geo_bias=bool(ca.get("geo_bias", True))).to(dev)
     model.load_state_dict(ck["model"])
     model.eval()
     return model, ca
@@ -748,7 +757,11 @@ def main():
 
     gpool = torch.Generator().manual_seed(a.seed)
     n = te.shape[0]
+    # the pools are chunks of THIS order: recording its digest makes the evaluation order part of the scoring artifact, so a later
+    # re-scoring (the evaluator-validation controls) can prove it scored the same clips in the same order (codex controls r5 P1)
+    eval_order_sha = hashlib.sha256("\n".join(str(m) for m in meta["motion_id"]).encode()).hexdigest()
     report = {"protocol": {"val_n": n, "pool": a.pool, "cfg_text": a.cfg_text, "subset": subset_rec,
+                           "eval_order_sha256": eval_order_sha,
                            "variant": a.protocol_variant,
                            "gen_normalization": base.normalization,
                            "gen_representation": gen_representation,
