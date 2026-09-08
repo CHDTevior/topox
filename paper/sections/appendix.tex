@@ -68,11 +68,12 @@ hours. Clips are short: median $62$ frames, mean $79$, maximum $299$, and $2.1\%
 240-frame training window. Rigs have between $64$ and $946$ clips (median $236$). Joint counts run from
 $34$ to $102$ (median $64$): $61$ rigs in the thirties, $48$ in the forties, $14$ in the fifties,
 $63$ in the sixties, $48$ in the seventies, $27$ in the eighties, $47$ in the nineties and $3$ above
-a hundred. Every clip carries three captions of about ten words (median), written from the animation
-metadata; the primary caption is used for evaluation. The clip inventory follows the official AniMo4D
-annotation set of \citet{wang2025animo}: \num{77{,}894} of its \num{78{,}149} entries have a processed clip
-here and the remaining 255 have none; the rigs and animations are our own re-export of the game assets,
-and the conversion to \rep{} is new. Before the split, a source audit removed $161$
+a hundred. The clips and their captions follow the official AniMo4D annotation set of
+\citet{wang2025animo}: \num{77{,}894} of its \num{78{,}149} entries have a processed clip here and the
+remaining 255 have none; every clip carries three captions of about ten words (median), of which the primary
+one is used for evaluation. The rigs and animations are our own re-export of the game assets, the natural-language
+joint descriptions are ours (written from the joint names, \S\ref{sec:method:model}), and the conversion to
+\rep{} is new. Before the split, a source audit removed $161$
 clips whose joint speeds lay in the extreme tail of their rig, which trace to defects of the source
 animations rather than to the conversion.
 
