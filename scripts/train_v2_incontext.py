@@ -347,7 +347,7 @@ def main():
                          "flag records an EXPLICIT user authorization to train anyway (user "
                          "2026-08-20: gate override (b), data artifact untouched). Without it, "
                          "ktjd17 training refuses to start.")
-    ap.add_argument("--rep_norm", choices=("percell", "scale_only"), default="percell",
+    ap.add_argument("--rep_norm", choices=("percell", "scale_only", "rest"), default="percell",
                     help="representation ablation (user 2026-09-06): per-cell mean/std (the method) or the KTJD "
                          "spec's scale-only normalization (the old representation); recorded in ktjd_pins as "
                          "target_centering/normalization and must match the gamma calibration's protocol")

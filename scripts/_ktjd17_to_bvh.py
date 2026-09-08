@@ -71,7 +71,7 @@ def parse_args():
                     help="model target window; only used as the energy window for --gt_pick energetic")
     ap.add_argument("--ktjd_root", default="dataset/ktjd17_pzh312_noik_v2")
     ap.add_argument("--percell", default="data/noik_norm_stats_v2.npz")
-    ap.add_argument("--rep_norm", choices=("percell", "scale_only"), default="percell",
+    ap.add_argument("--rep_norm", choices=("percell", "scale_only", "rest"), default="percell",
                     help="serving normalization of the checkpoint whose motion is converted (representation ablation)")
     ap.add_argument("--caption_cache", default="data/noik_caption_llm2vec_v1")
     ap.add_argument("--joint_sem", default="data/joint_semantics_llm2vec_pzh312_v1.npz")
@@ -142,7 +142,7 @@ def main():
         _mp = Path(a.gen_npy).with_suffix(".manifest.json")
         if _mp.is_file():
             _tc = str(((json.loads(_mp.read_text()).get("ktjd_pins") or {}).get("target_centering")) or "")
-            _mn = "scale_only" if _tc == "ktjd_spec_scale_only_v1" else "percell"
+            _mn = {"ktjd_spec_scale_only_v1": "scale_only", "ktjd_rest_centered_scale_v1": "rest"}.get(_tc, "percell")
             if any(x.split("=")[0] == "--rep_norm" for x in sys.argv[1:]) and a.rep_norm != _mn:
                 raise SystemExit(f"[refuse] --rep_norm {a.rep_norm} but the generated manifest's target_centering "
                                  f"{_tc!r} means {_mn}")

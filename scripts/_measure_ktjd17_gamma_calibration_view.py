@@ -110,6 +110,10 @@ VERIFY_STEPS, VERIFY_TOL = int(os.environ.get("VERIFY_STEPS", "30")), 1.25    # 
 # the objective only at the batch size the run will use (codex 2026-09-03). CALIB_BATCH is recorded in
 # protocol.batch and the trainer refuses a derived-view run whose --batch differs from it.
 CALIB_BATCH = int(os.environ.get("CALIB_BATCH", "8"))
+# serving normalization of the arm (the energies are measured in it; the trainer's gate compares protocol.normalization)
+REP_NORM = os.environ.get("REP_NORM", "percell")
+if REP_NORM not in ("percell", "scale_only", "rest"):
+    raise SystemExit(f"[FAIL] REP_NORM must be percell, scale_only or rest, got {REP_NORM!r}")
 DEMO_REST = int(os.environ.get("DEMO_REST", "1"))      # demo condition of the mechanism check (codex 2026-09-04)
 DEMO_FRAMES = int(os.environ.get("DEMO_FRAMES", "1"))
 if DEMO_REST not in (0, 1) or DEMO_FRAMES < 1 or (DEMO_REST == 1 and DEMO_FRAMES != 1):
@@ -133,7 +137,7 @@ def main():
                       percell_stats=os.environ.get("PERCELL", "data/pzh312_norm_stats_v4.npz"),
                       texts_json=os.environ.get(
                           "TEXTS_JSON", "motion_texts_by_file_clean_v1.json"),
-                  exclude_clips=EXCLUDE)
+                  exclude_clips=EXCLUDE, normalization=REP_NORM)
     names = ktjd17_split_names(R, exclude=EXCLUDE)
     ds = InContextPairs(base, names["train"], names["train"], balance_skeletons=False, seed=0,
                         emit_graph_v2=True, demo_rest=bool(DEMO_REST), demo_frames=DEMO_FRAMES)
@@ -427,6 +431,7 @@ def main():
                      "cohort_windows": n_windows, "cohort_rigs": n_rigs,
                      "weighting": "clip_balanced",
                      "seed": 0, "batch": CALIB_BATCH, "demo_rest": bool(DEMO_REST), "demo_frames": DEMO_FRAMES, "huber_delta": HUBER,
+                     "normalization": REP_NORM,
                      "windows": ("demo_rest1/target_head" if DEMO_REST else "demo_random_rebased/target_head"),
                      "crop_rebase_active": True, "space": "normalized_model_space",
                      "t_sampler": T_SAMPLER, "v_space": V_SPACE, "sigma_min": SIGMA_MIN,

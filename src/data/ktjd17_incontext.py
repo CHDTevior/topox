@@ -89,8 +89,12 @@ class Ktjd17Base:
         # "scale_only" = the KTJD spec's scale-only normalization (mean 0, std = s_rig/gain per channel family,
         # see _std_eff) -- the OLD representation, served through the same convention raw = x*(std+floor)+mean so
         # every consumer (trainer, calibration, renderer, evaluator conversion) stays unchanged.
-        if normalization not in ("percell", "scale_only"):
-            raise ValueError(f"normalization must be 'percell' or 'scale_only', got {normalization!r}")
+        # "rest" (user 2026-09-08, deployability): the scale-only std with the rig's REST frame as the mean -- rest
+        # positions relative to the root's XZ, identity rest-delta 6D, zero velocity / contact / root track, heading
+        # [1, 0] -- everything derivable from the skeleton file alone, no motion statistics (the 2026-08-20
+        # rest-centering fix, _rest_centering_SUPERSEDED, revived as a first-class serving normalization).
+        if normalization not in ("percell", "scale_only", "rest"):
+            raise ValueError(f"normalization must be 'percell', 'scale_only' or 'rest', got {normalization!r}")
         self.normalization = str(normalization)
         self._pc_so: dict = {}
 
@@ -375,8 +379,8 @@ class Ktjd17Base:
             # reverse) trains against a different objective under one lineage -- pin it.
             # the normalisation variant rides in THIS existing key (no new pin key: every checkpoint written before the
             # variant existed must keep matching its view under the bidirectional pin check of the trainer / renderer / eval)
-            "target_centering": (TARGET_CENTERING if self.normalization == "percell"
-                                 else "ktjd_spec_scale_only_v1"),
+            "target_centering": {"percell": TARGET_CENTERING, "scale_only": "ktjd_spec_scale_only_v1",
+                                 "rest": "ktjd_rest_centered_scale_v1"}[self.normalization],
             "percell_stats_cohort": str(self.percell_meta.get("cohort")),
             # pin the ARTIFACT, not just its description: an NPZ swapped under the same path must
             # not pass a fresh launch or a resume (codex round-S7 blocker 4)
@@ -477,16 +481,33 @@ class Ktjd17Base:
                 w[vm, 0, 13:15] -= off
         return w
 
+    def _rest_raw17(self, rig: str) -> np.ndarray:
+        """[J,17] the rig's REST frame in RAW KTJD-17 units, from the skeleton file alone: q_position of the rest pose
+        (P_rest_global minus its own root XZ), identity rest-delta 6D [1,0,0,0,1,0], zero velocity / contact / root
+        track, heading [1, 0] (canonical rest faces +Z)."""
+        sk = self._skeleton(rig)
+        J = len(sk["parents"])
+        P = np.asarray(sk["P_rest_global"], dtype=np.float64)
+        raw = np.zeros((J, 17), dtype=np.float64)
+        raw[:, 0:3] = P
+        raw[:, 0] -= P[0, 0]
+        raw[:, 2] -= P[0, 2]
+        raw[:, 3:9] = np.array([1, 0, 0, 0, 1, 0], dtype=np.float64)[None]
+        raw[0, 15] = 1.0
+        return raw.astype(np.float32)
+
     def _stats(self, rig: str) -> tuple[np.ndarray, np.ndarray]:
         """(mean [J,17], std [J,17]) of the serving normalization: raw = x * (std + _STD_FLOOR) + mean."""
         if self.normalization == "percell":
             return self._pc[rig]
         if rig not in self._pc_so:
             J = len(self._skeleton(rig)["parents"])
-            mu = np.zeros((J, 17), np.float32)
+            # "rest": the mean is the rig's rest frame (skeleton-derived); "scale_only": zero
+            mu = self._rest_raw17(rig).copy() if self.normalization == "rest" else np.zeros((J, 17), np.float32)
             # exact-constant cells leave supervision AND the model input (static_masks), so the sampler holds them at
-            # normalized 0; decoding must restore the constant, exactly as per-cell decoding does -- the scale-only mean is
-            # therefore the constant on those cells and 0 everywhere else (codex 2026-09-06 r2 P1: 13 such cells on 4 rigs).
+            # normalized 0; decoding must restore the constant, exactly as per-cell decoding does -- the mean is therefore
+            # the data's constant on those cells (codex 2026-09-06 r2 P1: 13 such cells on 4 rigs) for scale_only AND rest;
+            # a deployed unseen rig has no such cells (its channel_valid is purely structural)
             sup = self._sup.get(rig)
             if sup is not None:
                 mu_pc, _ = self._pc[rig]
@@ -597,9 +618,10 @@ class Ktjd17Base:
             cv = self.static_masks(rig)["channel_valid"]
             raw[~cv] = 0.0
             mu, sd = self._stats(rig)
-            if self.representation:
+            if self.representation or self.normalization == "rest":
                 # a representation view stores excluded constants with an effective std of _STD_FLOOR: an excluded cell must hold
-                # ITS constant here (not 0), or (0 - const) / 1e-6 explodes before the pair loader clamps it (codex 2026-09-08 r4)
+                # ITS constant here (not 0), or (0 - const) / 1e-6 explodes before the pair loader clamps it (codex 2026-09-08 r4);
+                # under "rest" the mean of an excluded cell is likewise its constant, so the demo is exactly 0 there too
                 raw[~cv[:J]] = np.asarray(mu[:J], dtype=np.float64)[~cv[:J]]
             n = (raw.astype(np.float32) - mu[:J]) / (sd[:J] + _STD_FLOOR)
             self._restf[rig] = np.concatenate(
