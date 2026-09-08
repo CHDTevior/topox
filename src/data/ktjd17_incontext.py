@@ -229,6 +229,15 @@ class Ktjd17Base:
                     raise RuntimeError(f"derived view {what} {path} hashes {have[:16]}, derivation.json pins "
                                        f"{str(want)[:16]}")
             self.derivation_sha256 = hashlib.sha256(deriv_p.read_bytes()).hexdigest()
+        # a stats artifact built for another REPRESENTATION (payloads that are not KTJD-17 channels, e.g. the AnyTop-13 view)
+        # may only serve a view whose derivation.json declares that same representation -- an incomplete or stripped view would
+        # otherwise load as plain KTJD-17 with foreign statistics (codex 2026-09-08 r2 #3)
+        _stats_rep = self.percell_meta.get("representation")
+        _view_rep = ((self.derivation or {}).get("representation") or {}).get("id") if self.derivation is not None else None
+        if (_stats_rep not in (None, "ktjd17") or _view_rep is not None) and str(_stats_rep) != str(_view_rep):
+            raise RuntimeError(f"per-cell stats declare representation {_stats_rep!r} but the view declares {_view_rep!r} "
+                               f"(derivation.json {'present' if self.derivation is not None else 'MISSING'}) -- refusing")
+        self.representation = _view_rep
         rows = [json.loads(l) for l in open(manifest_p)]
         rows = [r for r in rows if r.get("status") == "accept"]
         _drop = load_exclusions(exclude_clips)
@@ -378,6 +387,8 @@ class Ktjd17Base:
             # checkpoints' pins keep resuming unchanged)
             **({"manifest_sha256": manifest_sha, "derivation_sha256": self.derivation_sha256}
                if self.derivation is not None else {}),
+            # representation views only (key ABSENT for KTJD-17 corpora and for views without a representation record)
+            **({"representation": str(self.representation)} if self.representation else {}),
         }
 
     # ------------------------------------------------------------------ per-rig statics
@@ -586,6 +597,10 @@ class Ktjd17Base:
             cv = self.static_masks(rig)["channel_valid"]
             raw[~cv] = 0.0
             mu, sd = self._stats(rig)
+            if self.representation:
+                # a representation view stores excluded constants with an effective std of _STD_FLOOR: an excluded cell must hold
+                # ITS constant here (not 0), or (0 - const) / 1e-6 explodes before the pair loader clamps it (codex 2026-09-08 r4)
+                raw[~cv[:J]] = np.asarray(mu[:J], dtype=np.float64)[~cv[:J]]
             n = (raw.astype(np.float32) - mu[:J]) / (sd[:J] + _STD_FLOOR)
             self._restf[rig] = np.concatenate(
                 [n, np.ones((J, 1), np.float32)], axis=1).astype(np.float32)

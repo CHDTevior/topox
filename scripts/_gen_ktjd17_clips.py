@@ -85,7 +85,7 @@ def main():
     base = Ktjd17Base(root, caption_emb_cache=ca["caption_cache"], joint_semantics=ca["joint_sem"],
                       texts_json=ca["texts_json"],
                       percell_stats=ca.get("ktjd_percell_stats", "data/ktjd17_percell_stats_v1.npz"),
-                      exclude_clips=excl)
+                      exclude_clips=excl, normalization=str(ca.get("rep_norm", "percell")))
     pins = ck.get("ktjd_pins") or {}
     live = {**base.provenance, "exclusion": base.provenance_exclusion}
     drift = sorted(k for k, v in pins.items() if k in live and live[k] != v)

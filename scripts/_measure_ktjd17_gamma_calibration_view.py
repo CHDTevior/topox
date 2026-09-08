@@ -118,7 +118,10 @@ if CALIB_BATCH <= 0:
     raise SystemExit("[FAIL] CALIB_BATCH must be a positive integer")
 if VERIFY_STEPS <= 0:
     raise SystemExit("[FAIL] VERIFY_STEPS must be a positive integer (the mechanism check cannot be skipped)")
-ARM = dict(dim=384, depth=7, heads=8)  # the Step-1 arm config the gammas will train
+# the arm model of the mechanism check: from the launch config when given (ARM_DIM/ARM_DEPTH/ARM_HEADS/ARM_QK_NORM; codex 2026-09-08 r2 #6),
+# else the historical Step-1 arm (384/7/8, no qk-norm) that every earlier artifact recorded
+ARM = dict(dim=int(os.environ.get("ARM_DIM", "384")), depth=int(os.environ.get("ARM_DEPTH", "7")),
+           heads=int(os.environ.get("ARM_HEADS", "8")), qk_norm=os.environ.get("ARM_QK_NORM", "0") == "1")
 
 
 def main():
@@ -173,20 +176,33 @@ def main():
     energies = {g: e_sum[g] / max(e_cnt[g], 1) for g in _GROUP_SPEC_KTJD17}
     n_windows, n_rigs = len(ds), len(ds.types)
     print(f"[cohort] {n_windows} train targets over {n_rigs} rigs, one full pass", flush=True)
-    if min(e_cnt.values()) <= 0:
+    # STRUCTURALLY EMPTY GROUPS (ablation 2a, 2026-09-07): a derived view that carries another representation in the 17-slot
+    # container (derivation.representation) has no supervised cell in some groups (the AnyTop-13 view: smooth_root and heading
+    # are exact-zero constants). Such groups get gamma 1.0 (they never reach the loss: the grouped loss has no cell to weight),
+    # leave the solve and mechanism checks, and are recorded in protocol.empty_groups. Any other corpus keeps the fail-closed rule.
+    _rep_view = bool(((getattr(base, "derivation", None) or {}).get("representation") or {}).get("id"))
+    empty_groups = sorted(g for g in _GROUP_SPEC_KTJD17 if e_cnt[g] <= 0)
+    if empty_groups and not _rep_view:
         raise SystemExit(f"[FAIL] empty group in cohort: {e_cnt}")
+    if empty_groups:
+        print(f"[energy] structurally empty groups in this representation view (gamma 1.0, excluded from the checks): {empty_groups}", flush=True)
     print(f"[energy] {bi+1} batches in {time.time()-t0:.0f}s: "
           + " ".join(f"{g}={energies[g]:.3f}" for g in energies))
 
     # ---- family gammas from the Kimodo-implied profile ----
     fam_of = {g: f for f, spec in FAMILIES.items() for g in spec["groups"]}
     assert sorted(fam_of) == sorted(_GROUP_SPEC_KTJD17), "family map must cover every group once"
-    raw_fam = {f: (spec["share"] / max(sum(energies[g] for g in spec["groups"]), 1e-8)) ** 0.5
-               for f, spec in FAMILIES.items()}
+    # a family whose groups are ALL structurally empty carries no energy: its gamma is 1.0 by convention and its target share is
+    # redistributed proportionally over the live families (the solve below is checked on the live families only)
+    live_fam = {f for f, spec in FAMILIES.items() if any(g not in empty_groups for g in spec["groups"])}
+    if ANCHOR_FAMILY not in live_fam:
+        raise SystemExit("[FAIL] the anchor family has no supervised cell in this view")
+    raw_fam = {f: (FAMILIES[f]["share"] / max(sum(energies[g] for g in FAMILIES[f]["groups"]), 1e-8)) ** 0.5 for f in live_fam}
     scale = ANCHOR_GAMMA / raw_fam[ANCHOR_FAMILY]
-    gam_fam = {f: round(v * scale, 4) for f, v in raw_fam.items()}
-    gammas = {g: gam_fam[fam_of[g]] for g in _GROUP_SPEC_KTJD17}
-    ts = {f: FAMILIES[f]["share"] for f in FAMILIES}          # family target shares
+    gam_fam = {f: (round(raw_fam[f] * scale, 4) if f in live_fam else 1.0) for f in FAMILIES}
+    gammas = {g: (1.0 if g in empty_groups else gam_fam[fam_of[g]]) for g in _GROUP_SPEC_KTJD17}   # every empty group: 1.0
+    _tot_live = sum(FAMILIES[f]["share"] for f in live_fam)
+    ts = {f: FAMILIES[f]["share"] / _tot_live for f in live_fam}          # family target shares over the live families
     print("[gammas] " + " ".join(f"{f}={gam_fam[f]}({'+'.join(FAMILIES[f]['groups'])})"
                                  for f in gam_fam))
 
@@ -210,7 +226,7 @@ def main():
     # training -- is NOT verifiable here (it depends on the error energies, which evolve). The
     # mechanism check below reports it at init; tracking it over training is an open item.
     ach = {f: gam_fam[f] ** 2 * sum(energies[g] for g in FAMILIES[f]["groups"])
-           for f in FAMILIES}
+           for f in live_fam}
     tot_a = sum(ach.values())
     ach = {f: ach[f] / tot_a for f in ach}
     off = {f: abs(ach[f] - ts[f]) for f in ts}
@@ -232,7 +248,7 @@ def main():
     # demo-64 check OOMed an 80 GB A100 without it (2026-09-04); same setting as the non-view producer
     model = InContextMotionDiT(in_ch=17, dim=ARM["dim"], depth=ARM["depth"],
                                n_heads=ARM["heads"], d_text=4096, d_joint_sem=4096,
-                               use_struct_feats=True, use_dir_bias=True, grad_ckpt=True).to(dev).train()
+                               use_struct_feats=True, use_dir_bias=True, grad_ckpt=True, qk_norm=ARM["qk_norm"]).to(dev).train()
     holder = {}
     def hook(_m, _i, out):
         out.retain_grad(); holder["out"] = out
@@ -343,12 +359,16 @@ def main():
           + " ".join(f"{g}={pred_g[g] / tp:.3f}" for g in pred_g))
     print("[verify-diag] pooled-E_err predicted shares (diagnostic only): "
           + " ".join(f"{g}={pred_global[g] / tpg:.3f}" for g in pred_global))
-    for g in measured:                      # every group must have real support -- no vacuous pass
+    for g in measured:                      # every LIVE group must have real support -- no vacuous pass
+        if g in empty_groups:
+            if err_cnt[g] > 0 or measured[g] != 0.0:
+                raise SystemExit(f"[FAIL] group {g} is declared structurally empty but received cells/gradient in the verify pass")
+            continue
         if not (err_cnt[g] > 0 and np.isfinite(pred_g[g]) and pred_g[g] > 0 and np.isfinite(measured[g]) and measured[g] > 0):
             raise SystemExit(f"[FAIL] group {g} has no finite positive support in the verify pass "
                              f"(cells {err_cnt[g]}, predicted {pred_g[g]}, measured {measured[g]})")
-    mech_bad = {g for g in measured
-                if not (pred_g[g] / tp / VERIFY_TOL <= measured[g] <= pred_g[g] / tp * VERIFY_TOL)}
+    mech_bad = {g for g in measured if g not in empty_groups
+                and not (pred_g[g] / tp / VERIFY_TOL <= measured[g] <= pred_g[g] / tp * VERIFY_TOL)}
     if mech_bad:
         raise SystemExit(f"[FAIL] implemented weighting deviates from the batch-wise gamma^2*E_err mechanism "
                          f"for {sorted(mech_bad)}: measured="
@@ -415,6 +435,8 @@ def main():
                      "mapping": "kimodo_eq1_family_shares: share_fam ~ gamma_fam^2 * sum E_i; "
                                 "gamma_fam = sqrt(share_fam / sum E_i)",
                      "families": {f: FAMILIES[f]["groups"] for f in FAMILIES},
+                     "empty_groups": empty_groups,
+                     "representation": (((getattr(base, "derivation", None) or {}).get("representation") or {}).get("id") or "ktjd17"),
                      "anchor": {ANCHOR_FAMILY: ANCHOR_GAMMA},
                      "mask_policy_version": KTJD17_MASK_POLICY,
                      "verify": {"steps": VERIFY_STEPS, "tolerance_x": VERIFY_TOL,

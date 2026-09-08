@@ -30,6 +30,7 @@ def data_for(a: dict):
     A checkpoint missing any of these keys is an unsupported lineage and fails on the KeyError."""
     key = (a["ktjd_root"], a.get("exclude_clips") or "", a["ktjd_gamma_calib"],
            a["caption_cache"], a["joint_sem"], a["ktjd_percell_stats"], a["texts_json"],
+           str(a.get("rep_norm", "percell")),        # the serving normalization is part of the view identity
            bool(a.get("random_caption", False)), a["balance"], int(a["seed"]),
            int(a.get("demo_frames", 1)), int(a["target_frames"]),
            float(a.get("identity_p", 0.0)), bool(a.get("ref_text", False)),
@@ -42,6 +43,7 @@ def data_for(a: dict):
                       joint_semantics=a["joint_sem"],
                       percell_stats=a["ktjd_percell_stats"],
                       exclude_clips=cut,
+                      normalization=str(a.get("rep_norm", "percell")),
                       texts_json=a["texts_json"],
                       random_caption=bool(a.get("random_caption", False)))
     names = ktjd17_split_names(R, exclude=cut)

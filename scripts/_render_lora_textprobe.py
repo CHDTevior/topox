@@ -96,7 +96,8 @@ def view_identity(args: dict) -> tuple:
     """The FULL identity of a training view: root + every sidecar + the effective cut, as resolved paths.
     Two lineage nodes on the same root but different captions / semantics / stats / cut are different views
     (codex 2026-09-02 r3 P0-2)."""
-    return tuple(str(Path(str(args[f])).resolve()) if args.get(f) else "" for f in VIEW_FIELDS)
+    return tuple(str(Path(str(args[f])).resolve()) if args.get(f) else "" for f in VIEW_FIELDS) \
+        + (str(args.get("rep_norm", "percell")),)      # the serving normalization is part of the view identity
 
 
 def view_base(args: dict, bases: dict):
@@ -106,7 +107,8 @@ def view_base(args: dict, bases: dict):
         bases[ident] = (Ktjd17Base(str(args["ktjd_root"]), caption_emb_cache=args["caption_cache"],
                                    joint_semantics=args["joint_sem"], texts_json=args["texts_json"],
                                    percell_stats=args["ktjd_percell_stats"],
-                                   exclude_clips=args.get("exclude_clips") or None), dict(args))
+                                   exclude_clips=args.get("exclude_clips") or None,
+                                   normalization=str(args.get("rep_norm", "percell"))), dict(args))
     return bases[ident][0]
 
 

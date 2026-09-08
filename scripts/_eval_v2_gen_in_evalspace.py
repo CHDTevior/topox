@@ -127,6 +127,10 @@ PROTOCOL_VAL_N = 3899   # frozen val size; a different corpus cut must re-pin on
 # entry). Merge records which fingerprint a shard set carries so a report always names the generation code it came from
 # (codex 2026-09-06 P1-1; exception wording codex 2026-09-07 r2 P3).
 LEGACY_SOURCE_FINGERPRINTS = {
+    "305059f48da8f7da8f7e71d2e6ad610e5308de342849145f6493c93520874a2d":
+        "state with the --tf32 flag and the two 2026-09-07 legacy entries, before the representation-view hook of 2026-09-08 (which only "
+        "adds conversion of samples from an AnyTop-13 view and payload-shape checks; generate_all / sampler / datasets untouched for "
+        "KTJD-17 checkpoints). Shards: r12 (303M) ep200 TF32 (runs/_final_geneval/r12_ep200_tf32, generated 2026-09-07 21:05-22:32Z).",
     "c202792417bc13a958818dd5a394034af879d9c76ba07e2ea2bfb0c707ef9c6d":
         "state after the 2026-09-07 pool-pin move and before the 2026-09-07 skeleton-augmentation edit of src/data/incontext_pairs.py "
         "and src/data/ktjd17_incontext.py (InContextPairs(augment=None) default, per-sample channel_valid only when augmenting, new "
@@ -328,7 +332,8 @@ def source_fingerprint(anchor="none"):
     import hashlib
     repo = Path(__file__).resolve().parents[1]
     files = ["scripts/_eval_v2_gen_in_evalspace.py", "src/models/v2/dit_motion.py",
-             "src/data/incontext_pairs.py", "src/data/ktjd17_incontext.py"]
+             "src/data/incontext_pairs.py", "src/data/ktjd17_incontext.py",
+             "src/data/ktjd17_anytop13.py"]     # the representation-view inverse is scoring code (codex 2026-09-08 r2 #2)
     if str(anchor) != "none":
         files.append("scripts/train_v2_incontext.py")
     h = hashlib.sha256()
@@ -376,7 +381,7 @@ def _strict_int(x):
     return type(x) is int
 
 
-def merge_shards(paths, want_meta, plan):
+def merge_shards(paths, want_meta, plan, expect_shape=None):
     """Load shard files, refuse anything that is not exactly one complete protocol run generated under
     THIS plan, source and runtime."""
     import hashlib
@@ -456,6 +461,10 @@ def merge_shards(paths, want_meta, plan):
                     raise SystemExit(f"[refuse] shard {p} sample {k} is not a finite float32 [T,J,17] array "
                                      f"(dtype {arr.dtype}, shape {arr.shape})")
                 mid = k[len("clip__"):]
+                # the sample must be THIS clip's [target_frames, J_rig, 17] (a wrong-shaped payload would silently broadcast
+                # into the evaluator tensor; codex 2026-09-08 r2 #4)
+                if expect_shape is not None and tuple(arr.shape) != tuple(expect_shape[mid]):
+                    raise SystemExit(f"[refuse] shard {p} sample {k} has shape {arr.shape}, expected {expect_shape[mid]}")
                 if mid in gen_by_clip:
                     raise SystemExit(f"[refuse] clip {mid} appears in more than one shard ({p})")
                 gen_by_clip[mid] = np.asarray(arr, dtype=np.float32)
@@ -574,6 +583,10 @@ def main():
     drift = sorted(k for k, v in pins_ck.items() if k in live and live[k] != v)
     if drift:
         raise SystemExit(f"[refuse] data drift vs gen-ckpt pins: {drift}")
+    if "representation" in live and pins_ck.get("representation") != live["representation"]:
+        # a representation view's checkpoint must carry the pin; a missing pin is a mismatch, not a pass (codex 2026-09-08 r2 #3)
+        raise SystemExit(f"[refuse] the live data is representation view {live['representation']!r} but the checkpoint pins "
+                         f"{pins_ck.get('representation')!r}")
     names = ktjd17_split_names(root, exclude=excl)
 
     # process-per-GPU sharding assumes the rank-0 RNG stream of InContextPairs ([seed, rank]); a
@@ -586,7 +599,9 @@ def main():
                 "runtime": meta["runtime"], "device": meta["device"]}
     if a.merge:
         paths = [p.strip() for p in a.merge.split(",") if p.strip()]
-        gen_by_clip, nsh, loaded = merge_shards(paths, meta, plan)
+        _J_of = {str(r["rig_id"]): int(np.asarray(base.skeleton(str(r["rig_id"]))["parents"]).shape[0]) for r in base._rows}
+        _expect = {str(r["clip_id"]): (int(ca["target_frames"]), _J_of[str(r["rig_id"])], 17) for r in base._rows}
+        gen_by_clip, nsh, loaded = merge_shards(paths, meta, plan, expect_shape=_expect)
         shard_fp = loaded[0]["source_fingerprint"]        # merge_shards enforced one fingerprint across shards
         gen_mode = {"mode": "sharded_merge", "nshards": nsh, "plan_sha256": plan["plan_sha256"],
                     "source_fingerprint": shard_fp,        # the code that GENERATED the samples (codex r3 P2-1)
@@ -606,10 +621,36 @@ def main():
     # one normalization space and one val set.
     # the evaluator was trained on per-cell-normalized KTJD channels (evaluator_ktjd16_pz_v1): its side is
     # ALWAYS percell, whatever normalization the generator checkpoint used
-    base_eval = Ktjd17Base(root, caption_emb_cache=ca["caption_cache"],
+    # REPRESENTATION VIEW (ablation item 2a, 2026-09-07): a generator trained on a derived view whose payloads carry the old
+    # AnyTop-13 representation (derivation.representation.id) is scored in the PARENT corpus's KTJD-17 per-cell space: its samples
+    # are converted back (src/data/ktjd17_anytop13.anytop13_to_ktjd17, the release's own root split -- the frozen PZ release stores
+    # the un-smoothed root track, so the split is exact) and normalised with the parent's stats; the control arm's samples are
+    # untouched, so both arms meet the evaluator under the frozen protocol. Reports stamp protocol.gen_representation.
+    from src.data.ktjd17_anytop13 import REPRESENTATION_ID, anytop13_to_ktjd17
+    _rep = ((getattr(base, "derivation", None) or {}).get("representation") or {})
+    gen_representation = str(_rep.get("id")) if _rep else "ktjd17"
+    if _rep and gen_representation != REPRESENTATION_ID:
+        raise SystemExit(f"[refuse] unknown representation view {gen_representation!r} (this script converts {REPRESENTATION_ID!r})")
+    if _rep:
+        eval_root = str(base.derivation["parent_root"])
+        eval_stats = str(_rep["parent_norm_stats"]["path"])
+        if hashlib.sha256(Path(eval_stats).read_bytes()).hexdigest() != str(_rep["parent_norm_stats"]["sha256"]):
+            raise SystemExit(f"[refuse] parent stats {eval_stats} do not match the sha pinned in the view's derivation.json")
+        # the view pins the converter bytes it was built with and the parent manifest it mirrors; both must still hold
+        # (a changed converter means a rebuilt view; codex 2026-09-08 r2 #2)
+        _conv_p = Path(__file__).resolve().parents[1] / "src" / "data" / "ktjd17_anytop13.py"
+        if hashlib.sha256(_conv_p.read_bytes()).hexdigest() != str(_rep.get("converter_sha256")):
+            raise SystemExit("[refuse] src/data/ktjd17_anytop13.py differs from the converter the view was built with -- rebuild the view")
+        if hashlib.sha256((Path(eval_root) / "manifests" / "clips.jsonl").read_bytes()).hexdigest() != str(base.derivation.get("parent_manifest_sha256")):
+            raise SystemExit("[refuse] the parent manifest differs from the one the view was derived from")
+        _sch = json.loads((Path(eval_root) / "schema.json").read_text())
+        _eps_h = float(_sch["heading"]["eps_h"]); _fps = float(_sch["fps_target"])
+        _T_of = {str(r["clip_id"]): int(r["T_target"]) for r in base._rows}
+    else:
+        eval_root, eval_stats = root, ca.get("ktjd_percell_stats", "data/ktjd17_percell_stats_v1.npz")
+    base_eval = Ktjd17Base(eval_root, caption_emb_cache=ca["caption_cache"],
                            joint_semantics=ca["joint_sem"], texts_json=ca["texts_json"],
-                           percell_stats=ca.get("ktjd_percell_stats",
-                                                "data/ktjd17_percell_stats_v1.npz"),
+                           percell_stats=eval_stats,
                            exclude_clips=excl, normalization="percell")
     eval_ds = Ktjd17T2MEvalDataset(base_eval, "val", max_frames=240, exclude=excl)
     if len(eval_ds) != PROTOCOL_VAL_N:
@@ -676,22 +717,33 @@ def main():
             raise SystemExit(f"[refuse] subset has {len(keep)} clips, fewer than one retrieval pool of {a.pool}")
         print(f"[gen-eval] scoring the CLEAN SUBSET only: {len(keep)} of {len(gen_by_clip)} generated clips "
               f"({sub['rule']})", flush=True)
-    if base.normalization != base_eval.normalization:
-        # representation ablation: samples live in the generator's normalization; move them into the evaluator's
-        # per-cell space through raw units (raw = x*(std+floor)+mean on both sides), re-zeroing invalid cells
+    if base.normalization != base_eval.normalization or _rep:
+        # samples live in the generator's space (normalization and/or representation); move them into the evaluator's
+        # per-cell KTJD-17 space through raw units (raw = x*(std+floor)+mean on both sides), re-zeroing invalid cells.
+        # A representation view's samples are first cut to the clip's valid length (padding frames must not enter the root
+        # integration) and converted with the release's exact root split; the padded frames are re-appended as zeros.
         clip2rig = {str(r["clip_id"]): str(r["rig_id"]) for r in base._rows}
         from src.data.ktjd17_incontext import _STD_FLOOR
-        n_conv = 0
+        n_conv, n_degenerate = 0, 0
         for mid, g in list(gen_by_clip.items()):
             rig = clip2rig[mid]; J = g.shape[1]
             mu_v, sd_v = base._stats(rig); mu_p, sd_p = base_eval._stats(rig)
             cv = base_eval.static_masks(rig)["channel_valid"][:J]
-            raw = g * (sd_v[None, :J] + _STD_FLOOR) + mu_v[None, :J]
+            raw = (g.astype(np.float64) * (sd_v[None, :J] + _STD_FLOOR) + mu_v[None, :J])
+            if _rep:
+                Tv = min(_T_of[mid], raw.shape[0])
+                conv, _hv, _dg = anytop13_to_ktjd17(raw[:Tv], np.asarray(base.skeleton(rig)["parents"])[:J], fps=_fps, eps_h=_eps_h)
+                n_degenerate += _dg["degenerate_facing_frames"] + _dg["degenerate_child_slots"]
+                raw = np.zeros_like(raw); raw[:Tv] = conv
+                raw[:Tv][~_hv, 0, 15:17] = 0.0                                 # KTJD stores invalid headings as exact zero
             gp = ((raw - mu_p[None, :J]) / (sd_p[None, :J] + _STD_FLOOR)).astype(np.float32)
             gp[:, ~cv] = 0.0
+            if _rep:
+                gp[Tv:] = 0.0                                                  # padding stays inert
             gen_by_clip[mid] = gp; n_conv += 1
-        print(f"[gen-eval] converted {n_conv} samples from the generator's {base.normalization!r} normalization "
-              f"into the evaluator's per-cell space", flush=True)
+        print(f"[gen-eval] converted {n_conv} samples from the generator's space (normalization {base.normalization!r}, "
+              f"representation {gen_representation!r}; degenerate generated 6D cells replaced: {n_degenerate}) into the "
+              f"evaluator's per-cell KTJD-17 space", flush=True)
     te, me_gt, me_gen, meta = encode_split(core, eval_ds, gen_by_clip, dev, a, keep=keep)
 
     gpool = torch.Generator().manual_seed(a.seed)
@@ -699,6 +751,7 @@ def main():
     report = {"protocol": {"val_n": n, "pool": a.pool, "cfg_text": a.cfg_text, "subset": subset_rec,
                            "variant": a.protocol_variant,
                            "gen_normalization": base.normalization,
+                           "gen_representation": gen_representation,
                            "steps": a.steps, "seed": a.seed, "gen_batch": a.gen_batch,
                            "generation": gen_mode,
                            "gen_ckpt": a.gen_ckpt, "gen_epoch": int(ck.get("epoch", -1)),

@@ -71,6 +71,8 @@ def parse_args():
                     help="model target window; only used as the energy window for --gt_pick energetic")
     ap.add_argument("--ktjd_root", default="dataset/ktjd17_pzh312_noik_v2")
     ap.add_argument("--percell", default="data/noik_norm_stats_v2.npz")
+    ap.add_argument("--rep_norm", choices=("percell", "scale_only"), default="percell",
+                    help="serving normalization of the checkpoint whose motion is converted (representation ablation)")
     ap.add_argument("--caption_cache", default="data/noik_caption_llm2vec_v1")
     ap.add_argument("--joint_sem", default="data/joint_semantics_llm2vec_pzh312_v1.npz")
     ap.add_argument("--texts_json", default="data/noik_pzh312_motion_texts_v1.json")
@@ -133,12 +135,29 @@ def main():
     if not tpose_path.is_file():
         raise SystemExit(f"[refuse] no skinning assets for {a.rig} ({tpose_path} missing)")
 
+    rep_norm = a.rep_norm
+    if a.gen_npy:
+        # the generated manifest carries the checkpoint's data pins; its target_centering names the serving normalization
+        # the samples live in (codex 2026-09-06 r2 P1): derive it, and refuse an explicit --rep_norm that disagrees
+        _mp = Path(a.gen_npy).with_suffix(".manifest.json")
+        if _mp.is_file():
+            _tc = str(((json.loads(_mp.read_text()).get("ktjd_pins") or {}).get("target_centering")) or "")
+            _mn = "scale_only" if _tc == "ktjd_spec_scale_only_v1" else "percell"
+            if any(x.split("=")[0] == "--rep_norm" for x in sys.argv[1:]) and a.rep_norm != _mn:
+                raise SystemExit(f"[refuse] --rep_norm {a.rep_norm} but the generated manifest's target_centering "
+                                 f"{_tc!r} means {_mn}")
+            rep_norm = _mn
     base = Ktjd17Base(a.ktjd_root, caption_emb_cache=a.caption_cache, joint_semantics=a.joint_sem,
-                      percell_stats=a.percell, exclude_clips=a.exclude, texts_json=a.texts_json)
+                      percell_stats=a.percell, exclude_clips=a.exclude, texts_json=a.texts_json,
+                      normalization=rep_norm)
+    if getattr(base, 'representation', None):
+        # the AnyTop-13 representation view (ablation 2a) is not KTJD-17: decode_ktjd17 would read facing-relative RIC positions and
+        # child-slot local rotations as KTJD channels (codex 2026-09-08 r5 #2). No BVH path exists for it; refuse unconditionally.
+        raise SystemExit(f"[refuse] {base.representation!r} is a representation view, not KTJD-17 -- BVH export is not supported for it")
     sk = base._skeleton(a.rig)
     k_names = [str(x) for x in sk["joint_names"]]
     J = len(k_names)
-    mu_r, sd_r = base._pc[a.rig]
+    mu_r, sd_r = base._stats(a.rig)
     percell_sha = sha256_file(a.percell)
 
     # ---- source motion -> raw (de-normalized) [T,J,17] float64 ----
@@ -154,6 +173,9 @@ def main():
         if manifest.get("rig") != a.rig: problems.append(f"manifest rig {manifest.get('rig')!r} != --rig")
         if int(manifest.get("joints", -1)) != J: problems.append(f"manifest joints {manifest.get('joints')} != {J}")
         if manifest.get("percell_sha256") != percell_sha: problems.append("per-cell stats sha256 mismatch")
+        _mtc = (manifest.get("ktjd_pins") or {}).get("target_centering")
+        if _mtc is not None and str(_mtc) != str(base.provenance["target_centering"]):
+            problems.append(f"target_centering {_mtc!r} != view {base.provenance['target_centering']!r}")
         if problems:
             raise SystemExit("[refuse] generated npy provenance: " + "; ".join(problems))
         norm = np.load(a.gen_npy).astype(np.float64)

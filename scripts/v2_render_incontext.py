@@ -76,9 +76,22 @@ def world_of_ktjd(norm_seg18, base, rig, strict_gt):
     # (rig, joint, channel), so de-normalization is the repo convention x*(std+floor)+mean with
     # BOTH taken from the stats artifact (codex round-S7 blocker 2: this used the superseded
     # scale-only path and called a function that no longer exists).
-    mu_r, sd_r = base._pc[rig]
+    mu_r, sd_r = base._stats(rig)          # the view's serving normalization (percell or the scale_only ablation)
     mean, std = mu_r[:J, :17], sd_r[:J, :17]
     raw = (norm_seg18[..., :17] * (std[None] + _STD_FLOOR) + mean[None]).astype(np.float64)
+    if getattr(base, "representation", None):
+        # REPRESENTATION VIEW (ablation 2a): the payload / prediction is the old AnyTop-13 representation in the 17-slot container;
+        # decode_ktjd17 would read facing-relative RIC positions and parent-local child-slot rotations as KTJD channels (no root
+        # travel, wrong rotations -- codex 2026-09-08 r4). Convert with the representation-aware inverse first (release-exact root
+        # split; leaf rest deltas inherit the parent's; degenerate generated 6D cells fall back as documented there).
+        from src.data.ktjd17_anytop13 import REPRESENTATION_ID, anytop13_to_ktjd17
+        if base.representation != REPRESENTATION_ID:
+            raise SystemExit(f"[refuse] unknown representation view {base.representation!r}")
+        import json as _json
+        _sch = _json.loads((Path(base.root) / "schema.json").read_text())
+        raw, _hv, _dg = anytop13_to_ktjd17(raw, np.asarray(sk["parents"])[:J], fps=float(_sch["fps_target"]),
+                                           eps_h=float(_sch["heading"]["eps_h"]))
+        raw[~_hv, 0, 15:17] = 0.0
     dec = decode_ktjd17(raw, parents=sk["parents"], R_rest_global=sk["R_rest_global"],
                         R_rest_local=sk["R_rest_local"],
                         offset_parent_local=sk["offset_parent_local"],
@@ -320,7 +333,8 @@ def main():
         eff_excl = (a.exclude_clips or None) if a.allow_corpus_swap else (ca.get("exclude_clips") or None)
         base = Ktjd17Base(a.ktjd_root, caption_emb_cache=a.caption_cache,
                           joint_semantics=a.joint_sem, texts_json=a.texts_json,
-                          percell_stats=eff_pc, exclude_clips=eff_excl)
+                          percell_stats=eff_pc, exclude_clips=eff_excl,
+                          normalization=str(ca.get("rep_norm", "percell")))
         # `exclusion` is NOT in base.provenance -- it lives on base.provenance_exclusion -- so a
         # key-intersection drift check silently misses a swapped cut file at the same path, which
         # changes render/eval membership under an unchanged checkpoint (codex 2026-08-21 (A)4).
@@ -329,6 +343,13 @@ def main():
         # (a derived view's manifest/derivation sha rendered against its parent) is drift, not a
         # skip. Objective pins the trainer adds to ktjd_pins (gammas, gamma_calib_*, group_spec,
         # gate_override, in_ch, ...) describe the run, not the data, and are not compared here.
+        # the REPRESENTATION is semantics, not data provenance: a checkpoint trained on the AnyTop-13 view rendered against a KTJD-17
+        # corpus (or the reverse) would skip / apply the inverse wrongly, so this pin must agree even when a corpus swap is allowed
+        # (codex 2026-09-08 r5 #1). Absent on both sides == KTJD-17.
+        _ck_rep = (ck.get("ktjd_pins") or {}).get("representation")
+        if str(_ck_rep or "ktjd17") != str(getattr(base, "representation", None) or "ktjd17"):
+            raise SystemExit(f"[refuse] checkpoint representation {_ck_rep or 'ktjd17'!r} != data representation "
+                             f"{getattr(base, 'representation', None) or 'ktjd17'!r}; --allow_corpus_swap does not cover a representation change")
         data_keys = set(live) | {"manifest_sha256", "derivation_sha256"}
         drift = sorted(k for k, v in pins_ck.items()
                        if k in data_keys and (k not in live or live[k] != v))
@@ -522,6 +543,7 @@ def main():
                      # provenance (codex 2026-09-04): the consumer must be able to tell WHICH model, sampler and
                      # corpus produced a dump, and refuse to pool dumps that disagree
                      dump_format=np.array("world-dump-v3"), ckpt=np.array(str(a.ckpt)),
+                     representation=np.array(str(getattr(base, "representation", None) or "ktjd17")),
                      ckpt_sha256=np.array(dump_ckpt_sha), epoch=np.array(int(ep)), steps=np.array(int(a.steps)),
                      cfg_text=np.array(float(a.cfg_text)), seed=np.array(int(a.seed)),
                      smooth_mincutoff=np.array(float(a.smooth_mincutoff)), smooth_beta=np.array(float(a.smooth_beta)),
@@ -531,7 +553,9 @@ def main():
                      percell_sha256=np.array(_sha256_file(eff_pc) if eff_pc else ""),
                      exclude_clips=np.array(str(eff_excl or "")),
                      exclude_sha256=np.array(_sha256_file(eff_excl) if eff_excl else ""),
-                     units=np.array("source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"))
+                     units=np.array("source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"
+                                    + ("; AnyTop-13 view converted to KTJD-17 first (root travel integrated from the predicted root velocities)"
+                                       if getattr(base, "representation", None) else "")))
         render_gif(out / f"{name}.gif",
                    [("demo", f"DEMO {item['demo_id']}", demo_w),
                     ("gen_ric", f"GEN pos ep{ep} s{a.steps}", gen_ric),

@@ -80,7 +80,8 @@ def main():
     m.load_state_dict(ck["model"]); m.eval()
     base = Ktjd17Base(a.ktjd_root, caption_emb_cache=ca["caption_cache"],
                       joint_semantics=ca["joint_sem"], percell_stats=ca["ktjd_percell_stats"],
-                      exclude_clips=ca.get("exclude_clips") or None, texts_json=ca["texts_json"])
+                      exclude_clips=ca.get("exclude_clips") or None, texts_json=ca["texts_json"],
+                      normalization=str(ca.get("rep_norm", "percell")))
     names = ktjd17_split_names(a.ktjd_root, exclude=ca.get("exclude_clips") or None)
     ds = InContextPairs(base, names["train"], names["train"], balance_skeletons=False, seed=7,
                         emit_fk_fields=True, emit_graph_v2=True, demo_rest=True, demo_frames=1,
@@ -130,7 +131,7 @@ def main():
         hg_ric = band_energy(gen_ric)[2:].sum()
         fkr = float(hg_fk / max(hg_ric, 1e-12)); agg["fk_vs_ric"].append(fkr)
         # [E] normalization std of the top joints' position channels (0:3)
-        _, sd_r = base._pc[rig]
+        _, sd_r = base._stats(rig)
         sd_pos = sd_r[:J, 0:3].mean(-1)
         # [F] spikiness
         af = acc_mag(gen_fk); spik = float(np.percentile(af, 95) / max(np.percentile(af, 50), 1e-9))
