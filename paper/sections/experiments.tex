@@ -5,8 +5,7 @@ skeletons on text-conditioned generation (\S\ref{sec:exp:main})? (2) How far doe
 extend to a rig it has never seen, with no training and with about ten clips
 (\S\ref{sec:exp:extend})? (3) How does it relate to the released arbitrary-topology generator
 and to prior work in capability (\S\ref{sec:exp:compare})? (4) Which ingredients matter
-(\S\ref{sec:exp:ablation})? Numbers marked \num{blue} are pinned to a specific run and will be
-replaced by the final checkpoint's; \todo{red} marks values still to be computed.
+(\S\ref{sec:exp:ablation})?
 
 \subsection{Setup}\label{sec:exp:setup}
 
@@ -49,7 +48,9 @@ epoch-214 snapshot that initialised the adapters, seed 7.
 
 \subsection{One model for 311 skeletons}\label{sec:exp:main}
 
-Table~\ref{tab:main} reports text-to-motion retrieval on the validation set. The \num{303}M
+Table~\ref{tab:main} reports text-to-motion retrieval on the validation set. All \num{311} rigs appear in
+training, so this measures the generation of held-out clips on known rigs; rigs outside the library are
+the subject of \S\ref{sec:exp:extend}. The \num{303}M
 model reaches R@1 \num{0.922} against \num{0.964} for the real clips scored by the same evaluator
 in the same pools, a text--motion matching score of \num{0.764} against \num{0.782}, and an FID of
 \num{0.005}; the \num{36}M pilot, trained on the same data with the same recipe, reaches R@1
@@ -92,7 +93,8 @@ clips' own.}\label{fig:qual}
 \paragraph{Zero training and per-rig LoRA.} We take four Truebones rigs that differ from the
 library in body plan and joint count -- Buffalo (30 joints), Gazelle (29), Dragon (95 joints, a
 flying rig) and Spider (68) -- and compare three arms on the same held-out clips of each rig:
-(a) the library model with the new rig's statistics only (\emph{zero training}); (b) a per-rig
+(a) the library model with the new rig's per-cell statistics, computed from all of its clips including
+the evaluation clips, as its only rig-specific input (\emph{zero training}); (b) a per-rig
 low-rank adapter trained on the rig's 8--26 training clips (\emph{LoRA}, \S\ref{sec:method:lora});
 (c) a \num{36}M model of the same recipe trained on all \num{802} captioned Truebones clips,
 evaluation clips included, as a seen-clip reference rather than a competing method.
@@ -123,13 +125,18 @@ Spider (68 j.)  & 26 / 6 & \num{1.029} & \num{0.130} & \num{0.088} & \num{2.87} 
 \end{table}
 
 \paragraph{Further arms.} Repeating the study with the \num{36}M pilot as the backbone gives the
-same picture, an adapter shared by eight flying rigs is worse than the species-specific one, and the
-Truebones-only model that has trained on the evaluation clips reproduces their statistics; training an
-adapter beyond about 150 epochs changes nothing. All four are reported in App.~\ref{app:extend_more}.
+same picture, and an adapter shared by eight flying rigs is worse than the species-specific one
+(App.~\ref{app:extend_more}).
 
 \subsection{Relation to prior work}\label{sec:exp:compare}
 
-\paragraph{Capabilities.} Table~\ref{tab:capability} (App.~\ref{app:capability}) places \method{} among the methods that generate motion for more than one skeleton.
+\paragraph{Capabilities.} Table~\ref{tab:capability} (App.~\ref{app:capability}) places \method{} among the
+generators that serve more than one skeleton. AnyTop generates without text; G-MDM generates joint
+rotations but no root translation; SAMoR generates joint positions through eight part tokens and needs
+inverse kinematics to drive a rig, with the twist ambiguity its authors note; OmniZoo does not report
+whether its outputs drive a rig directly. \method{} returns per-joint rotations and a world-space root
+trajectory that the rig plays as generated, for \num{311} production rigs, and measures that geometry
+against ground truth (Table~\ref{tab:physical}).
 
 
 \paragraph{AnyTop as an in-distribution reference.} The released AnyTop~\citep{gat2025anytop}
@@ -141,9 +148,7 @@ on these rigs produces.
 
 Table~\ref{tab:ablation} collects the ablations that share the pilot's recipe and checkpoint epoch.
 Removing the acceleration-matching term leaves the FK--pose gap, retrieval and FID unchanged at epoch
-200; replacing the rest-frame demonstration by a 64-frame window of real motion costs validation loss
-and FK--pose gap and buys nothing in retrieval (App.~\ref{app:demo64}). Notes in
-App.~\ref{app:ablation_notes}. Normalising \rep{} by a per-rig scale alone instead of per-cell
+200. Notes in App.~\ref{app:ablation_notes}. Normalising \rep{} by a per-rig scale alone instead of per-cell
 mean and standard deviation costs about two points of R@1 and a third of the FID at every matched
 epoch (Table~\ref{tab:rep}); replacing its channel layout by the 13-channel AnyTop layout derived from the same
 clips moves R@1 by under a point at every matched epoch (Table~\ref{tab:repcontent}), while the 17-channel
@@ -161,7 +166,6 @@ Variant & Val.\ loss$\downarrow$ & FK--pose gap (bl)$\downarrow$ & R@1$\uparrow$
 \midrule
 Full recipe (rest-frame demo, calibrated, $\mathbf{x}$-pred, qk-norm) & \num{0.247} & \num{0.171} & \num{0.878} & \num{0.011} \\
 Without the acceleration-matching term & -- & \num{0.171} & \num{0.877} & \num{0.011} \\
-64-frame motion demonstration instead of the rest frame (App.~\ref{app:demo64}) & \num{0.270} & \num{0.202} & \num{0.878} & \num{0.010} \\
 \bottomrule
 \end{tabular}
 \end{table}

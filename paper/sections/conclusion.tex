@@ -1,0 +1,45 @@
+\section{Conclusion}\label{sec:conclusion}
+
+We set out to build a text-to-motion model that treats the skeleton as an input rather than as part
+of the architecture. One \num{303}M-parameter model trained on \num{311} animal rigs generates
+text-conditioned motion for all of them (R@1 \num{0.922} on held-out clips, against \num{0.964} for
+the real clips), returning rotations and a root trajectory the rig plays directly; a rig it has never
+seen is served by the same forward pass given its statistics, and a low-rank adapter trained on eight
+to twenty-six clips brings its rotation and position channels back into agreement.
+
+\paragraph{Limitations.} The library is animal-only. Retrieval metrics come from an evaluator we
+train, hence the real-motion reference next to every number, and rigs outside the library are
+scored geometrically. The per-cell statistics of a rig are computed from its own clips, all of them
+for library rigs, so a new rig needs clips or supplied statistics. The extension study is four case
+studies with two to six validation clips each.
+
+\section*{Reproducibility statement}
+
+Section~\ref{sec:method:rep} and Appendix~\ref{app:rep} specify the representation channel by
+channel, the conversion from a kinematic tree, rest pose and motion, and the per-cell
+normalisation; Appendix~\ref{app:calib} gives the calibration protocol, the target share profile
+and the mechanism check that certifies an artifact; Appendix~\ref{app:lora} lists every adapter
+hyper-parameter; Appendix~\ref{app:anytop} gives the AnyTop sampling protocol and the geometric
+protocol, including the frame-rate handling. All evaluation runs are seeded, and the sharded
+generation used for retrieval metrics records the checkpoint, sampler and source hashes so that
+a table can be re-scored from the stored samples.
+
+\subsection*{AI use statement}
+We used generative AI tools throughout this work. The code for data conversion, training, evaluation
+and rendering was drafted with an LLM-based coding assistant and independently reviewed by a second
+LLM reviewer before it was run; every script was tested, and every number in this paper was checked
+against the run logs and artifacts by the authors. LLM assistance was also used for experiment
+orchestration, for auditing the data, for figure scripts, literature search
+and the drafting and editing of the text. The natural-language captions of the corpus and the joint
+descriptions were produced with an LLM from the animation metadata and joint names. The research
+questions, the design decisions and the interpretation of the results are the authors', and we take
+responsibility for the final content, including text, claims and artifacts produced with the aid of
+generative AI.
+
+\subsection*{Ethics statement}
+The work involves no human subjects and no personal data. The training library is derived from the
+animation assets of a commercial game, following the clip inventory and annotations of
+AniMo4D~\citep{wang2025animo}, and the evaluation rigs from the publicly distributed Truebones zoo;
+the game assets are used for research only and are not redistributed, and the paper describes the
+conversion so that the representation can be rebuilt from licensed copies (\todo{confirm licence wording}). Generated animal motion for games and film
+carries no risk beyond the generic misuse of animation tools.

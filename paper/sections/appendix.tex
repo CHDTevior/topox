@@ -69,7 +69,10 @@ hours. Clips are short: median $62$ frames, mean $79$, maximum $299$, and $2.1\%
 $34$ to $102$ (median $64$): $61$ rigs in the thirties, $48$ in the forties, $14$ in the fifties,
 $63$ in the sixties, $48$ in the seventies, $27$ in the eighties, $47$ in the nineties and $3$ above
 a hundred. Every clip carries three captions of about ten words (median), written from the animation
-metadata; the primary caption is used for evaluation. Before the split, a source audit removed $161$
+metadata; the primary caption is used for evaluation. The clip inventory follows the official AniMo4D
+annotation set of \citet{wang2025animo}: \num{77{,}894} of its \num{78{,}149} entries have a processed clip
+here and the remaining 255 have none; the rigs and animations are our own re-export of the game assets,
+and the conversion to \rep{} is new. Before the split, a source audit removed $161$
 clips whose joint speeds lay in the extreme tail of their rig, which trace to defects of the source
 animations rather than to the conversion.
 
@@ -127,13 +130,6 @@ learning rate scaled linearly to the batch, one pass over every clip per epoch, 
 a shortened forward-kinematics warm-up. A single adapter can also be shared by a group of rigs; we
 report this as a negative result.
 
-\paragraph{Probing text generalisation.} To test whether an adapted rig still follows language it
-was not adapted on, we render captions of related species that no checkpoint in the adapter's
-initialisation lineage trained on, and authored out-of-distribution captions, on the adapted rig;
-the probe walks the lineage by content hash and refuses any caption seen upstream.
-
-
-
 \paragraph{Hyper-parameters.} Table~\ref{tab:lora_hp} lists the per-rig settings. The learning rate
 follows the linear-scaling rule from $10^{-4}$ at batch 8; the batch is the largest divisor of the
 rig's training-clip count at or below 13, so that every clip is seen exactly once per epoch. Adapters
@@ -155,7 +151,7 @@ Rig & Joints & Train / val clips & Batch & Learning rate & Rank & Epochs \\
 Buffalo & 30 & 15 / 5 & 5 & $6.25{\times}10^{-5}$ & 64 & 300 \\
 Gazelle & 29 & 8 / 2 & 8 & $1.0{\times}10^{-4}$ & 64 & 300 \\
 Dragon & 95 & 10 / 3 & 5 & $6.25{\times}10^{-5}$ & 128 & 900 \\
-Spider & 46 & 26 / 6 & 13 & $1.63{\times}10^{-4}$ & 64 & 300 \\
+Spider & 68 & 26 / 6 & 13 & $1.63{\times}10^{-4}$ & 64 & 300 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -176,45 +172,6 @@ evaluation clips, reproduces the real clips' statistics on every rig (jitter rat
 the matched target clips), unchanged between \num{30}k and \num{60}k steps. This is what
 reproducing seen targets looks like under the protocol; all LoRA arms come out \emph{smoother}
 than real motion (jitter ratios \num{0.2}--\num{0.9}) while the seen-clip reference does not.
-
-
-\paragraph{How long to train the adapter.} Table~\ref{tab:lora_len} re-trains the four adapters of
-Table~\ref{tab:lora} with a snapshot every 50 epochs (Dragon: every 150 of 900) and scores every snapshot under the protocol
-of \S\ref{sec:exp:setup}. The jitter excess of the zero-training arm is gone within 50--100 epochs on every rig (150--300
-optimiser steps on 8--26 clips), the FK--pose gap reaches its plateau by 150--200 epochs (Dragon: 450), and the articulation
-ratio settles at \num{0.25}--\num{0.8} of the real clips whichever length is used: longer adaptation removes the disagreement
-between the rotation and position channels but does not restore the amplitude of motion. Gazelle, with two validation clips,
-is the noisiest row.
-
-\begin{table}[h]
-\centering\footnotesize\setlength{\tabcolsep}{4pt}
-\caption{Adapter training length. Snapshots of the per-rig LoRA (\num{303}M backbone, same clips, learning rate and batch as
-Table~\ref{tab:lora}); FK--pose gap in bone lengths on the validation clips, articulation and jitter of the sampled FK output
-relative to all real clips of the rig (1 = real). Epoch 0 is the zero-training arm. Dragon's snapshots are at 150 / 300 / 450 /
-600 / 900 epochs.}\label{tab:lora_len}
-\begin{tabular}{@{}llcccccc@{}}
-\toprule
-Rig & & 0 & 50 & 100 & 150 & 200 & 300 \\
-\midrule
-Buffalo & gap & \num{0.323} & \num{0.166} & \num{0.146} & \num{0.134} & \num{0.132} & \num{0.130} \\
- & articulation & \num{1.45} & \num{0.43} & \num{0.30} & \num{0.26} & \num{0.27} & \num{0.28} \\
- & jitter & \num{3.32} & \num{0.66} & \num{0.34} & \num{0.30} & \num{0.30} & \num{0.30} \\
-\midrule
-Gazelle & gap & \num{0.255} & \num{0.180} & \num{0.121} & \num{0.097} & \num{0.084} & \num{0.086} \\
- & articulation & \num{5.39} & \num{0.73} & \num{0.36} & \num{0.56} & \num{0.79} & \num{0.78} \\
- & jitter & \num{13.2} & \num{1.04} & \num{0.45} & \num{0.58} & \num{0.80} & \num{0.79} \\
-\midrule
-Spider & gap & \num{1.029} & \num{0.233} & \num{0.181} & \num{0.150} & \num{0.129} & \num{0.128} \\
- & articulation & \num{2.87} & \num{0.44} & \num{0.28} & \num{0.20} & \num{0.28} & \num{0.24} \\
- & jitter & \num{6.49} & \num{0.57} & \num{0.28} & \num{0.19} & \num{0.25} & \num{0.22} \\
-\midrule
- & & 0 & 150 & 300 & 450 & 600 & 900 \\
-Dragon & gap & \num{1.215} & \num{0.214} & \num{0.172} & \num{0.151} & \num{0.142} & \num{0.142} \\
- & articulation & \num{1.02} & \num{0.47} & \num{0.42} & \num{0.50} & \num{0.49} & \num{0.51} \\
- & jitter & \num{2.53} & \num{0.61} & \num{0.52} & \num{0.59} & \num{0.59} & \num{0.56} \\
-\bottomrule
-\end{tabular}
-\end{table}
 
 
 \paragraph{Sharing an adapter across species does not help.} One rank-128 adapter trained on the pooled clips of eight flying
@@ -251,55 +208,28 @@ Parrot & 3 & \num{1.84} & \num{0.55} & \num{7.14} & \num{1.14} \\
 
 
 
-\paragraph{Does the adapted rig still follow language?} We take the Buffalo adapter of Table~\ref{tab:lora} and give it
-\num{36} captions it has never seen -- validation captions of related library species (African and water buffalo, bison, Highland
-cattle, wildebeest) whose text occurs nowhere in the backbone's or the adapter's training set -- twelve each in three energy classes
-read off the caption (fight / flee / run; walk / swim; rest / eat / stand). Table~\ref{tab:textprobe} reports the motion energy of the
-sample on the Buffalo rig (mean frame-to-frame world displacement of all joints, in units of the rig's scale) next to the energy of the
-library clip the caption belongs to. The adapter orders the classes exactly as the captions do: every fight caption moves more than every
-rest caption, the rank correlation between generated and reference energy over the \num{36} captions is $\rho{=}\num{0.86}$, and the
-travelling captions travel (root path \num{1.20} against \num{0.18} units). The amplitude is \num{0.5}--\num{0.7} of the library clips',
-the same under-articulation Table~\ref{tab:lora} measures on the adapter's own clips.
-
-\begin{table}[h]
-\centering\footnotesize\setlength{\tabcolsep}{5pt}
-\caption{Language following of the Buffalo adapter on \num{36} unseen captions of related species (medians over the twelve captions of a
-class). Energy: mean frame-to-frame joint displacement per unit rig scale; reference: the library clip the caption describes, on its own
-rig; root path in rig units. Pairwise class order of the generated energy: fight $>$ rest in $100\%$ of pairs, fight $>$ walk in $97\%$,
-walk $>$ rest in $94\%$.}\label{tab:textprobe}
-\begin{tabular}{@{}lcccc@{}}
-\toprule
-Caption class & generated energy & reference energy & ratio & root path \\
-\midrule
-fight / flee / run & \num{0.0133} & \num{0.0185} & \num{0.70} & \num{1.20} \\
-walk / swim & \num{0.0057} & \num{0.0095} & \num{0.58} & \num{0.26} \\
-rest / eat / stand & \num{0.0008} & \num{0.0019} & \num{0.54} & \num{0.18} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-
 \section{Capabilities of related systems}\label{app:capability}
 
 \begin{table}[h]
-\centering\small
-\caption{Capabilities of motion generators across skeletons. \emph{Any topology}: one model
-serves skeletons of different joint counts and trees. \emph{Text}: language-conditioned.
-\emph{No template}: no retargeting to a canonical skeleton at training or inference. \emph{Unseen
-rig}: a rig absent from training is served (zero-shot or with few clips). Entries follow the papers'
-own descriptions; n.r.\ = not reported.}\label{tab:capability}
-\begin{tabular}{lcccc}
+\centering\footnotesize\setlength{\tabcolsep}{4pt}
+\caption{Capabilities of motion generators across skeletons, as described in the papers. \emph{Any topology}: one
+model serves skeletons of different joint counts and trees. \emph{Text}: language-conditioned. \emph{Rotations}: the
+output is joint rotations the rig plays without an inverse-kinematics fit. \emph{Root}: a world-space root
+trajectory is generated. \emph{Unseen rig}: a rig absent from training is served (zero-shot or with few clips).
+\emph{Baselines}: how the paper compares to other methods. n.r.\ = not reported.}\label{tab:capability}
+\begin{tabular}{lcccccl}
 \toprule
-& Any topology & Text & No template & Unseen rig \\
+& Any topology & Text & Rotations & Root & Unseen rig & Baselines \\
 \midrule
-Human T2M diffusion~\citep{tevet2023mdm,zhang2024motiondiffuse} & $\times$ & $\checkmark$ & $\times$ & $\times$ \\
-OmniMotionGPT~\citep{yang2024omnimotiongpt} & $\times$ & $\checkmark$ & $\times$ & $\times$ \\
-AnyTop~\citep{gat2025anytop} & $\checkmark$ & $\times$ & $\checkmark$ & $\checkmark$ \\
-X-MoGen~\citep{wang2025xmogen} & $\times$ & $\checkmark$ & $\times$ & $\times$ \\
-OmniZoo~\citep{chen2025omnizoo} & $\checkmark$ & $\checkmark$ & $\checkmark$ & n.r. \\
-G-MDM~\citep{lee2025dragon} & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
-SAMoR~\citep{samor2026} & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
-\method{} (ours) & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
+Human T2M diffusion~\citep{tevet2023mdm,zhang2024motiondiffuse} & $\times$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & standard HumanML3D protocol \\
+AniMo~\citep{wang2025animo} & $\times$ & $\checkmark$ & $\checkmark$ & n.r. & $\times$ & retrained on its data \\
+OmniMotionGPT~\citep{yang2024omnimotiongpt} & $\times$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & retrained on its data \\
+X-MoGen~\citep{wang2025xmogen} & $\times$ & $\checkmark$ & $\checkmark$ & n.r. & $\times$ & retrained on its data \\
+AnyTop~\citep{gat2025anytop} & $\checkmark$ & $\times$ & $\checkmark$ & n.r. & $\checkmark$ & MDM adapted, SinMDM per rig \\
+OmniZoo~\citep{chen2025omnizoo} & $\checkmark$ & $\checkmark$ & n.r. & n.r. & n.r. & padded MoMask / MMM / AniMo \\
+G-MDM~\citep{lee2025dragon} & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & $\checkmark$ & per-object MDMs, retargeting \\
+SAMoR~\citep{samor2026} & $\checkmark$ & $\checkmark$ & $\times$ (IK) & $\times$ & $\checkmark$ & T2M-GPT / MoGenTS retrained \\
+\method{} (ours) & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & released AnyTop as reference \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -309,9 +239,9 @@ SAMoR~\citep{samor2026} & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkma
 \paragraph{In-distribution references, not a comparison.} AnyTop~\citep{gat2025anytop} is the
 released arbitrary-topology generator; it is unconditional and was trained on the whole Truebones
 zoo, including the four rigs above, so on them it is an in-distribution model while our arms are
-not. We do not retrain it on a split that excludes those rigs, because a reproduction we run
-ourselves could not be held to its authors' standard, and we have no rig that neither model has
-seen; the numbers in Table~\ref{tab:anytop} therefore describe what a model that trained on
+not. It is unconditional, so a text-conditioned comparison under our retrieval protocol is not
+defined; we do not retrain it, and no rig is unseen by both models, so the numbers in
+Table~\ref{tab:anytop} describe what a model that trained on
 these rigs produces, next to our own seen-clip reference (the Truebones-only model of
 Table~\ref{tab:lora}), and are not a ranking. We sample the released weights eight times per rig
 (6\,s each) and report, for its direct output positions and for the BVH it exports after an
@@ -368,35 +298,6 @@ metric is taken. All sequences, real and generated, are decimated to a common 20
 anti-aliased polyphase filter when an AnyTop sample is present, and kept at the native 30\,Hz
 otherwise. Ratios are means over the rig's clips; where a rig has three or more clips we report
 $95\%$ bootstrap intervals in the artifacts.
-
-\section{Sampling cost}\label{app:cost}
-
-Table~\ref{tab:cost} gives the wall-clock time of one sample at batch size 1 on one H200 GPU in fp32, for the
-protocol's padded 240-frame sequence of a 38-joint rig (\num{109} of the frames are real), with caption
-guidance (two network evaluations per Euler step), median of five timed runs after two warm-up runs, next to the
-retrieval and FID scores of the same checkpoints at 10 and 5 steps. The time is linear in the number of function
-evaluations and the \num{36}M pilot is six times faster than the \num{303}M model. Halving the steps leaves R@1
-unchanged for both models and costs \num{0.003}--\num{0.005} in FID; five steps cost \num{0.008} in R@1 for the
-\num{303}M model and \num{0.020} for the pilot, so the smaller model needs its steps more.
-Departures from the 20-step protocol are stamped as such in the evaluation reports (\texttt{protocol.variant}) and
-are never mixed with frozen-protocol numbers.
-
-\begin{table}[h]
-\centering\footnotesize\setlength{\tabcolsep}{4pt}
-\caption{Sampling cost and quality against the number of Euler steps ($s{=}2$, one seed, validation set; runs at 10 and 5 steps
-are stamped as protocol variants). Latency: batch 1, one H200, fp32, 240 padded frames, 38 joints.}\label{tab:cost}
-\begin{tabular}{lccccccc}
-\toprule
-& & \multicolumn{3}{c}{\num{303}M} & \multicolumn{3}{c}{\num{36}M} \\
-\cmidrule(lr){3-5}\cmidrule(lr){6-8}
-Euler steps & evaluations & latency (ms) & R@1$\uparrow$ & FID$\downarrow$ & latency (ms) & R@1$\uparrow$ & FID$\downarrow$ \\
-\midrule
-20 (protocol) & 40 & \num{4083} & \num{0.922} & \num{0.005} & \num{688} & \num{0.897} & \num{0.008} \\
-10 & 20 & \num{2041} & \num{0.922} & \num{0.008} & \num{344} & \num{0.897} & \num{0.013} \\
-5 & 10 & \num{1021} & \num{0.914} & \num{0.013} & \num{172} & \num{0.878} & \num{0.022} \\
-\bottomrule
-\end{tabular}
-\end{table}
 
 \section{Ablation notes}\label{app:ablation_notes}
 
@@ -568,25 +469,6 @@ and keep their height above the floor; the grey line marks the floor height bene
 Dragon, a flying rig, is anchored on the root in all axes, which removes its dive trajectory. Both
 rows of a rig are drawn at the same scale.}\label{fig:tb_filmstrips}
 \end{figure}
-
-\section{A motion demonstration in place of the rest frame}\label{app:demo64}
-
-The demonstration slot of \S\ref{sec:method:model} can hold motion as well as a pose. We trained a
-\num{36}M pilot identical to the mainline except that the demonstration is a 64-frame window of
-another real clip of the same rig, drawn afresh for every training sample (the grouped objective was
-re-calibrated for this condition). At matched optimiser steps (epoch 200, scored on the same GPUs)
-the motion demonstration gives a mixed result: validation loss \num{0.270} against \num{0.247} and
-FK--pose gap \num{0.202} against \num{0.171} bone lengths are worse, retrieval equal within noise and
-FID slightly better (R@1 \num{0.878} for both, FID \num{0.010} against \num{0.011}); the attribution of the demonstration pathway is an order of
-magnitude smaller than with the rest frame ($3{\times}10^{-4}$ against $5{\times}10^{-3}$), and the
-sequence is $27\%$ longer. On the four Truebones rigs of \S\ref{sec:exp:extend} the picture is the
-same: zero-training jitter ratios \num{0.95} / \num{6.89} / \num{1.54} / \num{2.94} (rest frame
-\num{1.92} / \num{6.24} / \num{0.74} / \num{4.71}), LoRA \num{0.24} / \num{0.74} / \num{0.70} /
-\num{0.17} (rest frame \num{0.27} / \num{0.92} / \num{0.62} / \num{0.23}), with LoRA validation
-losses a few percent above the rest-frame pilot's on every rig. Because the demonstration clip is an
-unrelated motion of the same rig, everything it carries beyond the body plan is already stated by the
-caption, and the network learns to ignore it; a moving demonstration also has to exist at test time,
-which a rest pose always does. We therefore keep the rest frame.
 
 \section{Validation split}\label{app:split}
 
