@@ -604,25 +604,34 @@ and the same frozen samples as Table~\ref{tab:repcontent}; official codec; bl = 
 length). Last column: share of clips on which the \rep{} sample is closer to the ground truth than the
 13-channel sample (ties count for neither). Every row uses all \num{3899} clips except foot slide, which each stream computes under its own
 contact flags and which is therefore compared only on the \num{3610} clips where all three are
-defined. Epochs 50 and 75 give the same picture.}\label{tab:physical}
-\centering\footnotesize\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}lcccc@{}}
+defined. Epochs 50 and 75 give the same picture. The \num{303}M column is the main model's own
+frozen samples (epoch 289, the checkpoint of Table~\ref{tab:main}), decoded through the same stream and scored on
+the same \num{3{,}899} clips; it is read against the ground truth clip for clip exactly as the \num{36}M column is,
+and it is closer to the ground truth than the \num{36}M pilot on the FK--pose gap (\num{95.4}\% of clips),
+bone-length error (\num{96.3}\%), foot slide (\num{65.8}\%) and internal articulation (\num{72.9}\%). The
+\rep{} closer column compares the two \num{36}M layouts, which is what that comparison is about. Foot slide is the
+one reference that depends on which pair of arms supplies the contact frames: \num{2.02} against the 13-channel
+arm, \num{2.03} against the \num{303}M model.}\label{tab:physical}
+\centering\footnotesize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}lccccc@{}}
 \toprule
-Quantity & Data & \rep{} & AnyTop-13 & \rep{} closer \\
+& & \multicolumn{2}{c}{\rep{}} & & \\
+\cmidrule(lr){3-4}
+Quantity & Data & \num{36}M & \num{303}M & AnyTop-13 & \rep{} closer \\
 \midrule
-FK--pose gap (bl) & \num{0.000} & \num{0.381} & \num{1.447} & \num{100}\% \\
-Bone-length error, direct positions (bl) & \num{0.000} & \num{0.077} & \num{0.119} & \num{91}\% \\
-Leaf articulation, mean deviation from rest (deg) & \num{11.6} & \num{10.6} & \num{0.0} & \num{92}\% \\
-Leaf articulation, temporal std (deg) & \num{5.86} & \num{5.24} & \num{0.00} & \num{89}\% \\
-Foot slide while in contact (bl/s) & \num{2.02} & \num{2.32} & \num{3.80} & \num{71}\% \\
-Root displacement (bl) & \num{8.87} & \num{9.24} & \num{10.83} & \num{61}\% \\
-Root path length (bl) & \num{11.26} & \num{11.04} & \num{12.87} & \num{55}\% \\
-Root height (bl) & \num{6.97} & \num{7.05} & \num{6.71} & \num{54}\% \\
-Heading turn (rad) & \num{1.07} & \num{1.13} & \num{1.04} & \num{43}\% \\
-Root jitter (bl) & \num{0.038} & \num{0.047} & \num{0.044} & \num{30}\% \\
-Joint jitter (bl) & \num{0.094} & \num{0.090} & \num{0.112} & \num{49}\% \\
-Internal-joint articulation, mean deviation from rest (deg) & \num{19.3} & \num{17.9} & \num{18.8} & \num{42}\% \\
-Internal-joint articulation, temporal std (deg) & \num{8.99} & \num{7.11} & \num{8.16} & \num{32}\% \\
+FK--pose gap (bl) & \num{0.000} & \num{0.381} & \num{0.236} & \num{1.447} & \num{100}\% \\
+Bone-length error, direct pos.\ (bl) & \num{0.000} & \num{0.077} & \num{0.052} & \num{0.119} & \num{91}\% \\
+Leaf articulation, mean dev.\ from rest (deg) & \num{11.6} & \num{10.6} & \num{11.3} & \num{0.0} & \num{92}\% \\
+Leaf articulation, temporal std (deg) & \num{5.86} & \num{5.24} & \num{5.69} & \num{0.00} & \num{89}\% \\
+Foot slide while in contact (bl/s) & \num{2.02} & \num{2.32} & \num{1.84} & \num{3.80} & \num{71}\% \\
+Root displacement (bl) & \num{8.87} & \num{9.24} & \num{9.75} & \num{10.83} & \num{61}\% \\
+Root path length (bl) & \num{11.26} & \num{11.04} & \num{11.81} & \num{12.87} & \num{55}\% \\
+Root height (bl) & \num{6.97} & \num{7.05} & \num{7.01} & \num{6.71} & \num{54}\% \\
+Heading turn (rad) & \num{1.07} & \num{1.13} & \num{1.15} & \num{1.04} & \num{43}\% \\
+Root jitter (bl) & \num{0.038} & \num{0.047} & \num{0.050} & \num{0.044} & \num{30}\% \\
+Joint jitter (bl) & \num{0.094} & \num{0.090} & \num{0.099} & \num{0.112} & \num{49}\% \\
+Internal-joint artic., mean dev.\ from rest (deg) & \num{19.3} & \num{17.9} & \num{19.0} & \num{18.8} & \num{42}\% \\
+Internal-joint artic., temporal std (deg) & \num{8.99} & \num{7.11} & \num{8.26} & \num{8.16} & \num{32}\% \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -738,7 +747,7 @@ matching score.
 so a motion can appear under more than one clip; retrieval accounts for this in its acceptance sets,
 which hold every export of a caption's source motion. On the \num{512} validation clips over
 \num{216} rigs whose motion payload and \texttt{(rig, source animation)} pair appear nowhere in
-training, the \num{303}M model reaches R@1 \num{0.967} against \num{0.918} on the full validation set
+training, the \num{303}M model reaches R@1 \num{0.967} against \num{0.937} on the full validation set
 at the same pool size of 32, with the real clips at \num{0.988} and \num{0.975}.
 
 \paragraph{Pool size.} Retrieval among more candidates is harder for the real clips and for the

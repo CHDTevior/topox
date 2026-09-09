@@ -140,7 +140,9 @@ Spider (68 j.)  & 26 / 6 & \num{1.029} & \num{0.130} & \num{0.088} & \num{2.87} 
 \paragraph{Capabilities.} Table~\ref{tab:capability} (App.~\ref{app:capability}) places \method{} among
 the generators that serve more than one skeleton, by what each returns and what a rig needs to play it.
 \method{} returns per-joint rotations and a world-space root trajectory the rig plays as generated, and
-measures that geometry against ground truth (Table~\ref{tab:physical}).
+measures that geometry against ground truth for the pilot and for the main model
+alike (Table~\ref{tab:physical}: at \num{303}M the FK--pose gap is \num{0.24} bone lengths, the foot slide
+\num{1.84} against a real \num{2.03}).
 
 
 \paragraph{AnyTop as an in-distribution reference.} The released AnyTop~\citep{gat2025anytop}
@@ -151,10 +153,8 @@ rigs produces.
 \subsection{Ablations}\label{sec:exp:ablation}
 
 The ablations share the pilot's recipe and checkpoint epoch; App.~\ref{app:ablation_notes} collects
-them, with the notes. Stripping the skeleton conditioning and the calibration together
---- descriptions zeroed, both attention biases and the structural features removed, every group weight
-fixed at one --- costs \num{0.067}--\num{0.072} of R@1 and roughly doubles the FID
-(Table~\ref{tab:simple}). Removing the acceleration-matching term
+them, with the notes. Stripping the skeleton conditioning and the calibration together costs
+\num{0.067}--\num{0.072} of R@1 and roughly doubles the FID (Table~\ref{tab:simple}). Removing the acceleration-matching term
 leaves the FK--pose gap, retrieval and FID unchanged at epoch 200 (Table~\ref{tab:ablation}). Normalising \rep{} by a per-rig scale alone instead of per-cell
 mean and standard deviation costs about two points of R@1, and \num{22}--\num{30}\% of the FID, at
 every matched epoch (Table~\ref{tab:rep}); replacing its channel layout by the 13-channel AnyTop layout derived from the same
