@@ -278,6 +278,17 @@ Dragon & gap & \num{1.215} & \num{0.214} & \num{0.172} & \num{0.151} & \num{0.14
 
 \section{Capabilities of related systems}\label{app:capability}
 
+Table~\ref{tab:open} lists the systems with a public implementation; Table~\ref{tab:capability} adds those
+whose code is not released. Two capabilities separate this task from its neighbours. A caption is not what
+AnyTop~\citep{gat2025anytop} conditions on: its T5 pathway embeds the \emph{joint names} of a rig, generation
+selects a character rather than a prompt, and the released code has no classifier-free guidance.
+OmniZoo~\citep{chen2025omnizoo} draws the same line when it chooses its own baselines, excluding AnyTop
+``because it performs unconditional generation without text control''. Conversely, the text-conditioned
+systems with arbitrary-skeleton support generate for skeletons of one body plan --- OmniSkel's
+\citep{liu2025omniskel} user-defined skeletons are human, and SATA's \citep{zhang2026sata} text-to-motion is a
+downstream demonstration on HumanML3D, its quantitative evidence being cross-topology reconstruction and
+retargeting.
+
 \begin{table}[h]
 \centering\footnotesize
 \caption{Capabilities of motion generators across skeletons, as described in the papers and released code.

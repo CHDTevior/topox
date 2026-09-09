@@ -10,7 +10,8 @@ diffusion and text conditioning and removes the fixed skeleton.
 
 \paragraph{Motion across skeleton topologies.} Cross-skeleton motion has mostly meant
 \emph{retargeting} between two known rigs~\citep{villegas2018nkn,aberman2020skeleton} or
-skeleton-agnostic embeddings such as SAME~\citep{lee2023same}. For generation on arbitrary
+skeleton-agnostic embeddings such as SAME~\citep{lee2023same} and SATA~\citep{zhang2026sata}, whose
+text-conditioned generation is a downstream demonstration on HumanML3D. For generation on arbitrary
 topologies, SinMDM~\citep{raab2024sinmdm} fits one motion at a time; AnyTop~\citep{gat2025anytop}
 prepends the rest pose as a first frame, adds T5 embeddings of the joint names to every joint token
 and biases attention by graph distance to generate, without text, for the Truebones
@@ -19,16 +20,16 @@ style and trajectory. Text-conditioned animal motion has been approached from a 
 SMAL template by OmniMotionGPT~\citep{yang2024omnimotiongpt}, from a shared human--animal topology
 by X-MoGen~\citep{wang2025xmogen} (115 species), across topologies by OmniZoo~\citep{chen2025omnizoo}
 (a topology-aware skeleton embedding and 140 species), on a unified 30-joint skeleton by AniMo~\citep{wang2025animo}, whose AniMo4D
-captions our corpus carries, on re-captioned Truebones data by G-MDM~\citep{lee2025dragon},
+captions our corpus carries, on user-defined human skeletons by OmniSkel~\citep{liu2025omniskel},
+on re-captioned Truebones data by G-MDM~\citep{lee2025dragon},
 which generates Euler joint rotations without root translation, and, concurrently with this work, by
 SAMoR~\citep{samor2026}, which pools any skeleton into eight part tokens over joint positions and
-velocities and recovers rotations by inverse kinematics. Each compares against baselines adapted or
-retrained on its own data (SAMoR for cross-topology reconstruction, with published numbers on HumanML3D). We build on AnyTop's skeleton prompt and differ in what is generated and at
-what scale: the model is text-conditioned, it denoises a per-joint representation that any rig is
-converted to without a template, retargeting or inverse kinematics, it embeds richer natural-language
-\emph{descriptions} of the joints with LLM2Vec where AnyTop embeds cleaned joint names with T5, and every (rig, joint, channel) cell is
-normalised with its own statistics so that hundreds of rigs of very different proportions share one
-network.
+velocities and recovers rotations by inverse kinematics, and by UniMate~\citep{mou2026unimate}. We build on
+AnyTop's skeleton prompt and differ in what is generated: the model is text-conditioned, it denoises a per-joint
+representation any rig is converted to without a template, retargeting or inverse kinematics, it embeds
+natural-language \emph{descriptions} of the joints with LLM2Vec where AnyTop embeds cleaned joint names with T5,
+and every (rig, joint, channel) cell is normalised with its own statistics so that hundreds of rigs of very
+different proportions share one network.
 
 \paragraph{Objective, encoders, adaptation and evaluation.} \method{} is a DiT-style
 denoiser~\citep{peebles2023dit} trained with flow matching~\citep{lipman2023flow,liu2023rectified},

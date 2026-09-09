@@ -4,12 +4,10 @@ A text-to-motion model can treat the skeleton as an input rather than as part of
 one \num{303}M-parameter model trained on \num{311} animal rigs generates text-conditioned motion for
 all of them (R@1 \num{0.922} against \num{0.964} for the real clips), returning rotations and a root
 trajectory the rig plays directly, and a low-rank adapter on eight to twenty-six clips extends it to
-rigs outside the library.
-
-\paragraph{Limitations.} The library is animal-only; retrieval comes from an evaluator we train, hence
-the real-motion reference beside every number and the controls of App.~\ref{app:controls}; a rig's statistics
-come from its own clips, so a new rig needs clips or supplied ones; and the extension study is four case
-studies of two to six clips.
+rigs outside the library. The library is animal-only; retrieval comes from an evaluator we train, hence the
+real-motion reference beside every number and the controls of Table~\ref{tab:controls}; a rig's statistics come
+from its own clips, so a new rig needs clips or supplied ones; and the extension study is four case studies of
+two to six clips.
 
 \section*{Reproducibility statement}
 
