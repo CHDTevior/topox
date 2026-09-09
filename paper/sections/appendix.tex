@@ -375,8 +375,8 @@ onto a smaller set of motions than the data holds. The statistic is bounded by 2
 evaluator normalises its embeddings, and both real and generated clips sit near $\sqrt{2}$, the value
 of mutually orthogonal directions; it therefore separates a collapsed generator from a healthy one and
 says little between two healthy ones, and it is not comparable with values published for other
-evaluators. We do not report multimodality: it needs its own generation pass, whose provenance our
-sampler does not record at the same standard as the frozen protocol.
+evaluators. Multimodality is not reported: it needs a second generation pass per caption, outside the
+frozen protocol these numbers come from.
 
 Two readings matter. The FK column is the mechanism: re-encoding the sample through forward kinematics
 of its own rotations costs \num{0.005} of R@1 on \rep{} and \num{0.035} on the 13-channel layout, at
