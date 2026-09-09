@@ -16,7 +16,7 @@ forward pass and, when a few clips are available, by a per-rig LoRA
 \subsection{\rep{}: a per-joint representation any rig can be converted to}\label{sec:method:rep}
 
 \paragraph{Channels.} Every joint carries the same 17 channels (Table~\ref{tab:channels} in App.~\ref{app:rep}). Positions
-are expressed relative to a smoothed root trajectory in the ground plane, with height absolute, so
+are expressed relative to the root's own ground-plane track, with height absolute, so
 that the body's pose and its travel are separated the way animators separate them. Rotations are
 continuous 6D~\citep{zhou2019continuity} \emph{deltas} from the joint's rest orientation in the global
 frame: ``no motion'' is the identity rotation, $[1,0,0,0,1,0]$ before normalisation, on every rig,
@@ -27,7 +27,7 @@ per-clip origin. Everything is expressed in one canonical frame ($+Y$ up, rest f
 by a rigid per-rig recanonicalisation to the foot support plane, after which forward kinematics is
 unchanged to numerical precision (App.~\ref{app:rep}). Building \rep{} for a new rig needs only its
 kinematic tree, rest pose and animation: there is no template skeleton, no retargeting and no
-inverse-kinematics fitting, and the same script that builds the training corpus converts every
+inverse-kinematics fitting, and the same channel definition and codec convert every
 Truebones rig used in Section~\ref{sec:method:lora}.
 
 \paragraph{Per-cell normalisation.} Rigs differ in size, proportion and convention by orders of
@@ -72,8 +72,8 @@ Width 896, 14 heads, \num{302.9}M parameters.
 
 \paragraph{Stability and guidance.} Queries and keys are RMS-normalised per head before the dot
 product~\citep{dehghani2023vit22b}: in our runs every 0.3B attempt without it diverged with
-attention logits growing from $\sim$1.4k to 23k, and with it the maximum logit stays below 30 for
-the whole run (observed across our runs). The caption is dropped with
+attention logits growing from $\sim$1.4k to 23k, and with it the eight probes taken through epoch 199
+of the \num{303}M run peak at \num{28.1}. The caption is dropped with
 probability 0.1 for classifier-free guidance; the rest-pose prompt is never dropped.
 
 \subsection{Calibrated grouped flow-matching objective}\label{sec:method:objective}
@@ -87,15 +87,16 @@ sample $\hat{\mathbf{x}}_1$, and the velocity-space weight of \citet{li2025jit} 
   \qquad w(t)=\frac{1}{\max(1-t,\,\sigma_{\min})^{2}},
   \label{eq:elem}
 \end{equation}
-with $\sigma_{\min}=0.2$, $\delta=10$ (just under the measured 99.99th percentile of the normalised
-targets, \num{11.45}, so \num{99.98}\% of supervision is inside the quadratic region) and a
+with $\sigma_{\min}=0.2$, $\delta=10$ (below the measured 99.99th percentile of the normalised
+targets, \num{11.45}; the knee acts on residuals, and at initialisation it binds on \num{0.015}\% of
+supervised cells, recorded in the calibration artifact) and a
 uniform $t$ sampler (App.~\ref{app:ablation_notes}).
 
 \paragraph{Grouped loss.} A rig with 102 joints has three times the body cells of one with 34 and
 the same single root row, so a plain mean over cells would drown the root trajectory, heading and
 contact channels---the ones that decide whether a walk is a walk---in body rotations on large rigs.
 We partition the channels into nine groups $g$ (root and body $\times$ position, rotation, velocity;
-contact; smoothed root; heading) and use
+contact; root track; heading) and use
 \begin{equation}
   \mathcal{L}=\sum_{g}\gamma_g\sqrt{\frac{N_g}{N}}\;\bar{\ell}_g,
   \label{eq:grouped}
@@ -127,8 +128,8 @@ frame (App.~\ref{app:calib}).
 
 \paragraph{Optimisation.} AdamW, learning rate $1.5\times10^{-4}$ at global batch 128 (the
 \num{36}M pilot: $2\times10^{-4}$), 4k warm-up steps, cosine decay to a $10^{-2}$ floor over 40
-epochs, bf16, gradient clipping at 1.0, rejection of gradient spikes above $200\times$ the running
-scale; 8 H200 GPUs, \num{578} steps per epoch, \num{290} epochs (best validation loss at 289).
+epochs, bf16, gradient clipping at 1.0, and rejection of any step whose pre-clipping gradient norm
+exceeds $200$; 8 H200 GPUs, \num{578} steps per epoch, \num{290} epochs (best validation loss at 289).
 
 \subsection{Sampling}\label{sec:method:sampling}
 Samples follow the straight path with Euler steps

@@ -12,7 +12,7 @@ and to prior work in capability (\S\ref{sec:exp:compare})? (4) Which ingredients
 \paragraph{Library and splits.} The training library is the \num{311}-rig animal corpus of
 \S\ref{sec:method:rep} (\num{77{,}894} clips, \num{6.18}M frames at 30\,fps, 34--102 joints).
 Validation holds \num{3{,}899} clips over \num{311} rigs (\num{5}\% of every rig's clips, drawn by a
-hash of the clip identifier; App.~\ref{app:split}). For rigs outside the library we use the
+one seeded permutation per rig; App.~\ref{app:split}). For rigs outside the library we use the
 Truebones zoo~\citep{truebones}: \num{986} clips over \num{66} rigs after conversion to \rep{}
 with the same pipeline (\num{802} of them carry a caption). Each Truebones rig is split
 $80/20$ into train and validation clips by source animation, so that a clip and its cut
@@ -76,12 +76,14 @@ Real clips (reference) & -- & \num{0.964} & \num{0.998} & \num{0.999} & 0 & \num
 \end{tabular}
 \end{table}
 
-\paragraph{What the score responds to.} Re-scoring the same samples in four variants
-(App.~\ref{app:controls}) gives, against the \num{303}M model's R@1 of \num{0.922}: \num{0.923} with
-the positions replaced by the forward kinematics of the generated rotations, \num{0.806} with the
-frames permuted, \num{0.346} holding the clip's own first pose, \num{0.109} holding the rig's rest
-pose, and \num{0.005} with every caption in the pool swapped (chance \num{0.017}). A static pose of
-the right species accounts for a third of every retrieval number here.
+\paragraph{What the score responds to.} Five controls (App.~\ref{app:controls}) locate the
+\num{303}M model's R@1 of \num{0.922}. Re-deriving its joint positions from its own rotations leaves
+\num{0.923}; permuting its frames leaves \num{0.805}. Two degenerate sequences built from real data
+set the floor: the target clip's own first pose, held for its duration, scores \num{0.346}, and the
+rig's rest pose \num{0.109}, against a chance level of \num{0.018}. Giving every clip in a pool
+another clip's caption leaves \num{0.005}. A static pose of the right species is therefore already
+worth \num{0.346} under this protocol, which is the level any retrieval number here should be read
+against.
 
 \begin{figure}[t]
 \centering
@@ -104,7 +106,7 @@ low-rank adapter trained on the rig's 8--26 training clips (\emph{LoRA}, \S\ref{
 (c) a \num{36}M model of the same recipe trained on all \num{802} captioned Truebones clips,
 evaluation clips included, as a seen-clip reference rather than a competing method.
 Table~\ref{tab:lora} gives the FK--pose gap on the held-out clips before and after adaptation next
-to the articulation and jitter of the sampled output: ten to twenty-six clips bring the gap from
+to the articulation and jitter of the sampled output: eight to twenty-six clips bring the gap from
 $0.25$--$1.2$ bone lengths to $0.08$--$0.15$, most on the two rigs farthest from the library, and
 the seen-clip reference sits at $0.06$--$0.13$.
 
@@ -152,9 +154,12 @@ rigs produces.
 The ablations share the pilot's recipe and checkpoint epoch; App.~\ref{app:ablation_notes} collects
 them, with the notes. Removing the acceleration-matching term leaves the FK--pose gap, retrieval and
 FID unchanged at epoch 200 (Table~\ref{tab:ablation}). Normalising \rep{} by a per-rig scale alone instead of per-cell
-mean and standard deviation costs about two points of R@1 and a third of the FID at every matched
-epoch (Table~\ref{tab:rep}); replacing its channel layout by the 13-channel AnyTop layout derived from the same
+mean and standard deviation costs about two points of R@1, and \num{22}--\num{30}\% of the FID, at
+every matched epoch (Table~\ref{tab:rep}); replacing its channel layout by the 13-channel AnyTop layout derived from the same
 clips moves R@1 by under a point at every matched epoch (Table~\ref{tab:repcontent}), while the 17-channel
-layout keeps the leaf-joint articulation, foot contact and root travel that the 13-channel layout loses (Table~\ref{tab:physical}). At a matched budget of 200 epochs the \num{36}M, \num{116}M and
+layout keeps the leaf-joint articulation, foot contact and root travel that the 13-channel layout loses
+(Table~\ref{tab:physical}), and keeps its two output channels consistent: re-encoding a sample through
+the forward kinematics of its own rotations costs \num{0.005} of R@1 on \rep{} against \num{0.035} on
+the 13-channel layout (App.~\ref{app:controls}). At a matched budget of 200 epochs the \num{36}M, \num{116}M and
 \num{303}M models reach R@1 \num{0.878}, \num{0.900} and \num{0.914} (Table~\ref{tab:size}).
 

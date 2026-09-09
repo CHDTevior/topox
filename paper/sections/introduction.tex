@@ -3,8 +3,8 @@
 Text-to-motion generation has made striking progress, but almost all of it on one body. The standard
 pipeline---a diffusion model, a motion tokenizer or a latent generator trained on
 HumanML3D~\citep{guo2022generating}---assumes a fixed kinematic tree, typically the 22-joint SMPL
-skeleton, and bakes it into every layer: the input projection has a fixed joint count, positional
-encodings index fixed joint slots, and any codebook is learned for one morphology. The result is a
+skeleton, and bakes it into every layer: the input projection is sized for that joint count and any
+codebook is learned for one morphology. The result is a
 family of models that animate a human well and cannot animate anything else.
 
 \begin{figure}[t]
