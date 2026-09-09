@@ -151,8 +151,11 @@ rigs produces.
 \subsection{Ablations}\label{sec:exp:ablation}
 
 The ablations share the pilot's recipe and checkpoint epoch; App.~\ref{app:ablation_notes} collects
-them, with the notes. Removing the acceleration-matching term leaves the FK--pose gap, retrieval and
-FID unchanged at epoch 200 (Table~\ref{tab:ablation}). Normalising \rep{} by a per-rig scale alone instead of per-cell
+them, with the notes. Stripping the skeleton conditioning and the calibration together
+--- descriptions zeroed, both attention biases and the structural features removed, every group weight
+fixed at one --- costs \num{0.067}--\num{0.072} of R@1 and roughly doubles the FID
+(Table~\ref{tab:simple}). Removing the acceleration-matching term
+leaves the FK--pose gap, retrieval and FID unchanged at epoch 200 (Table~\ref{tab:ablation}). Normalising \rep{} by a per-rig scale alone instead of per-cell
 mean and standard deviation costs about two points of R@1, and \num{22}--\num{30}\% of the FID, at
 every matched epoch (Table~\ref{tab:rep}); replacing its channel layout by the 13-channel AnyTop layout derived from the same
 clips moves R@1 by under a point at every matched epoch (Table~\ref{tab:repcontent}), while the 17-channel

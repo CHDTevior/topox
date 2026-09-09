@@ -461,6 +461,36 @@ percentile interval need not contain the population value.
 
 \section{Ablation notes}\label{app:ablation_notes}
 
+\paragraph{What the skeleton conditioning and the calibration are worth together.}
+Table~\ref{tab:simple} trains a \num{36}M pilot that keeps the representation, the in-context rest-pose
+demonstration and the per-cell statistics --- so it still knows which rig it is driving --- and loses
+everything this paper adds on top: the joint descriptions are zeroed and frozen, the geodesic and
+direction attention biases are switched off, the structural features are dropped, and the grouped
+objective runs at uniform weights. Corpus, model size, batch, learning rate, schedule and budget are the
+pilot's (\num{36.1}M parameters against \num{36.3}M; the difference is the removed pathways). It is
+behind by \num{0.067}--\num{0.072} of R@1 at every matched epoch and its FID is a little over twice the
+pilot's, and where the full recipe is still improving between epochs 50 and 100 this one has flattened.
+
+\begin{table}[h]
+\centering\small
+\caption{The skeleton conditioning and the calibrated objective, removed together. Both arms are
+\num{36}M pilots on the same clips with the same batch, learning rate, schedule and sampler; the
+simplified arm zeroes the joint descriptions, removes the geodesic and direction biases and the
+structural features, and fixes every group weight at one. Frozen protocol, pools of 64, TF32 matrix
+multiplication.}\label{tab:simple}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{Simplified} & \multicolumn{2}{c}{Full recipe} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Epoch & R@1$\uparrow$ & FID$\downarrow$ & R@1$\uparrow$ & FID$\downarrow$ \\
+\midrule
+50  & \num{0.785} & \num{0.0347} & \num{0.852} & \num{0.0157} \\
+75  & \num{0.784} & \num{0.0330} & \num{0.860} & \num{0.0146} \\
+100 & \num{0.792} & \num{0.0309} & \num{0.864} & \num{0.0138} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \begin{table}[h]
 \centering\small
 \caption{Ablations on the \num{36}M pilot at matched optimiser steps (epoch-200 checkpoints;
