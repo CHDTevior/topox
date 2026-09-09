@@ -1,0 +1,48 @@
+--- a/scripts/_measure_ktjd17_gamma_calibration_view.py
++++ b/scripts/_measure_ktjd17_gamma_calibration_view.py
+@@ -71,6 +71,7 @@
+ EXCLUDE = os.environ.get("EXCLUDE", "configs/pzh312_extreme_cut_K100.json")
+ from src.data.incontext_pairs import InContextPairs, collate, DEMO_FRAMES, TARGET_FRAMES  # noqa: E402
+ from src.data.ktjd17_incontext import Ktjd17Base, ktjd17_split_names                      # noqa: E402
++from src.data.ktjd17_augment import AugConfig                                            # noqa: E402
+ from src.models.v2.dit_motion import (InContextMotionDiT, cfm_loss,                       # noqa: E402
+                                       _GROUP_SPEC_KTJD17, KTJD17_MASK_POLICY)
+ from scripts.train_v2_incontext import ktjd_channel_lut, ktjd_prep, cond_of, to_dev       # noqa: E402
+@@ -112,6 +113,19 @@
+ CALIB_BATCH = int(os.environ.get("CALIB_BATCH", "8"))
+ # serving normalization of the arm (the energies are measured in it; the trainer's gate compares protocol.normalization)
+ REP_NORM = os.environ.get("REP_NORM", "percell")
++
++# Augmentation (skeleton robustness): the served distribution the energies are measured on. The trainer's
++# calibration gate compares protocol.augmentation with its own AugConfig.protocol(), and an artifact that
++# never heard of augmentation records None -- which certifies an UNAUGMENTED run only. AUG_P=0 (the default)
++# keeps that behaviour byte-for-byte.
++AUG = AugConfig(p=float(os.environ.get("AUG_P", "0")),
++                drop_max_frac=float(os.environ.get("AUG_DROP_MAX_FRAC", "0")),
++                drop_mode=os.environ.get("AUG_DROP_MODE", "any"),
++                rest_deg=float(os.environ.get("AUG_REST_DEG", "0")),
++                sem_noise=float(os.environ.get("AUG_SEM_NOISE", "0")),
++                sem_drop_p=float(os.environ.get("AUG_SEM_DROP_P", "0")),
++                stats_logsd=float(os.environ.get("AUG_STATS_LOGSD", "0")),
++                stats_shift=float(os.environ.get("AUG_STATS_SHIFT", "0")))
+ if REP_NORM not in ("percell", "scale_only", "rest"):
+     raise SystemExit(f"[FAIL] REP_NORM must be percell, scale_only or rest, got {REP_NORM!r}")
+ # GAMMA_SOLVE=kimodo (default): the Kimodo-implied share profile solved on the measured energies. GAMMA_SOLVE=uniform: every
+@@ -153,7 +167,8 @@
+                   exclude_clips=EXCLUDE, normalization=REP_NORM)
+     names = ktjd17_split_names(R, exclude=EXCLUDE)
+     ds = InContextPairs(base, names["train"], names["train"], balance_skeletons=False, seed=0,
+-                        emit_graph_v2=True, demo_rest=bool(DEMO_REST), demo_frames=DEMO_FRAMES)
++                        emit_graph_v2=True, demo_rest=bool(DEMO_REST), demo_frames=DEMO_FRAMES,
++                        augment=AUG)
+     lut = ktjd_channel_lut(base)
+ 
+     # ---- tiling assertion: per rig, the 9 groups cover channel_valid cells EXACTLY once ----
+@@ -457,6 +472,7 @@
+                      "weighting": "clip_balanced",
+                      "seed": 0, "batch": CALIB_BATCH, "demo_rest": bool(DEMO_REST), "demo_frames": DEMO_FRAMES, "huber_delta": HUBER,
+                      "normalization": REP_NORM,
++                     "augmentation": AUG.protocol(),
+                      "gamma_solve": GAMMA_SOLVE,
+                      "windows": ("demo_rest1/target_head" if DEMO_REST else "demo_random_rebased/target_head"),
+                      "crop_rebase_active": True, "space": "normalized_model_space",
