@@ -136,7 +136,8 @@ Samples follow the straight path with Euler steps
 $\mathbf{x}\leftarrow\mathbf{x}+(\hat{\mathbf{x}}_1-\mathbf{x})/(S-i)$, $S{=}20$; invalid cells are
 projected back to zero after every step, and guidance is applied on the text stream only,
 $\hat{\mathbf{x}}_1=\hat{\mathbf{x}}_1^{\varnothing}+s\,(\hat{\mathbf{x}}_1^{c}-\hat{\mathbf{x}}_1^{\varnothing})$
-with $s{=}2$. Twenty steps is the operating point used throughout; we did not tune it further.
+with $s{=}2$. Twenty steps is the operating point used throughout; ten give the same retrieval at half the
+cost, and App.~\ref{app:cost} gives the latency and quality of both.
 
 \subsection{Extending the model to a rig it has never seen}\label{sec:method:lora}
 \paragraph{Zero-training arm.} An unseen rig is served by the frozen backbone as soon as its rest

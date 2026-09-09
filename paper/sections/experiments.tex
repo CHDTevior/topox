@@ -107,7 +107,9 @@ evaluation clips included, as a seen-clip reference rather than a competing meth
 Table~\ref{tab:lora} gives the FK--pose gap on the held-out clips before and after adaptation next
 to the articulation and jitter of the sampled output: eight to twenty-six clips bring the gap from
 $0.25$--$1.2$ bone lengths to $0.08$--$0.15$, most on the two rigs farthest from the library, and
-the seen-clip reference sits at $0.06$--$0.13$.
+the seen-clip reference sits at $0.06$--$0.13$. Most of that is bought early: the jitter of the zero-training arm is
+gone within 50--100 epochs and the gap plateaus by 150--200, after which longer adaptation changes nothing
+(App.~\ref{app:extend_more}).
 
 \begin{table}[t]
 \centering\footnotesize\setlength{\tabcolsep}{3.5pt}
