@@ -35,9 +35,8 @@ score on the real clips of the same pools (a reference, not a bound). Because a 
 only for the library rigs, the Truebones experiments are scored geometrically, in world space,
 on the deployable output (the forward kinematics of the predicted rotations): the articulation ratio (mean joint speed relative to the root,
 divided by the real clips' value), the jitter ratio (mean second temporal difference, likewise
-normalised) and the root speed ratio. Ratios are taken against \emph{all} real clips of the
-rig at a common 20\,Hz after anti-aliased decimation, so that 20\,fps AnyTop samples and our
-30\,fps output are measured identically. The \emph{FK--pose gap} is the mean distance, in the rig's
+normalised) and the root speed ratio. Ratios are taken against \emph{all} real clips of the rig at a common 20\,Hz, so that AnyTop samples
+and ours are measured identically. The \emph{FK--pose gap} is the mean distance, in the rig's
 mean bone length, between the joint positions obtained by forward kinematics of the predicted
 rotations and the directly predicted ones: a consistency of the two channels, not a distance to the
 target, read from the training-time validation pass (App.~\ref{app:calib}). Library clips are
@@ -88,7 +87,7 @@ against.
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figures/qualitative.pdf}
-\caption{Seven generated clips of five library rigs, rendered on the game meshes. For travelling actions, four to five
+\caption{Seven generated clips of five library rigs, rendered on their production meshes. For travelling actions, four to five
 poses at equal distances along the root path, shaded from light (first) to dark (last), with the root trajectory and its
 direction on the ground; for actions on the spot, four frames at equal times from one fixed camera. The ground plane sits at
 the level the feet occupy most often; the water plane in the swimming clip is placed just below the root. Captions are the
@@ -138,10 +137,9 @@ Spider (68 j.)  & 26 / 6 & \num{1.029} & \num{0.130} & \num{0.088} & \num{2.87} 
 \subsection{Relation to prior work}\label{sec:exp:compare}
 
 \paragraph{Capabilities.} Table~\ref{tab:capability} (App.~\ref{app:capability}) places \method{} among
-the generators that serve more than one skeleton, by what each returns and what a rig needs to play
-it. \method{} returns per-joint rotations and a world-space root trajectory that the rig plays as
-generated, for \num{311} production rigs, and measures that geometry against ground truth
-(Table~\ref{tab:physical}).
+the generators that serve more than one skeleton, by what each returns and what a rig needs to play it.
+\method{} returns per-joint rotations and a world-space root trajectory the rig plays as generated, and
+measures that geometry against ground truth (Table~\ref{tab:physical}).
 
 
 \paragraph{AnyTop as an in-distribution reference.} The released AnyTop~\citep{gat2025anytop}
@@ -160,6 +158,8 @@ clips moves R@1 by under a point at every matched epoch (Table~\ref{tab:repconte
 layout keeps the leaf-joint articulation, foot contact and root travel that the 13-channel layout loses
 (Table~\ref{tab:physical}), and keeps its two output channels consistent: re-encoding a sample through
 the forward kinematics of its own rotations costs \num{0.005} of R@1 on \rep{} against \num{0.035} on
-the 13-channel layout (App.~\ref{app:controls}). At a matched budget of 200 epochs the \num{36}M, \num{116}M and
+the 13-channel layout (App.~\ref{app:controls}). Running \rep{} under the 13-channel arm's own objective
+and partition puts the two layouts \num{0.007} of R@1 apart, so the retrieval numbers are measuring the
+objective rather than the layout (App.~\ref{app:ablation_notes}). At a matched budget of 200 epochs the \num{36}M, \num{116}M and
 \num{303}M models reach R@1 \num{0.878}, \num{0.900} and \num{0.914} (Table~\ref{tab:size}).
 

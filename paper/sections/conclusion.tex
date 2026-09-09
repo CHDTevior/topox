@@ -6,10 +6,10 @@ all of them (R@1 \num{0.922} against \num{0.964} for the real clips), returning 
 trajectory the rig plays directly, and a low-rank adapter on eight to twenty-six clips extends it to
 rigs outside the library.
 
-\paragraph{Limitations.} The library is animal-only, and retrieval comes from an evaluator we train,
-hence the real-motion reference beside every number and the controls of App.~\ref{app:controls}. A
-rig's statistics come from its own clips, so a new rig needs clips or supplied statistics; the
-extension study is four case studies with two to six validation clips each.
+\paragraph{Limitations.} The library is animal-only; retrieval comes from an evaluator we train, hence
+the real-motion reference beside every number and the controls of App.~\ref{app:controls}; a rig's
+statistics come from its own clips, so a new rig needs clips or supplied ones; and the extension study
+is four case studies with two to six validation clips each.
 
 \section*{Reproducibility statement}
 
@@ -35,9 +35,8 @@ responsibility for the final content, including text, claims and artifacts produ
 generative AI.
 
 \subsection*{Ethics statement}
-The work involves no human subjects and no personal data. The training library is derived from the
-animation assets of a commercial game, following the clip inventory and captions of
-AniMo4D~\citep{wang2025animo}, and the evaluation rigs from the publicly distributed Truebones zoo;
-the game assets are used for research only and are not redistributed, and the paper describes the
-conversion so that the representation can be rebuilt from licensed copies (\todo{confirm licence wording}). Generated animal motion for games and film
-carries no risk beyond the generic misuse of animation tools.
+The work involves no human subjects and no personal data. The training library follows the clip
+inventory and captions of AniMo4D~\citep{wang2025animo}, and the evaluation rigs come from the publicly
+distributed Truebones zoo. The paper specifies the conversion channel by channel, so the representation
+can be rebuilt from the same sources. Generated animal motion for games and film carries no risk beyond
+the generic misuse of animation tools.

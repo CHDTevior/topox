@@ -34,11 +34,6 @@
 \citation{wang2025animo}
 \citation{lee2025dragon}
 \citation{samor2026}
-\@writefile{toc}{\contentsline {paragraph}{Results.}{3}{section*.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {2}Related Work}{3}{section.2}\protected@file@percent }
-\newlabel{sec:related}{{2}{3}{Related Work}{section.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Text-to-motion generation.}{3}{section*.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Motion across skeleton topologies.}{3}{section*.5}\protected@file@percent }
 \citation{peebles2023dit}
 \citation{lipman2023flow,liu2023rectified}
 \citation{ho2022cfg}
@@ -51,9 +46,15 @@
 \citation{hu2022lora}
 \citation{guo2022generating}
 \citation{petrovich2023tmr}
+\@writefile{toc}{\contentsline {paragraph}{Results.}{3}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Related Work}{3}{section.2}\protected@file@percent }
+\newlabel{sec:related}{{2}{3}{Related Work}{section.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Text-to-motion generation.}{3}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Motion across skeleton topologies.}{3}{section*.5}\protected@file@percent }
 \citation{zhou2019continuity}
 \citation{chen2025motion2motion}
 \citation{gat2025anytop}
+\citation{behnamghader2024llm2vec}
 \@writefile{toc}{\contentsline {paragraph}{Objective, encoders, adaptation and evaluation.}{4}{section*.6}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {3}Method}{4}{section.3}\protected@file@percent }
 \newlabel{sec:method}{{3}{4}{Method}{section.3}{}}
@@ -65,7 +66,6 @@
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.2}In-context skeleton conditioning}{4}{subsection.3.2}\protected@file@percent }
 \newlabel{sec:method:model}{{3.2}{4}{In-context skeleton conditioning}{subsection.3.2}{}}
 \@writefile{toc}{\contentsline {paragraph}{Layout.}{4}{section*.10}\protected@file@percent }
-\citation{behnamghader2024llm2vec}
 \citation{peebles2023dit}
 \citation{dehghani2023vit22b}
 \citation{lipman2023flow,liu2023rectified}
@@ -95,9 +95,9 @@
 \newlabel{sec:method:eval}{{3.6}{6}{Skeleton-aware evaluation}{subsection.3.6}{}}
 \@writefile{toc}{\contentsline {paragraph}{Evaluator.}{6}{section*.22}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{Protocol.}{6}{section*.23}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Experiments}{6}{section.4}\protected@file@percent }
+\newlabel{sec:exp}{{4}{6}{Experiments}{section.4}{}}
 \citation{truebones}
-\@writefile{toc}{\contentsline {section}{\numberline {4}Experiments}{7}{section.4}\protected@file@percent }
-\newlabel{sec:exp}{{4}{7}{Experiments}{section.4}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Setup}{7}{subsection.4.1}\protected@file@percent }
 \newlabel{sec:exp:setup}{{4.1}{7}{Setup}{subsection.4.1}{}}
 \@writefile{toc}{\contentsline {paragraph}{Library and splits.}{7}{section*.24}\protected@file@percent }
@@ -108,8 +108,8 @@
 \@writefile{toc}{\contentsline {paragraph}{What the score responds to.}{7}{section*.27}\protected@file@percent }
 \@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Text-to-motion generation on the validation set (\textcolor {blue}{3{,}899} clips over \textcolor {blue}{311} rigs; 60 pools of 64, 20 steps, $s{=}2$, one seed; App.~\ref {app:split} gives the other pool sizes). The reference row scores the real clips with the same evaluator in the same pools. R-precision is text$\rightarrow $motion; Match is the mean text--motion cosine; FID is on the evaluator's normalised embeddings (lower is better).}}{8}{table.1}\protected@file@percent }
 \newlabel{tab:main}{{1}{8}{Text-to-motion generation on the validation set (\num {3{,}899} clips over \num {311} rigs; 60 pools of 64, 20 steps, $s{=}2$, one seed; App.~\ref {app:split} gives the other pool sizes). The reference row scores the real clips with the same evaluator in the same pools. R-precision is text$\rightarrow $motion; Match is the mean text--motion cosine; FID is on the evaluator's normalised embeddings (lower is better)}{table.1}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Seven generated clips of five library rigs, rendered on the game meshes. For travelling actions, four to five poses at equal distances along the root path, shaded from light (first) to dark (last), with the root trajectory and its direction on the ground; for actions on the spot, four frames at equal times from one fixed camera. The ground plane sits at the level the feet occupy most often; the water plane in the swimming clip is placed just below the root. Captions are the clips' own.}}{8}{figure.2}\protected@file@percent }
-\newlabel{fig:qual}{{2}{8}{Seven generated clips of five library rigs, rendered on the game meshes. For travelling actions, four to five poses at equal distances along the root path, shaded from light (first) to dark (last), with the root trajectory and its direction on the ground; for actions on the spot, four frames at equal times from one fixed camera. The ground plane sits at the level the feet occupy most often; the water plane in the swimming clip is placed just below the root. Captions are the clips' own}{figure.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Seven generated clips of five library rigs, rendered on their production meshes. For travelling actions, four to five poses at equal distances along the root path, shaded from light (first) to dark (last), with the root trajectory and its direction on the ground; for actions on the spot, four frames at equal times from one fixed camera. The ground plane sits at the level the feet occupy most often; the water plane in the swimming clip is placed just below the root. Captions are the clips' own.}}{8}{figure.2}\protected@file@percent }
+\newlabel{fig:qual}{{2}{8}{Seven generated clips of five library rigs, rendered on their production meshes. For travelling actions, four to five poses at equal distances along the root path, shaded from light (first) to dark (last), with the root trajectory and its direction on the ground; for actions on the spot, four frames at equal times from one fixed camera. The ground plane sits at the level the feet occupy most often; the water plane in the swimming clip is placed just below the root. Captions are the clips' own}{figure.2}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Extending the model to rigs it has never seen}{8}{subsection.4.3}\protected@file@percent }
 \newlabel{sec:exp:extend}{{4.3}{8}{Extending the model to rigs it has never seen}{subsection.4.3}{}}
 \@writefile{toc}{\contentsline {paragraph}{Zero training and per-rig LoRA.}{8}{section*.28}\protected@file@percent }
@@ -220,33 +220,35 @@
 \@writefile{toc}{\contentsline {section}{\numberline {H}Evaluator controls}{17}{appendix.H}\protected@file@percent }
 \newlabel{app:controls}{{H}{17}{Evaluator controls}{appendix.H}{}}
 \citation{li2025jit}
-\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces Evaluator controls: R@1 in pools of 64 over the \textcolor {blue}{3{,}899} validation clips. The 95\% bootstrap interval over the 60 pools is \textcolor {blue}{0.029} wide for the generated column and at most \textcolor {blue}{0.047} wide for any other (\textcolor {blue}{0.922} $\in [\textcolor {blue}{0.907}, \textcolor {blue}{0.936}]$ for the \textcolor {blue}{303}M model). The static, rest and wrong-caption columns are properties of the data and the protocol rather than of a generator, and come out identical for every arm, which is what re-scoring the same pools with the same evaluator should give.}}{18}{table.8}\protected@file@percent }
-\newlabel{tab:controls}{{8}{18}{Evaluator controls: R@1 in pools of 64 over the \num {3{,}899} validation clips. The 95\% bootstrap interval over the 60 pools is \num {0.029} wide for the generated column and at most \num {0.047} wide for any other (\num {0.922} $\in [\num {0.907}, \num {0.936}]$ for the \num {303}M model). The static, rest and wrong-caption columns are properties of the data and the protocol rather than of a generator, and come out identical for every arm, which is what re-scoring the same pools with the same evaluator should give}{table.8}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces Evaluator controls: R@1 in pools of 64 over the \textcolor {blue}{3{,}899} validation clips. The 95\% bootstrap interval over the 60 pools is \textcolor {blue}{0.029} wide for the generated column and at most \textcolor {blue}{0.047} wide for any other (\textcolor {blue}{0.922} $\in [\textcolor {blue}{0.907}, \textcolor {blue}{0.936}]$ for the \textcolor {blue}{303}M model). The static and rest columns are built from real clips rather than from the model, and come out identical for every arm, as re-scoring the same pools with the same evaluator should.}}{18}{table.8}\protected@file@percent }
+\newlabel{tab:controls}{{8}{18}{Evaluator controls: R@1 in pools of 64 over the \num {3{,}899} validation clips. The 95\% bootstrap interval over the 60 pools is \num {0.029} wide for the generated column and at most \num {0.047} wide for any other (\num {0.922} $\in [\num {0.907}, \num {0.936}]$ for the \num {303}M model). The static and rest columns are built from real clips rather than from the model, and come out identical for every arm, as re-scoring the same pools with the same evaluator should}{table.8}{}}
+\@writefile{toc}{\contentsline {paragraph}{Diversity.}{18}{section*.52}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {I}Ablation notes}{18}{appendix.I}\protected@file@percent }
 \newlabel{app:ablation_notes}{{I}{18}{Ablation notes}{appendix.I}{}}
 \@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces Ablations on the \textcolor {blue}{36}M pilot at matched optimiser steps (epoch-200 checkpoints; validation loss, FK--pose gap, R@1 and FID on the validation set). The variant without the acceleration term optimises a different objective, so its validation loss is not listed.}}{18}{table.9}\protected@file@percent }
 \newlabel{tab:ablation}{{9}{18}{Ablations on the \num {36}M pilot at matched optimiser steps (epoch-200 checkpoints; validation loss, FK--pose gap, R@1 and FID on the validation set). The variant without the acceleration term optimises a different objective, so its validation loss is not listed}{table.9}{}}
-\@writefile{toc}{\contentsline {paragraph}{Prediction target and sampler.}{18}{section*.52}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Acceleration-matching term.}{18}{section*.53}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Normalisation of the representation.}{18}{section*.54}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Prediction target and sampler.}{18}{section*.53}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Acceleration-matching term.}{19}{section*.54}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Normalisation of the representation.}{19}{section*.55}\protected@file@percent }
 \@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces Per-cell against scale-only normalisation at matched epochs (\textcolor {blue}{36}M recipe, global batch 128, frozen protocol: pool 64, 20 Euler steps, guidance 2, seed 42). FK--pose gap in bone lengths from the training-time validation pass at the same epoch.}}{19}{table.10}\protected@file@percent }
 \newlabel{tab:rep}{{10}{19}{Per-cell against scale-only normalisation at matched epochs (\num {36}M recipe, global batch 128, frozen protocol: pool 64, 20 Euler steps, guidance 2, seed 42). FK--pose gap in bone lengths from the training-time validation pass at the same epoch}{table.10}{}}
-\@writefile{toc}{\contentsline {paragraph}{Representation content.}{19}{section*.55}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Model size.}{19}{section*.56}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Stability.}{19}{section*.57}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Representation content.}{19}{section*.56}\protected@file@percent }
 \@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces Geometry of the generated clips against their ground truth (epoch 100, the \textcolor {blue}{3899} validation clips and the same frozen samples as Table~\ref {tab:repcontent}; official codec; bl = the rig's mean rest bone length). Last column: share of clips on which the KTJD-17{} sample is closer to the ground truth than the 13-channel sample (ties count for neither). Every row uses all \textcolor {blue}{3899} clips except foot slide, which each stream computes under its own contact flags and which is therefore compared only on the \textcolor {blue}{3610} clips where all three are defined. Epochs 50 and 75 give the same picture.}}{20}{table.11}\protected@file@percent }
 \newlabel{tab:physical}{{11}{20}{Geometry of the generated clips against their ground truth (epoch 100, the \num {3899} validation clips and the same frozen samples as Table~\ref {tab:repcontent}; official codec; bl = the rig's mean rest bone length). Last column: share of clips on which the \rep {} sample is closer to the ground truth than the 13-channel sample (ties count for neither). Every row uses all \num {3899} clips except foot slide, which each stream computes under its own contact flags and which is therefore compared only on the \num {3610} clips where all three are defined. Epochs 50 and 75 give the same picture}{table.11}{}}
 \@writefile{lot}{\contentsline {table}{\numberline {12}{\ignorespaces Channel layout at matched epochs (\textcolor {blue}{36}M recipe, global batch 128, per-cell normalisation in both; frozen protocol: pool 64, 20 Euler steps, guidance 2, seed 42). The AnyTop-13 rows were sampled with TF32 matrix multiplication, the KTJD-17{} rows in fp32.}}{20}{table.12}\protected@file@percent }
 \newlabel{tab:repcontent}{{12}{20}{Channel layout at matched epochs (\num {36}M recipe, global batch 128, per-cell normalisation in both; frozen protocol: pool 64, 20 Euler steps, guidance 2, seed 42). The AnyTop-13 rows were sampled with TF32 matrix multiplication, the \rep {} rows in fp32}{table.12}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {J}Additional qualitative results}{20}{appendix.J}\protected@file@percent }
-\newlabel{app:qual}{{J}{20}{Additional qualitative results}{appendix.J}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {K}Validation split}{20}{appendix.K}\protected@file@percent }
-\newlabel{app:split}{{K}{20}{Validation split}{appendix.K}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Truebones arms of Table~\ref {tab:lora}: one held-out clip per rig, six frames spread evenly over the clip, three-quarter view; the quoted sentence is the conditioning prompt. In every panel the directly predicted joint positions (clay) are overlaid by the forward kinematics of the predicted rotations (teal); a visible separation is the projected FK--pose discrepancy (a single view can hide a disagreement in depth). Rows: the library model with the rig's statistics only (\emph  {zero}, the unadapted snapshot, whereas the zero column of Table~\ref {tab:lora} is read after at most 15 warm-up steps) and the per-rig adapter (\emph  {LoRA}). Frames are anchored on the root horizontally and keep their height above the floor; the grey line marks the floor height beneath the root. The Dragon, a flying rig, is anchored on the root in all axes, which removes its dive trajectory. Both rows of a rig are drawn at the same scale.}}{21}{figure.3}\protected@file@percent }
-\newlabel{fig:tb_filmstrips}{{3}{21}{Truebones arms of Table~\ref {tab:lora}: one held-out clip per rig, six frames spread evenly over the clip, three-quarter view; the quoted sentence is the conditioning prompt. In every panel the directly predicted joint positions (clay) are overlaid by the forward kinematics of the predicted rotations (teal); a visible separation is the projected FK--pose discrepancy (a single view can hide a disagreement in depth). Rows: the library model with the rig's statistics only (\emph {zero}, the unadapted snapshot, whereas the zero column of Table~\ref {tab:lora} is read after at most 15 warm-up steps) and the per-rig adapter (\emph {LoRA}). Frames are anchored on the root horizontally and keep their height above the floor; the grey line marks the floor height beneath the root. The Dragon, a flying rig, is anchored on the root in all axes, which removes its dive trajectory. Both rows of a rig are drawn at the same scale}{figure.3}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {13}{\ignorespaces Model size at matched optimiser steps (epoch 200, global batch 128; frozen protocol, pool 64, 20 Euler steps, guidance 2, seed 42). The \textcolor {blue}{36}M row was sampled in fp32, the two larger rows with TF32 matrix multiplication.}}{22}{table.13}\protected@file@percent }
-\newlabel{tab:size}{{13}{22}{Model size at matched optimiser steps (epoch 200, global batch 128; frozen protocol, pool 64, 20 Euler steps, guidance 2, seed 42). The \num {36}M row was sampled in fp32, the two larger rows with TF32 matrix multiplication}{table.13}{}}
-\@writefile{toc}{\contentsline {paragraph}{Pool size.}{22}{section*.58}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {14}{\ignorespaces R@1 of the same samples (20 steps, $s{=}2$, one seed) re-scored in pools of 16, 32, 64 and 128 formed by chunking the dataset order; the incomplete last pool is dropped. The real clips are scored by the same evaluator in the same pools.}}{22}{table.14}\protected@file@percent }
-\newlabel{tab:pool}{{14}{22}{R@1 of the same samples (20 steps, $s{=}2$, one seed) re-scored in pools of 16, 32, 64 and 128 formed by chunking the dataset order; the incomplete last pool is dropped. The real clips are scored by the same evaluator in the same pools}{table.14}{}}
+\@writefile{toc}{\contentsline {paragraph}{Model size.}{20}{section*.57}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {13}{\ignorespaces Model size at matched optimiser steps (epoch 200, global batch 128; frozen protocol, pool 64, 20 Euler steps, guidance 2, seed 42). The \textcolor {blue}{36}M row was sampled in fp32, the two larger rows with TF32 matrix multiplication.}}{20}{table.13}\protected@file@percent }
+\newlabel{tab:size}{{13}{20}{Model size at matched optimiser steps (epoch 200, global batch 128; frozen protocol, pool 64, 20 Euler steps, guidance 2, seed 42). The \num {36}M row was sampled in fp32, the two larger rows with TF32 matrix multiplication}{table.13}{}}
+\@writefile{toc}{\contentsline {paragraph}{Stability.}{20}{section*.58}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {J}Additional qualitative results}{21}{appendix.J}\protected@file@percent }
+\newlabel{app:qual}{{J}{21}{Additional qualitative results}{appendix.J}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {K}Validation split}{21}{appendix.K}\protected@file@percent }
+\newlabel{app:split}{{K}{21}{Validation split}{appendix.K}{}}
+\@writefile{toc}{\contentsline {paragraph}{Shared source animations.}{21}{section*.59}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Pool size.}{21}{section*.60}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {14}{\ignorespaces R@1 of the same samples (20 steps, $s{=}2$, one seed) re-scored in pools of 16, 32, 64 and 128 formed by chunking the dataset order; the incomplete last pool is dropped. The real clips are scored by the same evaluator in the same pools.}}{21}{table.14}\protected@file@percent }
+\newlabel{tab:pool}{{14}{21}{R@1 of the same samples (20 steps, $s{=}2$, one seed) re-scored in pools of 16, 32, 64 and 128 formed by chunking the dataset order; the incomplete last pool is dropped. The real clips are scored by the same evaluator in the same pools}{table.14}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Truebones arms of Table~\ref {tab:lora}: one held-out clip per rig, six frames spread evenly over the clip, three-quarter view; the quoted sentence is the conditioning prompt. In every panel the directly predicted joint positions (clay) are overlaid by the forward kinematics of the predicted rotations (teal); a visible separation is the projected FK--pose discrepancy (a single view can hide a disagreement in depth). Rows: the library model with the rig's statistics only (\emph  {zero}, the unadapted snapshot, whereas the zero column of Table~\ref {tab:lora} is read after at most 15 warm-up steps) and the per-rig adapter (\emph  {LoRA}). Frames are anchored on the root horizontally and keep their height above the floor; the grey line marks the floor height beneath the root. The Dragon, a flying rig, is anchored on the root in all axes, which removes its dive trajectory. Both rows of a rig are drawn at the same scale.}}{22}{figure.3}\protected@file@percent }
+\newlabel{fig:tb_filmstrips}{{3}{22}{Truebones arms of Table~\ref {tab:lora}: one held-out clip per rig, six frames spread evenly over the clip, three-quarter view; the quoted sentence is the conditioning prompt. In every panel the directly predicted joint positions (clay) are overlaid by the forward kinematics of the predicted rotations (teal); a visible separation is the projected FK--pose discrepancy (a single view can hide a disagreement in depth). Rows: the library model with the rig's statistics only (\emph {zero}, the unadapted snapshot, whereas the zero column of Table~\ref {tab:lora} is read after at most 15 warm-up steps) and the per-rig adapter (\emph {LoRA}). Frames are anchored on the root horizontally and keep their height above the floor; the grey line marks the floor height beneath the root. The Dragon, a flying rig, is anchored on the root in all axes, which removes its dive trajectory. Both rows of a rig are drawn at the same scale}{figure.3}{}}
 \gdef \@abspage@last{22}

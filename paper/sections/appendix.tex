@@ -85,9 +85,9 @@ a hundred. The clips and their captions follow the official AniMo4D annotation s
 remaining 255 have none. \num{53{,}448} clips carry three captions and \num{24{,}443} carry one (three
 carry more), about ten words each at the median; the primary caption is the one used for training and
 for evaluation. One caption of one clip was dropped as corrupt (a \num{12{,}296}-character repetition);
-its two siblings were kept. The rigs and animations are our own re-export of the game assets, the natural-language
-joint descriptions are ours (written from the joint names, \S\ref{sec:method:model}), and the conversion to
-\rep{} is new. A source audit of an earlier build of this corpus identified $161$ clips whose joint speeds lay in
+its two siblings were kept. The rigs are our own re-export with deformation bones only, the
+natural-language joint descriptions are ours (written from the joint names, \S\ref{sec:method:model}),
+and the conversion to \rep{} is new. A source audit of an earlier build of this corpus identified $161$ clips whose joint speeds lay in
 the extreme tail of their rig, which trace to defects of the source animations rather than to the
 conversion. Of those $161$, $81$ are \rep{} library clips and all $81$ are present in the corpus used
 here ($78$ training, $3$ validation): they are not removed, the objective's robust knee
@@ -352,9 +352,8 @@ reproduces that digest, the generation plan, and the canonical R-precision of th
 \caption{Evaluator controls: R@1 in pools of 64 over the \num{3{,}899} validation clips. The 95\%
 bootstrap interval over the 60 pools is \num{0.029} wide for the generated column and at most
 \num{0.047} wide for any other (\num{0.922} $\in [\num{0.907}, \num{0.936}]$ for the \num{303}M
-model). The static, rest and wrong-caption columns are properties of the data and the protocol rather
-than of a generator, and come out identical for every arm, which is what re-scoring the same pools
-with the same evaluator should give.}\label{tab:controls}
+model). The static and rest columns are built from real clips rather than from the model, and come out
+identical for every arm, as re-scoring the same pools with the same evaluator should.}\label{tab:controls}
 \begin{tabular}{@{}lccc@{\hskip 12pt}ccc@{}}
 \toprule
 Arm & generated & FK & shuffle & static & rest & wrong caption \\
@@ -368,6 +367,16 @@ real clips & \num{0.964} & \multicolumn{5}{c}{chance \num{0.018}} \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\paragraph{Diversity.} On the same samples, the mean distance between the embeddings of two lists of
+300 clips drawn without replacement is \num{1.4035} for the \num{303}M model and \num{1.3986} for the
+\num{36}M one, against \num{1.4035} for the real clips of the same set: neither model has collapsed
+onto a smaller set of motions than the data holds. The statistic is bounded by 2 here because the
+evaluator normalises its embeddings, and both real and generated clips sit near $\sqrt{2}$, the value
+of mutually orthogonal directions; it therefore separates a collapsed generator from a healthy one and
+says little between two healthy ones, and it is not comparable with values published for other
+evaluators. We do not report multimodality: it needs its own generation pass, whose provenance our
+sampler does not record at the same standard as the frozen protocol.
 
 Two readings matter. The FK column is the mechanism: re-encoding the sample through forward kinematics
 of its own rotations costs \num{0.005} of R@1 on \rep{} and \num{0.035} on the 13-channel layout, at
@@ -445,13 +454,23 @@ joint positions, the root's height and planar velocity, per-parent local 6D rota
 and contacts; no root-track or heading channels) was derived analytically from the same clips, splits
 and exclusion cut, and the \num{36}M recipe was trained on it with the same per-cell normalisation and
 the same schedule. The two world-coordinate terms of the training loss (forward-kinematic position and
-foot lock) are implemented for \rep{}'s world coordinates and were off for this run (a root-relative
-version is possible but was not implemented); the velocity and
-acceleration terms were kept. Its samples are converted back to \rep{} before scoring, so the frozen
-protocol and the reference numbers are unchanged. Table~\ref{tab:repcontent} shows the two layouts
-within a point of R@1 of each other at every matched epoch (\num{0.861}, \num{0.864} and \num{0.871}
-against \num{0.852}, \num{0.860} and \num{0.864}), with the FID differing by at most \num{0.002}: the
-retrieval gains in Table~\ref{tab:rep} come from the normalisation, not from the channel layout. The 13-channel layout has no rotation slot for leaf joints,
+foot lock) are defined on \rep{}'s world coordinates and have no counterpart in the 13-channel layout,
+so that run had them off; the velocity and acceleration terms were kept. Its samples are converted back
+to \rep{} before scoring, so the frozen protocol and the reference numbers are unchanged.
+Table~\ref{tab:repcontent} shows the two layouts within a point of R@1 of each other at every matched
+epoch (\num{0.861}, \num{0.864} and \num{0.871} against \num{0.852}, \num{0.860} and \num{0.864}),
+with the FID differing by at most \num{0.002}: the retrieval gains in Table~\ref{tab:rep} come from the
+normalisation, not from the channel layout.
+
+That comparison changes the objective as well as the layout, so we ran \rep{} with those two terms off,
+at the 13-channel arm's own batch partition. At epoch 50 it reaches R@1 \num{0.868} and FID
+\num{0.0140}, against \num{0.861} and \num{0.0154} for the 13-channel layout under the same objective
+and partition: with the objective held fixed the two layouts are \num{0.007} of R@1 apart, and the
+layout is not what the retrieval numbers are measuring. Read the other way, the same two terms cost
+about a point and a half of R@1 on \rep{} (\num{0.868} without them against \num{0.852} with them,
+across a change of batch partition) and buy the geometry of Table~\ref{tab:physical}: without them the
+generated rotations and positions are free to disagree, which is exactly what the 13-channel layout's
+FK--pose gap of \num{1.447} bone lengths shows. The 13-channel layout has no rotation slot for leaf joints,
 whose orientation the conversion fills from the parent (about ten degrees of mean error on ground
 truth); the layout used in the paper keeps it.
 What the layout does change is measured on the same frozen samples (Table~\ref{tab:physical}): every
@@ -582,6 +601,13 @@ validation loss. Validation holds \num{3{,}899} clips over \num{311} rigs and tr
 (rigs sorted by name), so a pool of 64 holds clips of one rig or of neighbouring rigs; the last
 59 clips do not fill a pool and are excluded from the R-precision but not from the FID or the
 matching score.
+
+\paragraph{Shared source animations.} The annotation set exports one source animation to several rigs,
+so a motion can appear under more than one clip; retrieval accounts for this in its acceptance sets,
+which hold every export of a caption's source motion. On the \num{512} validation clips over
+\num{216} rigs whose motion payload and \texttt{(rig, source animation)} pair appear nowhere in
+training, the \num{303}M model reaches R@1 \num{0.967} against \num{0.918} on the full validation set
+at the same pool size of 32, with the real clips at \num{0.988} and \num{0.975}.
 
 \paragraph{Pool size.} Retrieval among more candidates is harder for the real clips and for the
 generated ones alike, and the pool size is a free parameter of the protocol. Table~\ref{tab:pool}

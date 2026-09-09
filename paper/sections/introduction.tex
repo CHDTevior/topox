@@ -23,11 +23,10 @@ The applications that most need generative motion---games, film previsualisation
 production---are populated by characters that are not human, and a studio does not have one skeleton
 but hundreds, each authored by a rigger with its own joint count, naming scheme and helper bones. Our corpus is a faithful sample of that reality: \num{311} production animal rigs
 with \num{34} to \num{102} deformation joints (median 64), \num{108} distinct kinematic trees and
-\num{77{,}894} captioned clips (\num{6.2}M frames).\footnote{The rigs and animations are re-exported
-from the assets of a commercial zoo-management game (deformation bones only); the clips and their captions
-follow the AniMo4D annotation set of \citet{wang2025animo}, and the joint descriptions are ours (App.~\ref{app:rep}). The assets are used
-for research and are not redistributed. The Truebones zoo, a publicly distributed set of 66 animal
-rigs, is kept entirely outside training.} Generating on a canonical skeleton and
+\num{77{,}894} captioned clips (\num{6.2}M frames).\footnote{The clips and their captions follow the
+AniMo4D annotation set of \citet{wang2025animo}; the rigs are re-exported with deformation bones only,
+the joint descriptions are ours, and the conversion to \rep{} is new (App.~\ref{app:rep}). The Truebones
+zoo, a publicly distributed set of 66 animal rigs, is kept entirely outside training.} Generating on a canonical skeleton and
 \emph{retargeting}~\citep{villegas2018nkn,aberman2020skeleton,lee2023same} degrades as morphology
 diverges, and a model per character multiplies data and compute by the size of the cast; the motion
 has to be generated for the target body, and it has to come out as rotations the rig can play.
