@@ -569,17 +569,20 @@ and partition: with the objective held fixed the two layouts are \num{0.007} of 
 layout is not what the retrieval numbers are measuring.
 
 Read the other way, the arm without those two terms is the clearest case in this paper of retrieval
-missing what matters. It is \emph{ahead} of the full recipe on both evaluator metrics at the same epoch
-(R@1 \num{0.868} against \num{0.852}, FID \num{0.0140} against \num{0.0157}) and behind it on
+missing what matters. It is \emph{ahead} of the full recipe on both evaluator metrics at every matched
+epoch --- R@1 \num{0.868} / \num{0.869} / \num{0.870} against \num{0.852} / \num{0.860} / \num{0.864},
+and FID \num{0.0140} / \num{0.0136} / \num{0.0133} against \num{0.0157} / \num{0.0146} / \num{0.0138}
+at epochs 50, 75 and 100 --- and behind it on
 essentially every geometric quantity, clip for clip over the same \num{3{,}899} samples: the FK--pose
 gap doubles, from \num{0.41} to \num{0.82} bone lengths, with the full recipe closer to the ground
 truth on \num{98.8}\% of clips; bone-length error \num{0.081} against \num{0.113} (\num{95.6}\%);
 foot slide while in contact \num{2.40} against \num{3.62} where the real clips give \num{2.04}
 (\num{72.8}\%); root jitter \num{0.048} against \num{0.073} against a real \num{0.038}
 (\num{82.6}\%); and overall jitter \num{0.092} against \num{0.118} against a real \num{0.094}
-(\num{69.5}\%). Articulation is unchanged and the turn magnitude is marginally better without the
-terms. The two terms cost a point and a half of R@1 and buy the property that makes the output
-playable, which the retrieval score does not measure. The 13-channel layout has no rotation slot for leaf joints,
+(\num{69.5}\%; the geometry is measured at epoch 50, where the retrieval gap is widest). Articulation is
+unchanged and the turn magnitude is marginally better without the terms. The two terms cost between half
+a point and a point and a half of R@1 --- the gap narrows as both arms train --- and buy the property
+that makes the output playable, which the retrieval score does not measure. The 13-channel layout has no rotation slot for leaf joints,
 whose orientation the conversion fills from the parent (about ten degrees of mean error on ground
 truth); the layout used in the paper keeps it.
 What the layout does change is measured on the same frozen samples (Table~\ref{tab:physical}): every
