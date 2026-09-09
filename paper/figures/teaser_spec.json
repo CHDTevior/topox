@@ -1,0 +1,67 @@
+{
+ "rest_rigs": [
+  {
+   "npz": "dataset/ktjd17_pzh312_noik_v2/skeletons/PZ_Cheetah_Female.npz",
+   "name": "Cheetah"
+  },
+  {
+   "npz": "dataset/ktjd17_pzh312_noik_v2/skeletons/PZ_Plains_Zebra_Juvenile.npz",
+   "name": "Zebra"
+  },
+  {
+   "npz": "dataset/ktjd17_pzh312_noik_v2/skeletons/PZ_Indian_Elephant_Female.npz",
+   "name": "Elephant"
+  },
+  {
+   "npz": "dataset/ktjd17_pzh312_noik_v2/skeletons/PZ_Komodo_Dragon_Male.npz",
+   "name": "Komodo"
+  },
+  {
+   "npz": "dataset/ktjd17_pzh312_noik_v2/skeletons/PZ_Gharial_Male.npz",
+   "name": "Gharial"
+  },
+  {
+   "npz": "dataset/ktjd17_pzh312_noik_v2/skeletons/PZ_Galapagos_Giant_Tortoise_Male.npz",
+   "name": "Tortoise"
+  },
+  {
+   "npz": "dataset/ktjd17_pzh312_noik_v2/skeletons/PZ_Red_Ruffed_Lemur_Male.npz",
+   "name": "Lemur"
+  },
+  {
+   "npz": "dataset/ktjd17_pzh312_noik_v2/skeletons/PZ_Hippopotamus_Juvenile.npz",
+   "name": "Hippo"
+  }
+ ],
+ "gen": [
+  {
+   "dir": "renders/skin_fig2_a/PZ_Alaskan_Moose_Female/gen_targets_d34d76e2c0a3e5b0d5e3/stills_clay2",
+   "view": "threequarter",
+   "caption": "the moose runs and then slows to a walk",
+   "name": "Moose"
+  },
+  {
+   "dir": "renders/skin_fig2_a/PZ_Cheetah_Female/gen_targets_e80c143bdf155d607187/stills_clay2",
+   "view": "threequarter",
+   "caption": "the cheetah jumps out from her spot",
+   "name": "Cheetah"
+  },
+  {
+   "dir": "renders/skin_fig2_a/PZ_African_Elephant_Juvenile/gen_targets_b3714bfdfb418c87c26a/stills_clay2",
+   "view": "threequarter",
+   "caption": "the juvenile elephant starts to walk and turns left",
+   "name": "Elephant"
+  },
+  {
+   "dir": "renders/skin_fig2_a/PZ_Gharial_Male/gen_targets_cb6cfe73503d961c1bb7/stills_clay2",
+   "view": "threequarter",
+   "caption": "the gharial swims and then turns left",
+   "name": "Gharial"
+  }
+ ],
+ "unseen": {
+  "npz": "renders/cmp_dump_dragon_lora/A_Dragon__Dragon___Attack3_299.world.npz",
+  "name": "Dragon (95 j.)",
+  "note": "rest pose + 10 clips \u2192 adapter"
+ }
+}

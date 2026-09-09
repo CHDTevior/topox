@@ -25,46 +25,40 @@ slice & content & frame & supervised on \\
 
 \paragraph{Validity.} Not every cell exists on every rig or frame. Frame and joint masks handle
 padding; rotation is supervised only on joints with free degrees of freedom, contact only on joints
-that can touch the ground, heading only on frames where it is defined. The per-rig cell mask
-multiplies the interpolant, the loss and the per-step projection at sampling time, so an invalid cell
-is exactly zero everywhere rather than ``small''. Per-frame heading validity is the one part of the
-mask that training has and sampling does not: it gates the target's heading channels during training,
-while at generation the target's heading is what is being generated, so the sampler carries the
-demonstration's flag only and the target heading is produced unconditionally.
+that can touch the ground, heading only on frames where it is defined. The same effective-validity
+mask multiplies the interpolant, the loss and the per-step projection at sampling time, so an
+invalid cell is exactly zero everywhere rather than ``small''.
 
 
-\paragraph{Why standardise rather than scale.} We found this to be decisive. Under the scale-only
-normalisation of the source protocol, a large part of the objective is already explained by a constant
-pose -- on a 671-window probe of an earlier build, predicting the per-cell mean alone recovers
-$75\%$ of the uncentred objective against $36.5\%$ of the standardised one -- and the network settled
-on a frozen pose while the root travelled. Table~\ref{tab:rep} measures the consequence directly on
-the corpus used here: at every matched epoch the standardised representation is about two points of
-R@1 ahead with a third of the FID. 
+\paragraph{Why standardise rather than scale.} We found this to be decisive: with the
+scale-only normalisation of the source protocol the network settled on a frozen pose while the root
+travelled, because a constant pose already captured most of the objective: predicting the per-cell mean
+alone recovers $75\%$ of the scale-only objective on this corpus, against $36.5\%$ once every cell
+is standardised, so standardisation is what leaves the network something to learn. 
 
 \paragraph{Conversion.} A clip enters as a kinematic tree, a rest pose and per-frame local
 rotations and root translation. It is first resampled to 30\,fps (linear interpolation of the root
 translation, spherical interpolation of the local rotations, then forward kinematics) and expressed
 in a right-handed canonical basis. Global joint rotations follow from forward kinematics; the
-\emph{heading} is the ground-plane direction between a designated pair of joints of the rig,
-stored as the unit vector $(f_z, f_x)$ and marked invalid (channels set to zero, excluded from
-supervision) on frames where that projected direction has length below $10^{-6}$. The \emph{root
-track} is the root joint's own XZ trajectory, stored unsmoothed on the root row; joint positions store
-XZ relative to it and Y as absolute height, so every window can be re-based to its own first frame
-without touching the pose. Rotations are the global rotation composed with the inverse rest rotation of the same joint,
+\emph{heading} is the ground-plane direction of the rig's forward axis carried by a designated joint,
+$(\cos\phi,\sin\phi)$ with $\phi$ measured from $+Z$, and is marked invalid (channels set to zero,
+excluded from supervision) on frames where the projected axis is shorter than $0.05$. The
+\emph{smoothed root} is the root's XZ trajectory after a zero-phase fourth-order Butterworth low-pass
+at $1$\,Hz (a straight-line fit on clips too short for the filter); joint positions store XZ relative
+to it and Y as absolute height, so every window can be re-based to its own first frame without touching
+the pose. Rotations are the global rotation composed with the inverse rest rotation of the same joint,
 encoded as the first two matrix columns (continuous 6-D), so a joint at rest is the identity on every
-rig. Velocities are one-step finite differences of world positions, per second, supervised but never
+rig. Velocities are one-step finite differences of world positions and are supervised but never
 integrated. A contact flag marks the frames on which a joint that can touch the ground is within
-$0.3$ of the lowest point its rig's contact joints reach in the clip and whose squared one-frame
-displacement is at most $0.002$ (canonical units). For the Truebones rigs the same conversion is
-preceded by the main-body pruning of Appendix~\ref{app:lora}.
+$0.05$ of the ground plane and slower than $0.25$ (canonical units per second). For the Truebones rigs
+the same conversion is preceded by the main-body pruning of Appendix~\ref{app:lora}.
 
 \paragraph{Per-cell statistics.} For every rig, joint and channel the mean and standard deviation
 are taken over all frames of all of the rig's clips (heading channels over valid frames only), and a
 cell is served as $(x-\mu)/(\sigma+10^{-6})$ with $\sigma$ raised to at least $0.05$. A cell whose
 value never changes on a rig (contact of a joint that never touches the ground, a fixed degree of
 freedom) is exactly constant; it is normalised to zero, excluded from supervision and held at its
-constant when decoding. On the library this concerns $9{,}185$ of the $256{,}512$ cells that exist
-on the \num{311} rigs, \num{9{,}123} of them contact flags. A rig outside the
+constant when decoding. On the library this concerns $9{,}185$ of $265{,}987$ cells. A rig outside the
 library is served the same way from statistics computed on its own clips; how far a rig can be served
 without them is the subject of \S\ref{sec:exp:extend}.
 
@@ -74,16 +68,10 @@ hours. Clips are short: median $62$ frames, mean $79$, maximum $299$, and $2.1\%
 240-frame training window. Rigs have between $64$ and $946$ clips (median $236$). Joint counts run from
 $34$ to $102$ (median $64$): $61$ rigs in the thirties, $48$ in the forties, $14$ in the fifties,
 $63$ in the sixties, $48$ in the seventies, $27$ in the eighties, $47$ in the nineties and $3$ above
-a hundred. The clips and their captions follow the official AniMo4D annotation set of
-\citet{wang2025animo}: \num{77{,}894} of its \num{78{,}149} entries have a processed clip here and the
-remaining 255 have none. \num{53{,}448} clips carry three captions and \num{24{,}443} carry one (three
-carry more), about ten words each at the median; the primary caption is the one used for training and
-for evaluation. The rigs and animations are our own re-export of the game assets, the natural-language
-joint descriptions are ours (written from the joint names, \S\ref{sec:method:model}), and the conversion to
-\rep{} is new. A source audit of an earlier build of this corpus identified $161$ clips whose joint speeds lay in
-the extreme tail of their rig, which trace to defects of the source animations rather than to the
-conversion; $80$ of them survive into the corpus used here and are not removed, since the objective's
-robust knee (\S\ref{sec:method:objective}) was adopted in their place.
+a hundred. Every clip carries three captions of about ten words (median), written from the animation
+metadata; the primary caption is used for evaluation. Before the split, a source audit removed $161$
+clips whose joint speeds lay in the extreme tail of their rig, which trace to defects of the source
+animations rather than to the conversion.
 
 \section{Model details}\label{app:model}
 
@@ -97,19 +85,11 @@ limb'' are distinguishable; padded joints receive $-10^{4}$.
 
 \section{Calibration of the grouped objective}\label{app:calib}
 
-\paragraph{Batch of the mechanism check.} The grouped loss normalises per batch, so an artifact
-certifies the objective at the batch it was checked with, and the trainer refuses a mismatch. The two
-models of Table~\ref{tab:main} predate that rule: they continue under an artifact checked at batch 8
-while training at 16 per rank, which the run announces and records in its checkpoint. Every arm
-started after the rule carries a batch-matched artifact.
-
 \paragraph{Auxiliary terms.} Three terms are added in the same calibrated frame: a
 forward-kinematics consistency term between predicted positions and positions forward-kinematised
-from predicted rotations (weight 0.07, ramped over the first 5k steps); a velocity term matching
-world joint displacements between consecutive frames over every valid joint (0.01); a foot-lock term,
-gated by the de-normalised contact channel, that demands zero displacement of a joint flagged in
-contact (0.01); and an acceleration-matching term on second temporal differences (1.0), which is what
-removed the residual jitter of early runs.
+from predicted rotations (weight 0.07, ramped over the first 5k steps), velocity and foot-lock terms
+gated by the de-normalised contact channel (0.01 each), and an acceleration-matching term on second
+temporal differences (1.0), which is what removed the residual jitter of early runs.
 
 
 
@@ -120,15 +100,14 @@ heading), collected into six families with a prescribed share of the objective: 
 root) $0.304$, velocity (body and root) $0.027$ and contact $0.049$. Each group's energy
 $E_g$ is the mean squared standardised target over its valid cells, measured in one pass over the
 training cohort at the run's batch and demonstration condition; the family weight is then the closed
-form $\gamma_f=\sqrt{s_f/\sum_{g\in f}E_g}$, applied to every group of the family, with the rotation family
-anchored at $10$ and the others scaled relative to it. On the library this gives $12.2$ for the root trajectory, $14.2$ for body
+form $\gamma_f=\sqrt{s_f/\sum_{g\in f}E_g}$, applied to every group of the family and capped at
+$10$ for the rotation family. On the library this gives $12.2$ for the root trajectory, $14.2$ for body
 position, $10$ for rotations, $3.0$ for velocities, $5.6$ for contact and $2.8$ for heading.
 
 \paragraph{Mechanism check and artifact.} Because the weights act on gradients rather than on
 targets, the artifact is certified by running $30$ optimiser-free steps of a small model under the
 run's exact objective (velocity-space loss, $\sigma_{\min}{=}0.2$, Huber knee $10$, uniform $t$) and
-requiring, batch by batch, the measured gradient share of every family to lie within $25\%$ of
-$\gamma_f^2\sum_{g\in f} Q_g$, where $Q_g$ is the group's mean time-weighted, Huber-clipped squared residual;
+requiring the measured gradient share of every family to lie within $25\%$ of $\gamma_f^2\sum E_g$;
 this certifies that the prescribed profile is reachable under the objective, not that a trained model
 attains it. The artifact records the corpus generation, the normalisation variant, the statistics
 file, the batch, the demonstration condition, the loss code and the training view (manifest and clip
@@ -148,9 +127,16 @@ learning rate scaled linearly to the batch, one pass over every clip per epoch, 
 a shortened forward-kinematics warm-up. A single adapter can also be shared by a group of rigs; we
 report this as a negative result.
 
+\paragraph{Probing text generalisation.} To test whether an adapted rig still follows language it
+was not adapted on, we render captions of related species that no checkpoint in the adapter's
+initialisation lineage trained on, and authored out-of-distribution captions, on the adapted rig;
+the probe walks the lineage by content hash and refuses any caption seen upstream.
+
+
+
 \paragraph{Hyper-parameters.} Table~\ref{tab:lora_hp} lists the per-rig settings. The learning rate
-follows the linear-scaling rule from $10^{-4}$ at batch 8; the batch divides the rig's training-clip
-count so that every clip is seen exactly once per epoch, and is at most 13. Adapters
+follows the linear-scaling rule from $10^{-4}$ at batch 8; the batch is the largest divisor of the
+rig's training-clip count at or below 13, so that every clip is seen exactly once per epoch. Adapters
 act on the query, key, value and output projections of both attention blocks, the feed-forward layers
 and the conditioning MLPs (62 linear layers of the \num{36}M backbone, 104 of the \num{303}M one); a
 100-step warm-up precedes a half-cosine decay over five sixths of the epochs to $1\%$ of the peak, and
@@ -169,7 +155,7 @@ Rig & Joints & Train / val clips & Batch & Learning rate & Rank & Epochs \\
 Buffalo & 30 & 15 / 5 & 5 & $6.25{\times}10^{-5}$ & 64 & 300 \\
 Gazelle & 29 & 8 / 2 & 8 & $1.0{\times}10^{-4}$ & 64 & 300 \\
 Dragon & 95 & 10 / 3 & 5 & $6.25{\times}10^{-5}$ & 128 & 900 \\
-Spider & 68 & 26 / 6 & 13 & $1.63{\times}10^{-4}$ & 64 & 300 \\
+Spider & 46 & 26 / 6 & 13 & $1.63{\times}10^{-4}$ & 64 & 300 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -186,11 +172,49 @@ the trainable parameters of a pilot and $8\%$ of the main model; these are same-
 same-relative-capacity, controls. The Truebones-only \num{36}M model, which has trained on the
 evaluation clips, reproduces the real clips' statistics on every rig (jitter ratio \num{1.02} /
 \num{1.92} / \num{1.12} / \num{0.37} and articulation \num{0.67} / \num{1.22} / \num{1.23} /
-\num{0.35} against all clips of the rig; \num{0.95}--\num{1.29} and \num{0.85}--\num{1.00} against
-the clips it was asked to reproduce), unchanged between \num{30}k and \num{60}k steps. Against those
-matched targets it is the one arm whose jitter sits at the real value; the LoRA arms come out
-\emph{smoother} than real motion under the all-clip denominator used in Table~\ref{tab:lora} (jitter
-ratios \num{0.2}--\num{0.9}), and the Truebones-only model does so on Spider alone (\num{0.37}).
+\num{0.35} against all clips of the rig; \num{0.93}--\num{1.29} and \num{0.85}--\num{1.00} against
+the matched target clips), unchanged between \num{30}k and \num{60}k steps. This is what
+reproducing seen targets looks like under the protocol; all LoRA arms come out \emph{smoother}
+than real motion (jitter ratios \num{0.2}--\num{0.9}) while the seen-clip reference does not.
+
+
+\paragraph{How long to train the adapter.} Table~\ref{tab:lora_len} re-trains the four adapters of
+Table~\ref{tab:lora} with a snapshot every 50 epochs (Dragon: every 150 of 900) and scores every snapshot under the protocol
+of \S\ref{sec:exp:setup}. The jitter excess of the zero-training arm is gone within 50--100 epochs on every rig (150--300
+optimiser steps on 8--26 clips), the FK--pose gap reaches its plateau by 150--200 epochs (Dragon: 450), and the articulation
+ratio settles at \num{0.25}--\num{0.8} of the real clips whichever length is used: longer adaptation removes the disagreement
+between the rotation and position channels but does not restore the amplitude of motion. Gazelle, with two validation clips,
+is the noisiest row.
+
+\begin{table}[h]
+\centering\footnotesize\setlength{\tabcolsep}{4pt}
+\caption{Adapter training length. Snapshots of the per-rig LoRA (\num{303}M backbone, same clips, learning rate and batch as
+Table~\ref{tab:lora}); FK--pose gap in bone lengths on the validation clips, articulation and jitter of the sampled FK output
+relative to all real clips of the rig (1 = real). Epoch 0 is the zero-training arm. Dragon's snapshots are at 150 / 300 / 450 /
+600 / 900 epochs.}\label{tab:lora_len}
+\begin{tabular}{@{}llcccccc@{}}
+\toprule
+Rig & & 0 & 50 & 100 & 150 & 200 & 300 \\
+\midrule
+Buffalo & gap & \num{0.323} & \num{0.166} & \num{0.146} & \num{0.134} & \num{0.132} & \num{0.130} \\
+ & articulation & \num{1.45} & \num{0.43} & \num{0.30} & \num{0.26} & \num{0.27} & \num{0.28} \\
+ & jitter & \num{3.32} & \num{0.66} & \num{0.34} & \num{0.30} & \num{0.30} & \num{0.30} \\
+\midrule
+Gazelle & gap & \num{0.255} & \num{0.180} & \num{0.121} & \num{0.097} & \num{0.084} & \num{0.086} \\
+ & articulation & \num{5.39} & \num{0.73} & \num{0.36} & \num{0.56} & \num{0.79} & \num{0.78} \\
+ & jitter & \num{13.2} & \num{1.04} & \num{0.45} & \num{0.58} & \num{0.80} & \num{0.79} \\
+\midrule
+Spider & gap & \num{1.029} & \num{0.233} & \num{0.181} & \num{0.150} & \num{0.129} & \num{0.128} \\
+ & articulation & \num{2.87} & \num{0.44} & \num{0.28} & \num{0.20} & \num{0.28} & \num{0.24} \\
+ & jitter & \num{6.49} & \num{0.57} & \num{0.28} & \num{0.19} & \num{0.25} & \num{0.22} \\
+\midrule
+ & & 0 & 150 & 300 & 450 & 600 & 900 \\
+Dragon & gap & \num{1.215} & \num{0.214} & \num{0.172} & \num{0.151} & \num{0.142} & \num{0.142} \\
+ & articulation & \num{1.02} & \num{0.47} & \num{0.42} & \num{0.50} & \num{0.49} & \num{0.51} \\
+ & jitter & \num{2.53} & \num{0.61} & \num{0.52} & \num{0.59} & \num{0.59} & \num{0.56} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 
 \paragraph{Sharing an adapter across species does not help.} One rank-128 adapter trained on the pooled clips of eight flying
@@ -198,10 +222,10 @@ Truebones rigs (Bat, Bird, Buzzard, Dragon, Eagle, Giant bee, Parrot, Pteranodon
 validation clips of each rig with the geometric protocol of \S\ref{sec:exp:setup} (all real clips of the rig as the reference; at the
 rigs' native 30\,Hz, as no external source is involved). Table~\ref{tab:flyers} compares it with the zero-training arm on seven
 rigs. The shared adapter removes the zero-training arm's jitter excess (median \num{5.5} to \num{0.99} times real) and settles
-articulation at \num{0.46}--\num{0.83} of the real clips. On Dragon, the one rig that also has an adapter of its own, the two are
-close and neither dominates: articulation \num{0.52} shared against \num{0.49} species-specific, jitter \num{0.95} against
-\num{0.70}, with \num{1} the real motion. Pooling eight bodies therefore buys smoothness on the rigs that have no adapter of their
-own, and does not replace one where it exists.
+articulation at \num{0.46}--\num{0.83} of the real clips, but on Dragon it is no better than the species-specific adapter of
+Table~\ref{tab:lora} scored under the same 30\,Hz protocol -- articulation \num{0.52} against \num{0.49}, jitter \num{0.95}
+against \num{0.70}: pooling eight bodies buys smoothness on the rigs that have no adapter of their own and nothing for the rig that
+has one.
 
 \begin{table}[h]
 \centering\footnotesize\setlength{\tabcolsep}{5pt}
@@ -227,44 +251,67 @@ Parrot & 3 & \num{1.84} & \num{0.55} & \num{7.14} & \num{1.14} \\
 
 
 
+\paragraph{Does the adapted rig still follow language?} We take the Buffalo adapter of Table~\ref{tab:lora} and give it
+\num{36} captions it has never seen -- validation captions of related library species (African and water buffalo, bison, Highland
+cattle, wildebeest) whose text occurs nowhere in the backbone's or the adapter's training set -- twelve each in three energy classes
+read off the caption (fight / flee / run; walk / swim; rest / eat / stand). Table~\ref{tab:textprobe} reports the motion energy of the
+sample on the Buffalo rig (mean frame-to-frame world displacement of all joints, in units of the rig's scale) next to the energy of the
+library clip the caption belongs to. The adapter orders the classes exactly as the captions do: every fight caption moves more than every
+rest caption, the rank correlation between generated and reference energy over the \num{36} captions is $\rho{=}\num{0.86}$, and the
+travelling captions travel (root path \num{1.20} against \num{0.18} units). The amplitude is \num{0.5}--\num{0.7} of the library clips',
+the same under-articulation Table~\ref{tab:lora} measures on the adapter's own clips.
+
+\begin{table}[h]
+\centering\footnotesize\setlength{\tabcolsep}{5pt}
+\caption{Language following of the Buffalo adapter on \num{36} unseen captions of related species (medians over the twelve captions of a
+class). Energy: mean frame-to-frame joint displacement per unit rig scale; reference: the library clip the caption describes, on its own
+rig; root path in rig units. Pairwise class order of the generated energy: fight $>$ rest in $100\%$ of pairs, fight $>$ walk in $97\%$,
+walk $>$ rest in $94\%$.}\label{tab:textprobe}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Caption class & generated energy & reference energy & ratio & root path \\
+\midrule
+fight / flee / run & \num{0.0133} & \num{0.0185} & \num{0.70} & \num{1.20} \\
+walk / swim & \num{0.0057} & \num{0.0095} & \num{0.58} & \num{0.26} \\
+rest / eat / stand & \num{0.0008} & \num{0.0019} & \num{0.54} & \num{0.18} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
 \section{Capabilities of related systems}\label{app:capability}
 
 \begin{table}[h]
-\centering\footnotesize
-\caption{Capabilities of motion generators across skeletons, as described in the papers and released code.
-\emph{Any topology}: one model serves skeletons of different joint counts and trees. \emph{Text}: language-conditioned.
-\emph{Rotations}: joint rotations are predicted. \emph{IK-free}: the exported animation needs no inverse-kinematics fit.
-\emph{Root}: a world-space root trajectory is generated. \emph{Unseen rig}: a rig absent from training is served, and how.
-\emph{Baselines}: how the paper compares to other methods. n.r.\ = not reported. SAMoR is its cross-topology variant; its
-HumanML3D variant has a root and rotation branch. G-MDM omits root translation in its current implementation.}\label{tab:capability}
-\resizebox{\linewidth}{!}{%
-\begin{tabular}{lccccclp{4.2cm}}
+\centering\small
+\caption{Capabilities of motion generators across skeletons. \emph{Any topology}: one model
+serves skeletons of different joint counts and trees. \emph{Text}: language-conditioned.
+\emph{No template}: no retargeting to a canonical skeleton at training or inference. \emph{Unseen
+rig}: a rig absent from training is served (zero-shot or with few clips). Entries follow the papers'
+own descriptions; n.r.\ = not reported.}\label{tab:capability}
+\begin{tabular}{lcccc}
 \toprule
-& Any topology & Text & Rotations & IK-free & Root & Unseen rig & Baselines \\
+& Any topology & Text & No template & Unseen rig \\
 \midrule
-Human T2M diffusion~\citep{tevet2023mdm,zhang2024motiondiffuse} & $\times$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & standard HumanML3D protocol \\
-AniMo~\citep{wang2025animo} (30-joint skeleton) & $\times$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & retrained human T2M models \\
-OmniMotionGPT~\citep{yang2024omnimotiongpt} & $\times$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & retrained on its data \\
-X-MoGen~\citep{wang2025xmogen} & $\times$ & $\checkmark$ & $\checkmark$ & n.r. & n.r. & $\times$ & retrained on its data \\
-AnyTop~\citep{gat2025anytop} & $\checkmark$ & $\times$ & $\checkmark$ & $\times$ (IK export) & $\checkmark$ & zero-shot, qualitative & MDM adapted, SinMDM per rig \\
-OmniZoo~\citep{chen2025omnizoo} & $\checkmark$ & $\checkmark$ & $\checkmark$ & n.r. & n.r. & qualitative demos & padded MoMask / MMM / AniMo \\
-G-MDM~\citep{lee2025dragon} & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & qualitative & per-object MDMs, retargeting \\
-SAMoR~\citep{samor2026} (cross-topology) & $\checkmark$ & $\checkmark$ & $\times$ & $\times$ (IK) & $\times$ & held-out characters & T2M-GPT / MoGenTS retrained (reconstruction) \\
-\method{} (ours) & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & given its statistics, + adapter & released AnyTop as reference \\
+Human T2M diffusion~\citep{tevet2023mdm,zhang2024motiondiffuse} & $\times$ & $\checkmark$ & $\times$ & $\times$ \\
+OmniMotionGPT~\citep{yang2024omnimotiongpt} & $\times$ & $\checkmark$ & $\times$ & $\times$ \\
+AnyTop~\citep{gat2025anytop} & $\checkmark$ & $\times$ & $\checkmark$ & $\checkmark$ \\
+X-MoGen~\citep{wang2025xmogen} & $\times$ & $\checkmark$ & $\times$ & $\times$ \\
+OmniZoo~\citep{chen2025omnizoo} & $\checkmark$ & $\checkmark$ & $\checkmark$ & n.r. \\
+G-MDM~\citep{lee2025dragon} & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
+SAMoR~\citep{samor2026} & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
+\method{} (ours) & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
 \bottomrule
-\end{tabular}}
+\end{tabular}
 \end{table}
 
 \section{AnyTop as an in-distribution reference}\label{app:anytop}
 
 \paragraph{In-distribution references, not a comparison.} AnyTop~\citep{gat2025anytop} is the
 released arbitrary-topology generator; it is unconditional and was trained on the whole Truebones
-zoo, including the four rigs above, so on them it is an in-distribution model. Of our own arms only
-the unadapted library model has never seen these rigs: the adapters train on the rig's own support
-clips, and the Truebones-only model trains on all of its captioned clips, evaluation clips included.
-AnyTop is unconditional, so a text-conditioned comparison under our retrieval protocol is not
-defined; we do not retrain it, and no rig is unseen by both models, so the numbers in
-Table~\ref{tab:anytop} describe what a model that trained on
+zoo, including the four rigs above, so on them it is an in-distribution model while our arms are
+not. We do not retrain it on a split that excludes those rigs, because a reproduction we run
+ourselves could not be held to its authors' standard, and we have no rig that neither model has
+seen; the numbers in Table~\ref{tab:anytop} therefore describe what a model that trained on
 these rigs produces, next to our own seen-clip reference (the Truebones-only model of
 Table~\ref{tab:lora}), and are not a ranking. We sample the released weights eight times per rig
 (6\,s each) and report, for its direct output positions and for the BVH it exports after an
@@ -322,64 +369,36 @@ anti-aliased polyphase filter when an AnyTop sample is present, and kept at the 
 otherwise. Ratios are means over the rig's clips; where a rig has three or more clips we report
 $95\%$ bootstrap intervals in the artifacts.
 
-\section{Evaluator controls}\label{app:controls}
+\section{Sampling cost}\label{app:cost}
 
-The retrieval numbers come from an evaluator we trained, so we measure what that evaluator responds
-to. Every arm's saved samples are re-scored in five variants with the frozen evaluator, the same
-pools of 64 in the same dataset order, and the same acceptance sets: \emph{FK} replaces the generated
-joint positions by the forward kinematics of the generated rotations (the two channels are redundant
-by construction, so a score carried by one of them would not survive); \emph{static} holds the clip's
-own first pose for its whole length; \emph{rest} holds the rig's rest pose; \emph{shuffle} permutes
-the generated frames inside the scored window; \emph{wrong caption} gives every slot in a pool a
-different clip's caption, chosen so that no slot keeps its own caption text whenever the pool's
-duplicates allow it. The evaluation is bound to the scoring it validates: the canonical pass records
-the digest of the scored clip ids in encoding order, and a control run is refused unless it
-reproduces that digest, the generation plan, and the canonical R-precision of the generated samples.
+Table~\ref{tab:cost} gives the wall-clock time of one sample at batch size 1 on one H200 GPU in fp32, for the
+protocol's padded 240-frame sequence of a 38-joint rig (\num{109} of the frames are real), with caption
+guidance (two network evaluations per Euler step), median of five timed runs after two warm-up runs, next to the
+retrieval and FID scores of the same checkpoints at 10 and 5 steps. The time is linear in the number of function
+evaluations and the \num{36}M pilot is six times faster than the \num{303}M model. Halving the steps leaves R@1
+unchanged for both models and costs \num{0.003}--\num{0.005} in FID; five steps cost \num{0.008} in R@1 for the
+\num{303}M model and \num{0.020} for the pilot, so the smaller model needs its steps more.
+Departures from the 20-step protocol are stamped as such in the evaluation reports (\texttt{protocol.variant}) and
+are never mixed with frozen-protocol numbers.
 
 \begin{table}[h]
-\centering\small
-\caption{Evaluator controls: R@1 in pools of 64 over the \num{3{,}899} validation clips, with 95\%
-bootstrap intervals over the 60 pools. \emph{real} scores the real clips of the same pools. Chance is
-\num{0.017} with the acceptance sets counted.}\label{tab:controls}
-\begin{tabular}{@{}lcccccc@{}}
+\centering\footnotesize\setlength{\tabcolsep}{4pt}
+\caption{Sampling cost and quality against the number of Euler steps ($s{=}2$, one seed, validation set; runs at 10 and 5 steps
+are stamped as protocol variants). Latency: batch 1, one H200, fp32, 240 padded frames, 38 joints.}\label{tab:cost}
+\begin{tabular}{lccccccc}
 \toprule
-Arm & generated & FK & shuffle & static & rest & wrong caption \\
+& & \multicolumn{3}{c}{\num{303}M} & \multicolumn{3}{c}{\num{36}M} \\
+\cmidrule(lr){3-5}\cmidrule(lr){6-8}
+Euler steps & evaluations & latency (ms) & R@1$\uparrow$ & FID$\downarrow$ & latency (ms) & R@1$\uparrow$ & FID$\downarrow$ \\
 \midrule
-\method{} (\num{303}M) & \num{0.922} & \num{0.923} & \num{0.806} & \num{0.346} & \num{0.109} & \num{0.005} \\
-\num{36}M, AnyTop-13 layout & \num{0.871} & \num{0.837} & \num{0.749} & \num{0.346} & \num{0.110} & \num{0.007} \\
-\midrule
-real clips & \multicolumn{6}{c}{\num{0.964}} \\
+20 (protocol) & 40 & \num{4083} & \num{0.922} & \num{0.005} & \num{688} & \num{0.897} & \num{0.008} \\
+10 & 20 & \num{2041} & \num{0.922} & \num{0.008} & \num{344} & \num{0.897} & \num{0.013} \\
+5 & 10 & \num{1021} & \num{0.914} & \num{0.013} & \num{172} & \num{0.878} & \num{0.022} \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-Two readings matter. The FK column is the mechanism: on \rep{} the two redundant channels agree, so
-re-encoding through forward kinematics leaves the score inside its interval
-(\num{0.923} against \num{0.922}); on the 13-channel layout of App.~\ref{app:ablation_notes}, at the
-same model size and partition, the same re-encoding costs \num{0.034}. The static column is the
-shortcut: a body of the right species, frozen in the clip's first pose, already retrieves its caption
-in a third of the pools, which is the part of every retrieval number in this paper that is not
-motion. Uncertainty for the FID is reported as the FID between two halves of the real validation set
-(\num{0.015} $\pm$ \num{0.001} over 20 splits), which is the estimator's resolution at half the
-sample size, rather than as a bootstrap interval: FID is a biased nonlinear estimator and its
-percentile interval need not contain the population value.
 
 \section{Ablation notes}\label{app:ablation_notes}
-
-\begin{table}[h]
-\centering\small
-\caption{Ablations on the \num{36}M pilot at matched optimiser steps (epoch-200 checkpoints;
-validation loss, FK--pose gap, R@1 and FID on the validation set). The variant without the
-acceleration term optimises a different objective, so its validation loss is not listed.}\label{tab:ablation}
-\begin{tabular}{@{}lcccc@{}}
-\toprule
-Variant & Val.\ loss$\downarrow$ & FK--pose gap (bl)$\downarrow$ & R@1$\uparrow$ & FID$\downarrow$ \\
-\midrule
-Full recipe (rest demo, calibrated, $\mathbf{x}$-pred, qk-norm) & \num{0.247} & \num{0.171} & \num{0.878} & \num{0.011} \\
-Without the acceleration-matching term & -- & \num{0.171} & \num{0.877} & \num{0.011} \\
-\bottomrule
-\end{tabular}
-\end{table}
 
 \paragraph{Prediction target and sampler.} Predicting
 $\mathbf{x}_1$ rather than the velocity lowered the high-frequency energy of the samples in our
@@ -392,6 +411,11 @@ form, so they were rolled back on visual grounds.
 against \num{0.878}) and FID (\num{0.011}) at epoch 200 as the full recipe; the term was introduced
 for temporal smoothness, which these three numbers do not measure.
 
+\paragraph{Joint descriptions versus joint names.} Embedding natural-language joint descriptions
+instead of raw joint names raises the fraction of the joint-conditioning signal explained by skeleton
+structure from $R^2$ \num{0.37} to \num{0.52} in a linear probe; every model in this paper uses the
+descriptions.
+
 \paragraph{Normalisation of the representation.} \rep{} is normalised per rig and per cell (joint,
 channel) by the cell's mean and standard deviation over the rig's clips (App.~\ref{app:rep}). The
 alternative that keeps every cell's own mean and divides only by a per-rig scale, as in the KTJD
@@ -399,10 +423,9 @@ specification, was trained with the \num{36}M recipe unchanged and scored at mat
 frozen protocol (its samples are mapped into the per-cell space before scoring). Table~\ref{tab:rep}
 shows that the scale-only variant is behind in retrieval and FID at every matched epoch, by about two
 points of R@1 and a third of the FID, although its two output channels agree more closely with each
-other: the FK--pose gap is computed after each arm's own normalisation is reversed, in the same bone-length
-unit, so the scale-only model's smaller gap says that its two channels are more consistent with each
-other, not that its samples are closer to the target -- retrieval and FID say the opposite. The
-per-cell normalisation is the one used everywhere else in the paper.
+other: the FK--pose gap of a scale-only model is smaller because both channels are read in units of
+one shared scale, not because its samples are closer to the target. The per-cell normalisation is
+the one used everywhere else in the paper.
 
 \begin{table}[h]
 \centering\footnotesize
@@ -428,8 +451,7 @@ joint positions, the root's height and planar velocity, per-parent local 6D rota
 and contacts; no smoothed-root or heading channels) was derived analytically from the same clips, splits
 and exclusion cut, and the \num{36}M recipe was trained on it with the same per-cell normalisation and
 the same schedule. The two world-coordinate terms of the training loss (forward-kinematic position and
-foot lock) are implemented for \rep{}'s world coordinates and were off for this run (a root-relative
-version is possible but was not implemented); the velocity and
+foot lock) have no meaning in root-relative coordinates and were off for this run; the velocity and
 acceleration terms were kept. Its samples are converted back to \rep{} before scoring, so the frozen
 protocol and the reference numbers are unchanged. Table~\ref{tab:repcontent} shows the two layouts
 within a point of R@1 of each other at every matched epoch (\num{0.861}, \num{0.864} and \num{0.871}
@@ -454,19 +476,16 @@ the quantities the layout was designed around; retrieval does not resolve them.
 \caption{Geometry of the generated clips against their ground truth (epoch 100, the \num{3899} validation clips
 and the same frozen samples as Table~\ref{tab:repcontent}; official codec; bl = the rig's mean rest bone
 length). Last column: share of clips on which the \rep{} sample is closer to the ground truth than the
-13-channel sample (ties count for neither). Every row uses all \num{3899} clips except foot slide, which
-is defined only where a joint is flagged in contact in both samples and in the ground truth
-(\num{3610} clips). Epochs 50 and 75 give the same picture.}\label{tab:physical}
-\centering\footnotesize\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}lcccc@{}}
+13-channel sample (ties count for neither). Epochs 50 and 75 give the same picture.}\label{tab:physical}
+\begin{tabular}{lcccc}
 \toprule
-Quantity & Data & \rep{} & AnyTop-13 & \rep{} closer \\
+Quantity & Data & \rep{} (ours) & AnyTop-13 layout & \rep{} closer \\
 \midrule
 FK--pose gap (bl) & \num{0.000} & \num{0.381} & \num{1.447} & \num{100}\% \\
-Bone-length error, direct positions (bl) & \num{0.000} & \num{0.077} & \num{0.119} & \num{91}\% \\
-Leaf articulation, mean deviation from rest (deg) & \num{11.6} & \num{10.6} & \num{0.0} & \num{92}\% \\
-Leaf articulation, temporal std (deg) & \num{5.86} & \num{5.24} & \num{0.00} & \num{89}\% \\
-Foot slide while in contact (bl/s) & \num{2.02} & \num{2.32} & \num{3.80} & \num{71}\% \\
+Bone-length error of direct positions (bl) & \num{0.000} & \num{0.077} & \num{0.119} & \num{91}\% \\
+Leaf-joint articulation, mean deviation from rest (deg) & \num{11.6} & \num{10.6} & \num{0.0} & \num{92}\% \\
+Leaf-joint articulation, temporal std (deg) & \num{5.86} & \num{5.24} & \num{0.00} & \num{89}\% \\
+Foot slide while flagged in contact (bl/s) & \num{2.02} & \num{2.32} & \num{3.80} & \num{71}\% \\
 Root displacement (bl) & \num{8.87} & \num{9.24} & \num{10.83} & \num{61}\% \\
 Root path length (bl) & \num{11.26} & \num{11.04} & \num{12.87} & \num{55}\% \\
 Root height (bl) & \num{6.97} & \num{7.05} & \num{6.71} & \num{54}\% \\
@@ -497,16 +516,15 @@ Epoch & R@1$\uparrow$ & FID$\downarrow$ & R@1$\uparrow$ & FID$\downarrow$ \\
 \end{tabular}
 \end{table}
 
-\paragraph{Model size.} Table~\ref{tab:size} scores three sizes of the same recipe -- width, depth and head count grow
-together, so it measures model size and not the contribution of any one of them -- at the
-same number of optimiser steps and data passes (epoch 200, global batch 128, frozen protocol). Retrieval and FID
-improve monotonically with size; the \num{303}M model at epoch 200 is within a point of R@1 of its epoch-289 checkpoint in
-Table~\ref{tab:main} (\num{0.914} against \num{0.922}), so most of its gain over the pilot comes from
-size, not from the longer schedule.
+\paragraph{Model size.} Table~\ref{tab:size} scores three widths of the same recipe at the same
+optimiser budget (epoch 200, global batch 128, frozen protocol). Retrieval and FID improve monotonically
+with size; the \num{303}M model at epoch 200 is within a point of R@1 of its epoch-289 checkpoint in
+Table~\ref{tab:main} (\num{0.914} against \num{0.922}), so most of the gain over the pilot comes from
+width, not from the longer schedule.
 
 \begin{table}[h]
 \centering\footnotesize
-\caption{Model size at matched optimiser steps (epoch 200, global batch 128; frozen protocol, pool 64,
+\caption{Model size at a matched optimiser budget (epoch 200, global batch 128; frozen protocol, pool 64,
 20 Euler steps, guidance 2, seed 42). The \num{36}M row was sampled in fp32, the two larger rows with
 TF32 matrix multiplication.}\label{tab:size}
 \begin{tabular}{lcccc}
@@ -522,10 +540,8 @@ Model & Width / depth / heads & R@1$\uparrow$ & R@3$\uparrow$ & FID$\downarrow$ 
 
 \paragraph{Stability.} Without query--key normalisation the \num{303}M model diverged in every
 attempt, between epochs 11 and 60, whichever of learning rate, gradient clipping, spike rejection
-or batch size was changed; probing the attention logits of a healthy and of a collapsing checkpoint of
-one such run showed the first block's temporal attention already saturated on the healthy checkpoints
-(maximum logit \num{1372}--\num{1483}, where a sane transformer runs at tens) and exploding to
-\num{12392}--\num{23391} across the damaging step. With
+or batch size was changed; probing the attention logits of a healthy and of a collapsing checkpoint
+showed the spatial attention saturating a few hundred steps before each collapse. With
 query--key normalisation the same recipe trained for 290 epochs without a single rejected step.
 
 
@@ -553,12 +569,30 @@ Dragon, a flying rig, is anchored on the root in all axes, which removes its div
 rows of a rig are drawn at the same scale.}\label{fig:tb_filmstrips}
 \end{figure}
 
+\section{A motion demonstration in place of the rest frame}\label{app:demo64}
+
+The demonstration slot of \S\ref{sec:method:model} can hold motion as well as a pose. We trained a
+\num{36}M pilot identical to the mainline except that the demonstration is a 64-frame window of
+another real clip of the same rig, drawn afresh for every training sample (the grouped objective was
+re-calibrated for this condition). At matched optimiser steps (epoch 200, scored on the same GPUs)
+the motion demonstration gives a mixed result: validation loss \num{0.270} against \num{0.247} and
+FK--pose gap \num{0.202} against \num{0.171} bone lengths are worse, retrieval equal within noise and
+FID slightly better (R@1 \num{0.878} for both, FID \num{0.010} against \num{0.011}); the attribution of the demonstration pathway is an order of
+magnitude smaller than with the rest frame ($3{\times}10^{-4}$ against $5{\times}10^{-3}$), and the
+sequence is $27\%$ longer. On the four Truebones rigs of \S\ref{sec:exp:extend} the picture is the
+same: zero-training jitter ratios \num{0.95} / \num{6.89} / \num{1.54} / \num{2.94} (rest frame
+\num{1.92} / \num{6.24} / \num{0.74} / \num{4.71}), LoRA \num{0.24} / \num{0.74} / \num{0.70} /
+\num{0.17} (rest frame \num{0.27} / \num{0.92} / \num{0.62} / \num{0.23}), with LoRA validation
+losses a few percent above the rest-frame pilot's on every rig. Because the demonstration clip is an
+unrelated motion of the same rig, everything it carries beyond the body plan is already stated by the
+caption, and the network learns to ignore it; a moving demonstration also has to exist at test time,
+which a rest pose always does. We therefore keep the rest frame.
+
 \section{Validation split}\label{app:split}
 
-The library is split per rig: the rig's clips are sorted by identifier and permuted with one
-seeded generator (\texttt{numpy} default generator, seed 0) shared by all rigs in name order, and the
-first \num{5}\% of the permutation (at least one clip, none for a rig with a single clip) become
-validation, so that every rig with enough clips is represented in both parts. The split is fixed before any model is trained and is shared by
+The library is split per rig: for every rig, \num{5}\% of its clips are assigned to validation by
+a hash of the clip identifier (seed 42) and the rest to training, so that every rig with enough
+clips is represented in both parts. The split is fixed before any model is trained and is shared by
 the evaluator and by every generator and adapter in this paper; checkpoints are selected on the
 validation loss. Validation holds \num{3{,}899} clips over \num{311} rigs and training
 \num{73{,}995} clips. Retrieval pools are formed by chunking the validation set in dataset order
@@ -568,9 +602,8 @@ matching score.
 
 \paragraph{Pool size.} Retrieval among more candidates is harder for the real clips and for the
 generated ones alike, and the pool size is a free parameter of the protocol. Table~\ref{tab:pool}
-re-scores the same generated samples at four pool sizes; the ranking of the two models does not depend on
-the choice, while the gap to the real clips widens with the pool (from \num{0.029} at 16 to \num{0.047} at 128 for
-the \num{303}M model); the main text uses 64.
+re-scores the same generated samples at four pool sizes; the ranking of the two models and their
+distance to the real clips do not depend on the choice, and the main text uses 64.
 
 \begin{table}[h]
 \centering\small

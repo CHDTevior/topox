@@ -1,0 +1,30 @@
+Blind figure review, round 1, part 2 (a separate thread from part 1; you have not seen the paper or the source code). Attached, in order:
+- whole.png  (the whole figure, 1800 × 1100 canvas at 2×, read at 5.5 inches wide in a paper; a 32 px canvas label = 7 pt on the page)
+- crop_conditioning.png  (the bottom band, 2×: the two text-conditioning lanes)
+- crop_grid.png  (the token grid and what feeds it, 2×)
+- crop_block.png  (the transformer panel, 2×)
+- process.png  (one labelled panel per build stage: 1 regions and panels · 2 token grid · 3 illustrations · 4 connections · 5 labels)
+The work is a method-overview figure: a Figure 1 drawn by a paper's authors in the paper's own idiom (Times labels; teal for
+everything derived from the skeleton, clay for the caption and time conditioning path, grey data tokens, ink flow, white page).
+
+Answer as a reader of the paper and a designer of figures would:
+2. As a paper's Figure 1 read at 5.5 in: is it worth looking at? Where does the eye land first, second, third; does the
+   distribution of weight and space serve the method; what one change would most improve the whole?
+3. What reads as template-made rather than designed for this method, ranked by how much it hurts the craft claim. For each: what
+   you see and the one change that would help most, and whether that change looks like a parameter of the present construction or
+   a different construction — say what you see that makes you think so. The images are at 2× canvas scale; give numbers where that
+   scale makes them reliable.
+5. Does each panel of process.png add only what its stage names, and is the build order plausible for a designer of such figures?
+   Name the stage and the visible mismatch when it is not.
+6. Which passages hold at reading size — name each and say what function it carries that must not be lost.
+9. One 0–10 for "a reader explains the method correctly from this figure alone". The number does not decide whether the gate passes.
+
+=== SCOPE LIMITS (these bound what you PROPOSE, never what you look for) ===
+1. Not a security product. Cooperating operator on their own machine. No over-defense.
+2. No hashes, checksums or fingerprints.
+3. No defensive scaffolding: no feature flags, migration frameworks, compatibility layers, wrappers, validators, evidence files or JSON state machines.
+4. No corner-case obsession.
+5. Where judgement is needed, judge; no scoring tables, checklists, or re-verification of settled things.
+6. Propose the direct visual or craft change, not helper programs or gate machinery.
+7. Deliverable text is not a defense transcript; no caveat sprinkling.
+Report anything actually wrong. Say plainly when something is right. Be concrete and blunt. No preamble.

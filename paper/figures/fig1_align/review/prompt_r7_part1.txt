@@ -1,0 +1,15 @@
+Blind figure review, round 7, part 1 (reading of the eighth version after repairs: the attention icons are now tree glyphs — one joint linked across four frames; one joint attending to all joints of a frame shaded by hop distance). Judge only from the attached image; do not read source or any text file.
+- The attached image is the whole figure (1800 × 1100 canvas at 2×), read at 5.5 inches wide in a paper (32 px canvas = 7 pt).
+The work is a method-overview figure: a Figure 1 drawn by a paper's authors in the paper's own idiom (Times; teal = skeleton-derived, indigo = noise-mixed frames and the sampling loop,
+clay = caption/time conditioning, grey data tokens, ink flow, white page), built in the order stage bands and panels → token grid →
+illustrations and callouts → connections → labels. You have not read the paper. Explain only what the figure shows.
+1. Explain the method in the order the figure reads: who acts, what passes between steps, what each decision changes, what persists
+   through a loop, what ends it. Put "unclear:" in front of any sentence where the figure leaves you unsure. Do not fill gaps from
+   what such methods usually do. Then state the counts, limits and trajectories the figure claims.
+9. One 0–10 for "a reader explains the method correctly from this figure alone", and the three most valuable remaining changes.
+=== SCOPE LIMITS === 1. Not a security product; cooperating operator on their own machine; no over-defense. 2. No hashes/checksums.
+3. No defensive scaffolding. 4. No corner-case obsession. 5. Judge where judgement is needed. 6. Propose the direct visual change.
+7. No caveat sprinkling. Report anything actually wrong. Say plainly when something is right. Be concrete and blunt. No preamble.
+In addition, answer directly (no sub-agents): does a reader now see what the model is, concretely — what one token is made of, what the
+transformer's sub-layers do, what the head predicts and what returns in the loop? Name any label whose type is too small at 5.5 inches, any
+line that a reader could mis-route, and any panel whose information density is out of balance with its neighbours.

@@ -1,0 +1,97 @@
+Reading additional input from stdin...
+OpenAI Codex v0.153.3
+--------
+workdir: /iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/fig1_align
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: max
+reasoning summaries: none
+session id: 01a0771b-6ee3-7491-ab3a-cfe839a8f936
+--------
+user
+Blind figure review, round 6, part 1 (reading of the eighth version: the token stage now draws the sum of six named terms, the transformer stage names the head and shows the AdaLN anatomy, the sampling stage has an update node). Judge only from the attached image; do not read source or any text file.
+- The attached image is the whole figure (1800 × 1100 canvas at 2×), read at 5.5 inches wide in a paper (32 px canvas = 7 pt).
+The work is a method-overview figure: a Figure 1 drawn by a paper's authors in the paper's own idiom (Times; teal = skeleton-derived, indigo = noise-mixed frames and the sampling loop,
+clay = caption/time conditioning, grey data tokens, ink flow, white page), built in the order stage bands and panels → token grid →
+illustrations and callouts → connections → labels. You have not read the paper. Explain only what the figure shows.
+1. Explain the method in the order the figure reads: who acts, what passes between steps, what each decision changes, what persists
+   through a loop, what ends it. Put "unclear:" in front of any sentence where the figure leaves you unsure. Do not fill gaps from
+   what such methods usually do. Then state the counts, limits and trajectories the figure claims.
+9. One 0–10 for "a reader explains the method correctly from this figure alone", and the three most valuable remaining changes.
+=== SCOPE LIMITS === 1. Not a security product; cooperating operator on their own machine; no over-defense. 2. No hashes/checksums.
+3. No defensive scaffolding. 4. No corner-case obsession. 5. Judge where judgement is needed. 6. Propose the direct visual change.
+7. No caveat sprinkling. Report anything actually wrong. Say plainly when something is right. Be concrete and blunt. No preamble.
+In addition, answer directly (no sub-agents): does a reader now see what the model is, concretely — what one token is made of, what the
+transformer's sub-layers do, what the head predicts and what returns in the loop? Name any label whose type is too small at 5.5 inches, any
+line that a reader could mis-route, and any panel whose information density is out of balance with its neighbours.
+warning: Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+hook: SessionStart
+hook: SessionStart Completed
+codex
+1. A rig supplies joint tokens. Each contains **17 channels: position 3, rotation Δ 6, velocity 3, contact 1, and root trajectory/heading 4**. Values are standardized per rig, joint and channel. The grid combines a rest column with noisy target frames.  
+   unclear: The reference for “rotation Δ” is not stated.
+
+2. Each token becomes a **896-dimensional representation by adding six contributions**: projected motion channels, frame-index lookup, joint-slot lookup, target-frame mask, encoded joint description, and projected tree features. The description passes through LLM2Vec and a linear layer; tree features pass through an MLP. Separately, the caption passes through LLM2Vec and an MLP, and time passes through another MLP; their sum is conditioning \(c\).  
+   unclear: “mask m” does not specify what representation is being added to the other embeddings.
+
+3. The transformer repeats temporal attention → spatial attention → feed-forward network. **Temporal attention connects one joint across frames; spatial attention connects joints within one frame**, with a tree-distance bias. Those two operations are explained well. The feed-forward network is named but its operation is not explained. Conditioning \(c\) supplies AdaLN shift, scale and gate: the inset shows normalization, scaling and shifting before \(f\), followed by gating and a residual addition. The head is explicitly **LN → linear, 896 → 17**, predicting clean motion \(\hat{x}_1\).  
+   unclear: “every sub-layer, and the head” appears to apply the entire residual inset to the head; its identity residual cannot be added to a 17-dimensional output from a 896-dimensional input.
+
+4. Sampling uses the clean-motion prediction in
+   \[
+   x \leftarrow x+\frac{\hat{x}_1-x}{20-i}.
+   \]
+   Only target frames change. **Updated \(x\), rather than \(\hat{x}_1\) directly, returns to the 17-channel projection.** That is now readable. The rest column remains unchanged. After 20 steps, rotations pass through FK and skinning. An unseen rig uses the same pass, with optional LoRA on the transformer using approximately ten clips.  
+   unclear: The starting value of \(i\) is unspecified, and the schedule above sampling is connected to the orange time input only through the shared symbol \(t\).
+
+The numerical claims are **311 rigs; 34–102 joints; 17 channels per joint token; 240 noisy target frames plus rest; \(D=896\); eight tree features; 14 transformer blocks; tree-distance penalty capped at eight hops; 20 Euler steps with \(t=i/20\); and approximately ten clips for optional LoRA**. The example caption requests “the moose runs and then slows to a walk.” Root channels explicitly carry trajectory and heading.
+
+**Yes, the reader now sees a concrete model.** Token composition, the two attention axes, the clean-motion head and the returned sampling state are explicit. The remaining architectural weakness is the explanation of the FFN and the head’s conditioning.
+
+At 5.5 inches, the clearest undersized labels are the tree-feature list; “tree bias −min(hops, 8)”; the clean-motion definition beneath the head; the AdaLN conditioning line, “1+scale,” “shift,” “gate,” and its footer; the Euler/time heading; and “rotations → FK → skinned.” Several essential explanations receive the smallest type.
+
+The problematic connector is the **short teal arrow at the tree-feature MLP’s right edge**: it points left into the box and overlaps the vertical summation connection. It can be read as the sum feeding the MLP. The long indigo feedback path has a clear destination now.
+
+Stages **2 and 3 are disproportionately dense**, especially the bottom of stage 3. Stage 4 gives substantially more space to its animal rendering and adaptation note.
+
+**8/10** for explaining the method correctly from this figure alone. The three most valuable changes:
+
+1. **Separate head conditioning from the residual AdaLN anatomy.** Restrict the inset’s scope explicitly and give the head its own conditioning annotation. Add one short functional explanation beneath “feed-forward network.”
+2. **Repair the tree-MLP output connection and finish the loop labels.** Move the sum bus clear of the box, point the MLP output toward it, print \(i=0,\ldots,19\), and place \(t=i/20\) beside the orange time input.
+3. **Reallocate space to readable explanations.** Widen stages 2–3, reduce the stage-4 rendering and callout footprint, and bring the essential small labels to at least the stated 32-canvas-pixel threshold.
+tokens used
+29,490
+1. A rig supplies joint tokens. Each contains **17 channels: position 3, rotation Δ 6, velocity 3, contact 1, and root trajectory/heading 4**. Values are standardized per rig, joint and channel. The grid combines a rest column with noisy target frames.  
+   unclear: The reference for “rotation Δ” is not stated.
+
+2. Each token becomes a **896-dimensional representation by adding six contributions**: projected motion channels, frame-index lookup, joint-slot lookup, target-frame mask, encoded joint description, and projected tree features. The description passes through LLM2Vec and a linear layer; tree features pass through an MLP. Separately, the caption passes through LLM2Vec and an MLP, and time passes through another MLP; their sum is conditioning \(c\).  
+   unclear: “mask m” does not specify what representation is being added to the other embeddings.
+
+3. The transformer repeats temporal attention → spatial attention → feed-forward network. **Temporal attention connects one joint across frames; spatial attention connects joints within one frame**, with a tree-distance bias. Those two operations are explained well. The feed-forward network is named but its operation is not explained. Conditioning \(c\) supplies AdaLN shift, scale and gate: the inset shows normalization, scaling and shifting before \(f\), followed by gating and a residual addition. The head is explicitly **LN → linear, 896 → 17**, predicting clean motion \(\hat{x}_1\).  
+   unclear: “every sub-layer, and the head” appears to apply the entire residual inset to the head; its identity residual cannot be added to a 17-dimensional output from a 896-dimensional input.
+
+4. Sampling uses the clean-motion prediction in
+   \[
+   x \leftarrow x+\frac{\hat{x}_1-x}{20-i}.
+   \]
+   Only target frames change. **Updated \(x\), rather than \(\hat{x}_1\) directly, returns to the 17-channel projection.** That is now readable. The rest column remains unchanged. After 20 steps, rotations pass through FK and skinning. An unseen rig uses the same pass, with optional LoRA on the transformer using approximately ten clips.  
+   unclear: The starting value of \(i\) is unspecified, and the schedule above sampling is connected to the orange time input only through the shared symbol \(t\).
+
+The numerical claims are **311 rigs; 34–102 joints; 17 channels per joint token; 240 noisy target frames plus rest; \(D=896\); eight tree features; 14 transformer blocks; tree-distance penalty capped at eight hops; 20 Euler steps with \(t=i/20\); and approximately ten clips for optional LoRA**. The example caption requests “the moose runs and then slows to a walk.” Root channels explicitly carry trajectory and heading.
+
+**Yes, the reader now sees a concrete model.** Token composition, the two attention axes, the clean-motion head and the returned sampling state are explicit. The remaining architectural weakness is the explanation of the FFN and the head’s conditioning.
+
+At 5.5 inches, the clearest undersized labels are the tree-feature list; “tree bias −min(hops, 8)”; the clean-motion definition beneath the head; the AdaLN conditioning line, “1+scale,” “shift,” “gate,” and its footer; the Euler/time heading; and “rotations → FK → skinned.” Several essential explanations receive the smallest type.
+
+The problematic connector is the **short teal arrow at the tree-feature MLP’s right edge**: it points left into the box and overlaps the vertical summation connection. It can be read as the sum feeding the MLP. The long indigo feedback path has a clear destination now.
+
+Stages **2 and 3 are disproportionately dense**, especially the bottom of stage 3. Stage 4 gives substantially more space to its animal rendering and adaptation note.
+
+**8/10** for explaining the method correctly from this figure alone. The three most valuable changes:
+
+1. **Separate head conditioning from the residual AdaLN anatomy.** Restrict the inset’s scope explicitly and give the head its own conditioning annotation. Add one short functional explanation beneath “feed-forward network.”
+2. **Repair the tree-MLP output connection and finish the loop labels.** Move the sum bus clear of the box, point the MLP output toward it, print \(i=0,\ldots,19\), and place \(t=i/20\) beside the orange time input.
+3. **Reallocate space to readable explanations.** Widen stages 2–3, reduce the stage-4 rendering and callout footprint, and bring the essential small labels to at least the stated 32-canvas-pixel threshold.
+codex rc=0

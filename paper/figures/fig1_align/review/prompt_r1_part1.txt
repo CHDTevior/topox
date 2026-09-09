@@ -1,0 +1,23 @@
+Blind figure review, round 1, part 1. Judge only from the attached image; do not read source or any text file.
+- The attached image is the whole figure (1800 × 1100 canvas rendered at 2×), read at 5.5 inches wide in a paper — every
+  judgement about size is at that width (a 32 px label on the canvas is 7 pt on the page).
+
+The work is a method-overview figure: a Figure 1 drawn by a paper's authors in the paper's own idiom (Times labels; teal for
+everything derived from the skeleton, clay for the caption and time conditioning path, grey data tokens, ink flow, white page),
+read at 5.5 in, built in the order: regions and panels → token grid → illustrations → connections → labels. You have not read the
+paper. Explain only what the figure shows.
+
+1. Explain the method in the order the figure reads: who acts, what passes between steps, what each decision changes, what
+   persists through a loop, what ends it. Put "unclear:" in front of any sentence where the figure leaves you unsure. Do not fill
+   gaps from what such methods usually do. Then state the counts, limits and trajectories the figure claims. Take the space this
+   needs.
+
+=== SCOPE LIMITS (these bound what you PROPOSE, never what you look for) ===
+1. Not a security product. Cooperating operator on their own machine. No over-defense.
+2. No hashes, checksums or fingerprints.
+3. No defensive scaffolding: no feature flags, migration frameworks, compatibility layers, wrappers, validators, evidence files or JSON state machines.
+4. No corner-case obsession.
+5. Where judgement is needed, judge; no scoring tables, checklists, or re-verification of settled things.
+6. Propose the direct visual or craft change, not helper programs or gate machinery.
+7. Deliverable text is not a defense transcript; no caveat sprinkling.
+Report anything actually wrong. Say plainly when something is right. Be concrete and blunt. No preamble.

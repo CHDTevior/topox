@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TopX — Figure 1 (ALIGN method-figure-loop)</title>
+<style>
+  body { margin: 0; background: #f2f2f2; font: 14px/1.4 "Nimbus Roman", "Times New Roman", Times, serif; color: #222; }
+  #host canvas { width: 900px; height: 500px; display: block; margin: 16px auto 8px; background: #fff; box-shadow: 0 0 0 1px #ccc; }
+  #controls { width: 900px; margin: 0 auto 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #controls button { font: inherit; padding: 2px 8px; } #controls button.on { background: #1F6F8B; color: #fff; }
+  #scrub { flex: 1; } #svg-host, #svg-out { display: none; } body.svgonly > * { display: none; } body.svgonly #svg-out { display: block; }
+  #err { color: #b00; white-space: pre-wrap; width: 900px; margin: 0 auto; }
+</style>
+<script src="vendor/p5.min.js"></script>
+<script src="vendor/p5.svg.js"></script>
+<script src="thumbs.js"></script>
+<script>
+// p5.js-svg 1.5.1 with p5 1.9.4 wrapper (from ALIGN's example page): p5's transpiled Renderer2D constructor returns a NEW object
+// which p5.svg discards; return the object p5 actually built, and give svgcanvas an ellipse() (p5 1.9 draws circle/arc through it).
+(function () {
+  const OrigSVG = p5.RendererSVG;
+  p5.RendererSVG = function (elt, pInst, isMain) {
+    const R2D = p5.Renderer2D; let made = null;
+    const Tmp = function () { made = R2D.apply(this, arguments); return made; };
+    Tmp.prototype = R2D.prototype; p5.Renderer2D = Tmp;
+    let shell; try { shell = new OrigSVG(elt, pInst, isMain); } finally { p5.Renderer2D = R2D; }
+    Object.setPrototypeOf(made, OrigSVG.prototype);
+    made.isSVG = shell.isSVG; made.svg = shell.svg;
+    const ctxProto = Object.getPrototypeOf(made.drawingContext);
+    if (!ctxProto.ellipse) ctxProto.ellipse = function (x, y, rx, ry, rot, a0, a1, ccw) {
+      rot = rot || 0; if (a0 === undefined) { a0 = 0; a1 = Math.PI * 2; }
+      const TAU = Math.PI * 2; let span = a1 - a0;
+      if (!ccw) { if (span < 0) span += TAU * Math.ceil(-span / TAU); if (span > TAU) span = TAU; }
+      else { if (span > 0) span -= TAU * Math.ceil(span / TAU); if (span < -TAU) span = -TAU; }
+      const n = Math.max(8, Math.ceil(Math.abs(span) / TAU * 72));
+      for (let i = 0; i <= n; i++) { const a = a0 + span * i / n, px = rx * Math.cos(a), py = ry * Math.sin(a);
+        const X = x + px * Math.cos(rot) - py * Math.sin(rot), Y = y + px * Math.sin(rot) + py * Math.cos(rot);
+        if (i === 0) this.moveTo(X, Y); else this.lineTo(X, Y); }
+    };
+    return made;
+  };
+  p5.RendererSVG.prototype = OrigSVG.prototype;
+})();
+</script>
+</head>
+<body>
+<div id="host"></div>
+<div id="controls">
+  <button data-stage="1">regions</button><button data-stage="2">representation</button><button data-stage="3">illustrations &amp; callouts</button>
+  <button data-stage="4">connections</button><button data-stage="5">labels</button>
+  <input type="range" id="scrub" min="0" max="1000" value="1000"><span id="pval">p = 1.000</span><button id="export">export SVG</button>
+</div>
+<div id="svg-host"></div><div id="svg-out"></div><pre id="err"></pre>
+<script>
+window.addEventListener('error', e => { document.getElementById('err').textContent += e.message + ' @' + (e.filename||'').split('/').pop() + ':' + e.lineno + '\n'; });
+// TopX Figure 1 as a p5 program (ALIGN trial, v6 = redesign: tinted stage bands, three accents, bold glyphs, straight lanes,
+// boxes sized to their text, icons for frozen / tree / time). Every mark is {stage, draw(g)}; all geometry is decided at build time.
+const W = 1800, H = 1100, NSTAGE = 5;
+const FACE = 'Nimbus Roman';
+const S_HEAD = 40, S_LAB = 34, S_SUB = 32;
+const TEAL = '#1F7F93', TEAL_D = '#0E4F5E', TEAL_BG = '#D7ECF0', INDIGO = '#5B5FA8', INDIGO_L = '#C9CAE6', INDIGO_BG = '#EBEBF6',
+      CLAY = '#B5552F', CLAY_BG = '#F8E5DA', INK = '#2B2B2B', GREY = '#6E6E6E', CELL = '#DADADA';
+const BAND = ['#F7F2EA', '#EDF4F6', '#F0EFF8', '#FAF1EB'];          // one very light tint per stage: sand, mist, lavender, clay
+const T = {}; let MARKS = null, P = 1, main = null, svgInst = null;
+
+// ---------- primitives ----------
+function txt(g, s, x, y, size, opts) {
+  opts = opts || {}; g.push(); g.noStroke(); g.fill(opts.col || INK); g.textFont(FACE); g.textSize(size);
+  g.textStyle(opts.bold ? g.BOLD : (opts.italic ? g.ITALIC : g.NORMAL)); g.textAlign(opts.align || g.LEFT, opts.valign || g.BASELINE);
+  if (opts.rot) { g.translate(x, y); g.rotate(opts.rot); g.text(s, 0, 0); } else g.text(s, x, y); g.pop();
+}
+function measure(s, str, size, bold) { s.push(); s.textFont(FACE); s.textSize(size); s.textStyle(bold ? s.BOLD : s.NORMAL); const w = s.textWidth(str); s.pop(); return w; }
+function rrect(g, x, y, w, h, opts) { opts = opts || {}; g.push(); if (opts.stroke) { g.stroke(opts.stroke); g.strokeWeight(opts.sw || 3); } else g.noStroke(); g.fill(opts.fill || '#fff'); g.rect(x, y, w, h, opts.r === undefined ? 10 : opts.r); g.pop(); }
+function cell(g, x, y, w, h, col) { g.push(); g.noStroke(); g.fill(col); g.rect(x, y, w, h, 3); g.pop(); }
+function line(g, pts, col, sw, head) {
+  g.push(); g.stroke(col); g.strokeWeight(sw); g.noFill(); g.strokeJoin(g.ROUND); g.strokeCap(g.ROUND);
+  g.beginShape(); for (const p of pts) g.vertex(p[0], p[1]); g.endShape(); g.pop();
+  if (head) { const a = pts[pts.length - 2], b = pts[pts.length - 1], ang = Math.atan2(b[1] - a[1], b[0] - a[0]), L = head;
+    g.push(); g.noStroke(); g.fill(col); g.translate(b[0], b[1]); g.rotate(ang); g.triangle(0, 0, -L, -L * 0.42, -L, L * 0.42); g.pop(); }
+}
+function img(g, name, x, y, w) { const im = T[name]; if (!im) return 0; const h = w * im.height / im.width; g.image(im, x, y, w, h); return h; }
+function imgH(name, w) { const im = T[name]; return im ? w * im.height / im.width : 0; }
+function plus(g, x, y, col, r) { r = r || 20; g.push(); g.stroke(col); g.strokeWeight(r > 16 ? 3 : 2.5); g.fill('#fff'); g.circle(x, y, 2 * r); g.strokeWeight(r > 16 ? 3.5 : 2.5); const d = r * 0.55; g.line(x - d, y, x + d, y); g.line(x, y - d, x, y + d); g.pop(); }
+function port(g, x, y) { g.push(); g.stroke(CLAY); g.strokeWeight(3); g.fill(CLAY_BG); g.rect(x - 11, y - 11, 22, 22, 3); g.pop(); }
+function lock(g, x, y, k) {   // a small padlock: shackle + body; k = scale
+  g.push(); g.noFill(); g.stroke(GREY); g.strokeWeight(2.5 * k); g.arc(x, y - 9 * k, 16 * k, 18 * k, Math.PI, 2 * Math.PI); g.fill(GREY); g.noStroke(); g.rect(x - 11 * k, y - 4 * k, 22 * k, 18 * k, 3 * k); g.pop();
+}
+function treeIcon(g, x, y, col) {   // a small kinematic tree: root, two children, four leaves
+  g.push(); g.stroke(col); g.strokeWeight(3); const p = [[x, y - 26], [x - 16, y - 4], [x + 16, y - 4], [x - 24, y + 20], [x - 8, y + 20], [x + 8, y + 20], [x + 24, y + 20]];
+  const e = [[0, 1], [0, 2], [1, 3], [1, 4], [2, 5], [2, 6]]; for (const [a, b] of e) g.line(p[a][0], p[a][1], p[b][0], p[b][1]);
+  g.noStroke(); g.fill(col); for (const q of p) g.circle(q[0], q[1], 9); g.pop();
+}
+function dial(g, x, y) { g.push(); g.stroke(CLAY); g.strokeWeight(3); g.fill(CLAY_BG); g.circle(x, y, 40); g.pop(); txt(g, 't', x - 1, y + 11, 32, { col: CLAY, italic: true, align: g.CENTER }); }
+function miniGrid(g, x, y, mode, hi) {   // 6 x 3 cells; a row (a joint over frames) or a column (a frame over joints) highlighted
+  const cw = 22, ch = 18, gap = 5;
+  for (let c = 0; c < 6; c++) for (let r = 0; r < 3; r++) { const on = mode === 'row' ? r === 1 : c === 2; cell(g, x + c * (cw + gap), y + r * (ch + gap), cw, ch, on ? hi : CELL); }
+  g.push(); g.stroke(hi); g.strokeWeight(3);
+  if (mode === 'row') g.line(x, y + (ch + gap) + ch / 2, x + 6 * (cw + gap) - gap, y + (ch + gap) + ch / 2);
+  else g.line(x + 2 * (cw + gap) + cw / 2, y, x + 2 * (cw + gap) + cw / 2, y + 3 * (ch + gap) - gap);
+  g.pop();
+}
+// a box sized to its label: returns {x,y,w,h,cx,cy}; label(s) drawn by the labels stage via box.draw
+function makeBox(s, x, y, lines, opts) {
+  opts = opts || {}; const size = opts.size || S_SUB, pad = opts.pad === undefined ? 16 : opts.pad, lh = size * 1.12;
+  const tw = Math.max(...lines.map(l => measure(s, l, size, opts.bold))) + (opts.icon ? 40 : 0);
+  const w = Math.max(opts.minW || 0, tw + 2 * pad), h = lines.length * lh + 2 * pad - size * 0.2;
+  return { x, y, w, h, cx: x + w / 2, cy: y + h / 2, lines, size, opts };
+}
+function drawBoxFrame(g, b) { rrect(g, b.x, b.y, b.w, b.h, { stroke: b.opts.stroke || INK, sw: b.opts.sw || 2.5, fill: b.opts.fill || '#fff', r: 9 }); }
+function drawBoxText(g, b) {
+  const size = b.size, lh = size * 1.12, n = b.lines.length, x0 = b.cx - (b.opts.icon ? 20 : 0);
+  b.lines.forEach((l, i) => txt(g, l, x0, b.cy + (i - (n - 1) / 2) * lh + size * 0.36, size, { col: b.opts.col || INK, align: g.CENTER }));
+  if (b.opts.icon === 'lock') lock(g, b.x + b.w - 30, b.cy, 1.0);
+}
+
+// ---------- layout (v8: every module named by its input and its destination; the token SUM, the head, the AdaLN anatomy and the Euler update node are drawn) ----------
+const BANDS = [{ x: 30, w: 430, title: 'Any rig → tokens' }, { x: 480, w: 440, title: 'Token embedding' }, { x: 940, w: 430, title: 'Transformer' }, { x: 1390, w: 380, title: 'Sample & decode' }];
+const BAND_Y = 40, BAND_H = 1030;
+const CH = [{ n: 3, col: '#2A9D8F', lab: 'position 3' }, { n: 6, col: '#1F7F93', lab: 'rotation Δ 6' }, { n: 3, col: '#8FB3C9', lab: 'velocity 3' }, { n: 1, col: '#D9A441', lab: 'contact 1' }, { n: 4, col: '#5B5FA8', lab: 'root 4 (trajectory, heading)' }];
+const LEG_ROWS = [[0, 1], [2, 3], [4]];
+const STRIP = { x: 50, y: 576, w: 380, h: 30 };
+const SEQ = { x0: 50, y0: 736, colW: 48, gap: 6, rowH: 18, rowGap: 4, rows: 7, cols: 7 };
+const seqRight = SEQ.x0 + SEQ.cols * SEQ.colW + (SEQ.cols - 1) * SEQ.gap, seqBottom = SEQ.y0 + SEQ.rows * SEQ.rowH + (SEQ.rows - 1) * SEQ.rowGap;
+const BUS_X = 880, SUM = [880, 191];                 // the token sum: every addend joins the bus, the bus ends in ⊕
+const BLK = { x: 990, y: 130, w: 360, h: 538 };
+const RAIL_X = 962;
+const SUB = [{ y: 182, h: 160, name: 'temporal attention', sub: 'a joint over frames', icon: 'row' }, { y: 356, h: 196, name: 'spatial attention', sub: 'a frame over joints', icon: 'col' }, { y: 566, h: 84, name: 'feed-forward', sub: 'per token, D→4D→D', icon: null }];
+const HEAD_Y = 684;
+const ADA = { x: 986, y: 808, cy: 906 };             // AdaLN anatomy inset (band 3, under the head)
+function channelStrip(g, s) {   // one joint's 17 channels as a coloured strip, segment width proportional to the channel count
+  let x = s.x; const total = CH.reduce((a, c) => a + c.n, 0);
+  for (const c of CH) { const w = s.w * c.n / total; g.push(); g.noStroke(); g.fill(c.col); g.rect(x, s.y, w - 3, s.h, 4); g.pop(); x += w; }
+}
+function xhat1(g, x, y, size, col) {   // x̂₁ drawn by hand: italic x, a hat, a small 1; returns the width
+  const w = measure(g, 'x', size, false); txt(g, 'x', x, y, size, { col: col, italic: true });
+  g.push(); g.stroke(col); g.strokeWeight(Math.max(1.5, size * 0.06)); g.noFill(); const cx = x + w * 0.62, top = y - size * 0.8, hw = size * 0.16, hh = size * 0.11;
+  g.line(cx - hw, top + hh, cx, top); g.line(cx, top, cx + hw, top + hh); g.pop();
+  const s1 = size * 0.62; txt(g, '1', x + w + 1, y + size * 0.18, s1, { col: col }); return w + 1 + measure(g, '1', s1, false) + size * 0.32;
+}
+function xhat1Width(g, size) { return measure(g, 'x', size, false) + 1 + measure(g, '1', size * 0.62, false) + size * 0.32; }
+const TREE_P = [[0, -26], [-16, -4], [16, -4], [-24, 20], [-8, 20], [8, 20], [24, 20]], TREE_E = [[0, 1], [0, 2], [1, 3], [1, 4], [2, 5], [2, 6]];
+function treeHops(src) { const adj = {}; TREE_E.forEach(([a, b]) => { (adj[a] = adj[a] || []).push(b); (adj[b] = adj[b] || []).push(a); }); const d = { [src]: 0 }, q = [src]; while (q.length) { const u = q.shift(); for (const v of adj[u]) if (d[v] === undefined) { d[v] = d[u] + 1; q.push(v); } } return d; }
+function mixHex(a, b, u) { const pa = [1, 3, 5].map(i => parseInt(a.substr(i, 2), 16)), pb = [1, 3, 5].map(i => parseInt(b.substr(i, 2), 16)); return '#' + pa.map((v, i) => Math.round(v + (pb[i] - v) * u).toString(16).padStart(2, '0')).join(''); }
+function treeGlyph(g, x, y, k, opts) {   // opts.hi = highlighted joint; opts.byHops colours the other joints by hop distance; opts.attn draws attention edges from hi
+  opts = opts || {}; const P = TREE_P.map(([px, py]) => [x + px * k, y + py * k]); const hops = opts.hi !== undefined ? treeHops(opts.hi) : null;
+  g.push(); g.stroke(opts.edge || '#9AA0A6'); g.strokeWeight(2.5 * k); for (const [a, b] of TREE_E) g.line(P[a][0], P[a][1], P[b][0], P[b][1]); g.pop();
+  if (opts.attn && hops) { g.push(); for (let i = 0; i < P.length; i++) if (i !== opts.hi) { const u = Math.min(hops[i], 4) / 4; g.stroke(mixHex(INDIGO, INDIGO_L, u)); g.strokeWeight(2 * k); g.line(P[opts.hi][0], P[opts.hi][1], P[i][0], P[i][1]); } g.pop(); }
+  g.push(); g.noStroke(); for (let i = 0; i < P.length; i++) { let c = opts.col || CELL; if (hops && i !== opts.hi && opts.byHops) c = mixHex(INDIGO, INDIGO_L, Math.min(hops[i], 4) / 4); if (i === opts.hi) c = INDIGO; g.fill(c); g.circle(P[i][0], P[i][1], (i === opts.hi ? 12 : 9) * k); } g.pop();
+  return P;
+}
+function times(g, x, y, col, r) { r = r || 15; g.push(); g.stroke(col); g.strokeWeight(2.5); g.fill('#fff'); g.circle(x, y, 2 * r); const d = r * 0.5; g.line(x - d, y - d, x + d, y + d); g.line(x - d, y + d, x + d, y - d); g.pop(); }
+
+function buildMarks(s) {
+  const M = []; const add = (stage, draw) => M.push({ stage, draw });
+  const fix = (b, h) => { b.h = h || 52; b.cy = b.y + b.h / 2; return b; };
+  // ---- band 2: the six terms of one token, then caption and flow time -> c ----
+  const bLin  = fix(makeBox(s, 500, 165, ['17 channels → linear'], { pad: 12 }));
+  const bPos  = fix(makeBox(s, 500, 253, ['frame index → table'], { stroke: GREY, sw: 2, col: GREY, pad: 12 }));
+  const bSlot = fix(makeBox(s, 500, 329, ['joint slot → table'], { stroke: GREY, sw: 2, col: GREY, pad: 12 }));
+  const bMask = fix(makeBox(s, 500, 405, ['target frame → mask m'], { stroke: INDIGO, fill: INDIGO_BG, col: INDIGO, pad: 12 }));
+  const bDesc = fix(makeBox(s, 500, 512, ['“the left front foot”'], { stroke: TEAL, fill: TEAL_BG, col: TEAL_D, pad: 12 }));
+  const bLLMa = fix(makeBox(s, 500, 588, ['LLM2Vec → linear'], { icon: 'lock', stroke: GREY, sw: 2, pad: 12 }), 56);
+  const bTree = fix(makeBox(s, 560, 722, ['8 tree features → MLP'], { pad: 12, size: 28 }));
+  const treeXY = [506, bTree.cy];
+  const bCap  = makeBox(s, 500, 890, ['“the moose runs and', 'then slows to a walk”'], { stroke: CLAY, fill: CLAY_BG, col: CLAY, pad: 12, size: 30 });
+  const bLLMb = fix(makeBox(s, 500, 1002, ['LLM2Vec → MLP'], { icon: 'lock', stroke: GREY, sw: 2, pad: 12 }), 56);
+  const bMLPt = fix(makeBox(s, 830, 940, ['MLP'], { minW: 80, pad: 10 }));
+  const dialXY = [870, 900];
+  const plusC = [870, bLLMb.cy];
+  // ---- band 3: head ---- band 4: the Euler update node, the unseen-rig note ----
+  const bHead = fix(makeBox(s, BLK.x + 60, HEAD_Y, ['LN · linear D → 17'], { pad: 12 }));
+  const bUp = makeBox(s, 1404, 280, ['x ← x + (x1 − x) / (20 − i)', 'target frames, i = 0 … 19'], { stroke: INDIGO, fill: INDIGO_BG, col: INDIGO, pad: 12, size: 28 }); bUp.lines = ['', 'target frames, i = 0 … 19'];
+  const bUnseen = makeBox(s, 1404, 890, ['unseen rig: same pass;', 'optional LoRA on the', 'transformer (~10 clips)'], { stroke: TEAL, sw: 2.5, col: INK, pad: 14 });
+  const boxes = [bLin, bPos, bSlot, bMask, bDesc, bLLMa, bTree, bCap, bLLMb, bMLPt, bHead, bUp, bUnseen];
+  // AdaLN inset geometry: h → LN → ⊗(1+scale) → ⊕shift → f → ⊗gate → ⊕ → h′, with the residual bypass
+  const A = { h: 986, ln: [1014, 1064], x1: 1094, p1: 1144, f: [1174, 1218], x2: 1254, p2: 1304, hp: 1326, cy: ADA.cy, r: 15, bypass: 964 };
+
+  // ---- stage 1: bands, titles, panels, box frames ----
+  BANDS.forEach((b, i) => add(1, g => rrect(g, b.x, BAND_Y, b.w, BAND_H, { fill: BAND[i], r: 18 })));
+  BANDS.forEach((b, i) => add(1, g => { g.push(); g.noStroke(); g.fill([TEAL, TEAL, INDIGO, CLAY][i]); g.circle(b.x + 36, 82, 34); g.pop(); txt(g, String(i + 1), b.x + 36, 93, 26, { col: '#fff', bold: true, align: g.CENTER }); txt(g, b.title, b.x + 62, 96, S_HEAD, { bold: true }); }));
+  add(1, g => { rrect(g, BLK.x + 10, BLK.y + 10, BLK.w, BLK.h, { fill: '#E4E3EF', r: 12 }); rrect(g, BLK.x, BLK.y, BLK.w, BLK.h, { stroke: INK, sw: 3, fill: '#fff', r: 12 }); });
+  for (const sb of SUB) add(1, g => rrect(g, BLK.x + 20, sb.y, BLK.w - 40, sb.h, { stroke: sb.icon === 'col' ? INDIGO : INK, sw: 2.5, fill: sb.icon === 'col' ? INDIGO_BG : '#fff', r: 8 }));
+  add(1, g => rrect(g, BLK.x + 16, BLK.y + 12, 64, 30, { fill: INK, r: 15 }));
+  for (const b of boxes) add(1, g => drawBoxFrame(g, b));
+  add(1, g => { rrect(g, A.ln[0], A.cy - 22, A.ln[1] - A.ln[0], 44, { stroke: INK, sw: 2.5, fill: '#fff', r: 6 }); rrect(g, A.f[0], A.cy - 22, A.f[1] - A.f[0], 44, { stroke: INK, sw: 2.5, fill: '#fff', r: 6 }); });
+
+  // ---- stage 2: representation — the channel strip and the sequence ----
+  add(2, g => channelStrip(g, STRIP));
+  for (let c = 0; c < SEQ.cols; c++) for (let r = 0; r < SEQ.rows; r++) add(2, g => cell(g, SEQ.x0 + c * (SEQ.colW + SEQ.gap), SEQ.y0 + r * (SEQ.rowH + SEQ.rowGap), SEQ.colW, SEQ.rowH, c === 0 ? TEAL : INDIGO_L));
+  add(2, g => { g.push(); g.stroke(GREY); g.strokeWeight(2); g.noFill(); const y = seqBottom + 12, x1 = SEQ.x0 + SEQ.colW + SEQ.gap; g.line(x1, y, seqRight, y); g.line(x1, y - 7, x1, y); g.line(seqRight, y - 7, seqRight, y); g.pop(); });
+
+  // ---- stage 3: illustrations ----
+  add(3, g => img(g, 'rig_moose', 60, 112, 320));
+  add(3, g => img(g, 'rig_gharial', 50, 352, 175));
+  add(3, g => img(g, 'rig_lemur', 250, 342, 175));
+  add(3, g => { const y = SUB[0].y + 118, xs = [0, 1, 2, 3].map(k => BLK.x + 72 + k * 72); const pts = xs.map(x => treeGlyph(g, x, y, 0.72, { hi: 3 }));
+    const a = pts[0][3], b = pts[3][3]; line(g, [[a[0] + 6, a[1]], [b[0] - 6, b[1]]], INDIGO, 2.5, 9); line(g, [[b[0] - 6, b[1]], [a[0] + 6, a[1]]], INDIGO, 2.5, 9); });
+  add(3, g => { treeGlyph(g, BLK.x + 92, SUB[1].y + 118, 1.3, { hi: 3, byHops: true, attn: true });
+    const x0 = BLK.x + 190, y0 = SUB[1].y + 100, cw = 26; for (let i = 0; i < 5; i++) cell(g, x0 + i * cw, y0, cw - 2, 16, mixHex(INDIGO, INDIGO_L, i / 4)); });
+  [[1404, 165], [1490, 165], [1576, 165], [1662, 165]].forEach(([x, y], k) => add(3, g => img(g, 'clean_' + k, x, y, 82)));
+  add(3, g => img(g, 'motion_strip', 1400, 410, 350));
+  add(3, g => img(g, 'skinned_moose', 1470, 586, 200));
+  add(3, g => treeIcon(g, treeXY[0], treeXY[1], TEAL));
+  add(3, g => dial(g, dialXY[0], dialXY[1]));
+
+  // ---- stage 4: connections ----
+  add(4, g => line(g, [[STRIP.x + STRIP.w + 6, STRIP.y + STRIP.h / 2], [466, STRIP.y + STRIP.h / 2], [466, bLin.cy], [bLin.x - 6, bLin.cy]], INK, 3.5, 14));            // 17 channels -> linear
+  add(4, g => line(g, [[bLin.x + bLin.w + 4, bLin.cy], [SUM[0] - 22, bLin.cy]], INK, 3.5, 12));                                                                  // into the sum
+  for (const b of [bPos, bSlot, bMask, bLLMa, bTree]) add(4, g => line(g, [[b.x + b.w + 4, b.cy], [BUS_X - 6, b.cy]], b === bMask ? INDIGO : (b === bLLMa || b === bTree ? TEAL : GREY), 3, 12));
+  add(4, g => line(g, [[BUS_X, bTree.cy], [BUS_X, SUM[1] + 22]], INK, 3.5, 12));                                                                                 // the bus carries the addends up into ⊕
+  add(4, g => plus(g, SUM[0], SUM[1], INK));
+  add(4, g => line(g, [[SUM[0] + 22, SUM[1]], [BLK.x - 6, SUM[1]]], INK, 5, 18));                                                                               // one token -> transformer
+  add(4, g => line(g, [[bDesc.x + 60, bDesc.y + bDesc.h + 4], [bDesc.x + 60, bLLMa.y - 6]], TEAL, 3, 12));                                                       // description -> encoder
+  add(4, g => line(g, [[treeXY[0] + 30, treeXY[1]], [bTree.x - 5, treeXY[1]]], TEAL, 3, 9));                                                                    // tree -> features
+  add(4, g => { for (let i = 0; i < 2; i++) { const a = SUB[i], b = SUB[i + 1]; line(g, [[BLK.x + BLK.w / 2, a.y + a.h + 2], [BLK.x + BLK.w / 2, b.y - 2]], INK, 3, 10); } line(g, [[BLK.x + BLK.w / 2, BLK.y + BLK.h + 2], [BLK.x + BLK.w / 2, bHead.y - 4]], INK, 3, 10); });
+  add(4, g => line(g, [[bHead.x + bHead.w + 4, bHead.cy], [1375, bHead.cy], [1375, 192], [1398, 192]], INK, 5, 18));                                              // head -> predicted clean motion
+  add(4, g => line(g, [[1416, 246], [1416, bUp.y - 4]], INK, 4, 14));                                                                                            // prediction -> update
+  add(4, g => line(g, [[bUp.x + bUp.w + 4, bUp.cy], [1760, bUp.cy], [1760, 118], [540, 118], [540, bLin.y - 6]], INDIGO, 3.5, 14));                              // updated x re-embedded, 20 times
+  add(4, g => line(g, [[1416, bUp.y + bUp.h + 4], [1416, 404]], INK, 4, 14));                                                                                    // after 20 steps -> motion
+  add(4, g => line(g, [[1416, 540], [1416, 580]], INK, 4, 14));                                                                                                  // -> FK -> skinned
+  add(4, g => line(g, [[bCap.x + 60, bCap.y + bCap.h + 4], [bCap.x + 60, bLLMb.y - 6]], CLAY, 3, 12));                                                            // caption -> encoder
+  add(4, g => line(g, [[bLLMb.x + bLLMb.w + 4, bLLMb.cy], [plusC[0] - 22, bLLMb.cy]], CLAY, 3, 12));
+  add(4, g => line(g, [[dialXY[0], dialXY[1] + 22], [dialXY[0], bMLPt.y - 6]], CLAY, 3, 12));                                                                    // t -> MLP
+  add(4, g => line(g, [[bMLPt.cx, bMLPt.y + bMLPt.h + 4], [bMLPt.cx, plusC[1] - 22]], CLAY, 3, 12));
+  add(4, g => plus(g, plusC[0], plusC[1], CLAY));
+  add(4, g => { line(g, [[plusC[0] + 22, plusC[1]], [RAIL_X, plusC[1]], [RAIL_X, SUB[0].y + SUB[0].h / 2]], CLAY, 3.5, 0);                                      // c -> the AdaLN rail
+    for (const sb of SUB) { port(g, RAIL_X, sb.y + sb.h / 2); line(g, [[RAIL_X + 11, sb.y + sb.h / 2], [BLK.x + 24, sb.y + sb.h / 2]], CLAY, 3, 10); }
+    port(g, RAIL_X, bHead.cy); line(g, [[RAIL_X + 11, bHead.cy], [bHead.x - 6, bHead.cy]], CLAY, 3, 10); });
+  add(4, g => { const y = A.cy;                                                                                                                                 // AdaLN anatomy
+    line(g, [[A.ln[1], y], [A.x1 - A.r, y]], INK, 2.5, 0); line(g, [[A.x1 + A.r, y], [A.p1 - A.r, y]], INK, 2.5, 0); line(g, [[A.p1 + A.r, y], [A.f[0], y]], INK, 2.5, 0);
+    line(g, [[A.f[1], y], [A.x2 - A.r, y]], INK, 2.5, 0); line(g, [[A.x2 + A.r, y], [A.p2 - A.r, y]], INK, 2.5, 0); line(g, [[A.p2 + A.r, y], [A.hp - 4, y]], INK, 2.5, 8);
+    line(g, [[A.h + 20, y], [A.ln[0], y]], INK, 2.5, 0);
+    line(g, [[A.h + 22, y + 2], [A.h + 22, A.bypass], [A.p2, A.bypass], [A.p2, y + A.r + 2]], INK, 2, 8);                                                        // the residual
+    times(g, A.x1, y, CLAY); plus(g, A.p1, y, CLAY, A.r); times(g, A.x2, y, CLAY); plus(g, A.p2, y, INK, A.r); });
+
+  // ---- stage 5: labels ----
+  add(5, g => txt(g, '311 rigs · 34–102 joints', 50, 516, 32, { col: GREY }));
+  add(5, g => { txt(g, 'one joint, one token: 17 channels', STRIP.x, STRIP.y - 12, 30, { col: INK });
+    LEG_ROWS.forEach((row, r) => { let x = STRIP.x; const y = STRIP.y + STRIP.h + 30 + r * 34; for (const i of row) { const c = CH[i]; g.push(); g.noStroke(); g.fill(c.col); g.circle(x + 8, y - 9, 14); g.pop(); txt(g, c.lab, x + 22, y, 30, { col: INK }); x += 22 + measure(g, c.lab, 30) + 26; } }); });
+  add(5, g => { txt(g, 'rest', SEQ.x0 + SEQ.colW / 2, seqBottom + 44, 30, { col: TEAL, align: g.CENTER });
+    txt(g, '240 noisy target frames', (SEQ.x0 + SEQ.colW + SEQ.gap + seqRight) / 2, seqBottom + 44, 30, { col: INDIGO, align: g.CENTER });
+    txt(g, 'standardised per rig,', SEQ.x0, seqBottom + 86, 30, { col: GREY }); txt(g, 'joint and channel', SEQ.x0, seqBottom + 118, 30, { col: GREY }); });
+  add(5, g => txt(g, 'one token, D = 896', 905, 150, 30, { col: INK, align: g.RIGHT }));
+  for (const b of boxes) add(5, g => drawBoxText(g, b));
+  add(5, g => { txt(g, 'which joint: its description', bDesc.x, bDesc.y - 10, 30, { col: TEAL });
+    txt(g, 'where in this rig’s tree', bDesc.x, bTree.y - 22, 30, { col: TEAL });
+    txt(g, 'offset direction · bone length · depth', 500, 808, 28, { col: GREY }); txt(g, 'path to root · children · leaf', 500, 838, 28, { col: GREY });
+    txt(g, 'caption', bCap.x, bCap.y - 10, 30, { col: CLAY }); txt(g, 'flow time t', 912, dialXY[1] - 30, 28, { col: CLAY, align: g.RIGHT });
+    txt(g, 'c', plusC[0] + 30, plusC[1] - 12, 32, { col: CLAY, italic: true }); });
+  for (const sb of SUB) add(5, g => { txt(g, sb.name, BLK.x + 40, sb.y + 36, S_LAB); if (sb.sub) txt(g, sb.sub, BLK.x + 40, sb.y + 68, S_SUB, { col: GREY }); });
+  add(5, g => { txt(g, 'tree bias −min(hops, 8)', BLK.x + BLK.w - 28, SUB[1].y + 184, 30, { col: INDIGO, align: g.RIGHT }); txt(g, '1 hop', BLK.x + 190, SUB[1].y + 140, 24, { col: GREY }); txt(g, '8 hops', BLK.x + 190 + 5 * 26 - 2, SUB[1].y + 140, 24, { col: GREY, align: g.RIGHT });
+    txt(g, '×14', BLK.x + 48, BLK.y + 34, 28, { col: '#fff', bold: true, align: g.CENTER });
+    const rest = ' = predicted clean motion', tw = xhat1Width(g, 30) + measure(g, rest, 30); let x0 = BLK.x + BLK.w / 2 - tw / 2; x0 += xhat1(g, x0, 768, 30, INK); txt(g, rest, x0, 768, 30, { col: INK }); });
+  add(5, g => { txt(g, 'AdaLN', ADA.x, ADA.y, 34, { col: CLAY, bold: true }); txt(g, 'c → linear → shift, scale, gate', ADA.x, ADA.y + 36, 28, { col: GREY });
+    txt(g, 'h', A.h, A.cy + 10, 30, { italic: true }); txt(g, 'LN', (A.ln[0] + A.ln[1]) / 2, A.cy + 9, 26, { align: g.CENTER }); txt(g, 'f', (A.f[0] + A.f[1]) / 2, A.cy + 10, 30, { italic: true, align: g.CENTER }); txt(g, 'h′', A.hp, A.cy + 10, 30, { italic: true });
+    txt(g, '1+scale', A.x1, A.cy - 30, 26, { col: CLAY, align: g.CENTER }); txt(g, 'shift', A.p1, A.cy + 48, 26, { col: CLAY, align: g.CENTER }); txt(g, 'gate', A.x2, A.cy - 30, 26, { col: CLAY, align: g.CENTER });
+    txt(g, 'every sub-layer; the head takes', ADA.x, A.bypass + 38, 28, { col: GREY }); txt(g, 'shift and scale only', ADA.x, A.bypass + 68, 28, { col: GREY }); });
+  add(5, g => { const sz = 28, lh = sz * 1.12, y0 = bUp.cy - lh / 2 + sz * 0.36, p1 = 'x ← x + (', p3 = ' − x) / (20 − i)';
+    const tw = measure(g, p1, sz) + xhat1Width(g, sz) + measure(g, p3, sz); let x0 = bUp.cx - tw / 2;
+    txt(g, p1, x0, y0, sz, { col: INDIGO }); x0 += measure(g, p1, sz); x0 += xhat1(g, x0, y0, sz, INDIGO); txt(g, p3, x0, y0, sz, { col: INDIGO }); });
+  add(5, g => { txt(g, '×20 Euler steps, t = i/20', 1404, 150, 30, { col: INDIGO }); txt(g, 'after 20 steps', 1436, 396, 30, { col: GREY }); txt(g, 'rotations → FK → skinned', 1436, 570, 30, { col: GREY }); });
+  return M;
+}
+function paint(g, p) {
+  g.push(); g.background(255); g.pop();
+  const eps = 1e-6;
+  for (let k = 1; k <= NSTAGE; k++) {
+    let f = p * NSTAGE - (k - 1); f = f > 1 - eps ? 1 : f < eps ? 0 : f;
+    if (f <= 0) break;
+    const ms = MARKS.filter(m => m.stage === k); const n = Math.floor(f * ms.length + eps);
+    for (let i = 0; i < n; i++) ms[i].draw(g);
+  }
+}
+function parseHash() { const out = {}; for (const kv of location.hash.replace(/^#/, '').split('&')) { if (!kv) continue; const [k, v] = kv.split('='); out[k] = v === undefined ? true : decodeURIComponent(v); } return out; }
+function setP(p, fromSlider) {
+  P = Math.min(1, Math.max(0, p)); if (!fromSlider) document.getElementById('scrub').value = Math.round(P * 1000);
+  document.getElementById('pval').textContent = 'p = ' + P.toFixed(3);
+  document.querySelectorAll('#controls [data-stage]').forEach(b => b.classList.toggle('on', Math.abs(P - (+b.dataset.stage) / NSTAGE) < 1e-6));
+  if (main) main.redraw();
+}
+function applyHash() { const q = parseHash(); if (q.stage) setP((+q.stage) / NSTAGE); else if (q.p !== undefined && q.p !== true) setP(+q.p); if (q.svg !== undefined) { document.body.classList.add('svgonly'); buildSVGSafe(false); } }
+function buildSVG(download) {
+  const host = document.getElementById('svg-host'); host.innerHTML = '';
+  svgInst = new p5(s => {
+    s.preload = () => { for (const k in (window.THUMBS || {})) T[k] = s.loadImage(THUMBS[k]); };
+    s.setup = () => { s.createCanvas(W, H, s.SVG).parent(host); s.noLoop(); s.pixelDensity(1); paint(s, 1);
+      const el = host.querySelector('svg');
+      if (el) { el.setAttribute('viewBox', '0 0 ' + W + ' ' + H); el.setAttribute('width', W); el.setAttribute('height', H);
+        const out = document.getElementById('svg-out'); out.innerHTML = ''; out.appendChild(el.cloneNode(true)); }
+      if (download) s.save('topx-figure1.svg'); };
+    s.draw = () => {};
+  });
+}
+function buildSVGSafe(download) { try { buildSVG(download); } catch (e) { document.getElementById('err').textContent += 'svg: ' + (e.stack || e) + '\n'; } }
+const SAMPLE = 'A rig is an input Skeleton as context Shared transformer ×14 Predict, integrate, decode 311 rigs · 34–102 joints rest frame, clean target frames, noise-mixed xₜ J joints 240 × 17 channels temporal attention spatial attention MLP tree-distance bias AdaLN x̂₁ clean motion Euler steps caption guidance s = 2 motion of this rig rotations → forward kinematics skinned character rig never seen LoRA joint descriptions caption “the moose runs” LLM2Vec frozen linear structure MLP flow time t added to every token of joint j c: modulation only';
+Promise.all([['bold 44px ' + FACE, SAMPLE], ['34px ' + FACE, SAMPLE], ['32px ' + FACE, SAMPLE]].map(([f, s]) => document.fonts.load(f, s).catch(() => null))).then(() => document.fonts.ready).then(() => {
+  main = new p5(s => {
+    s.preload = () => { for (const k in (window.THUMBS || {})) T[k] = s.loadImage(THUMBS[k]); };
+    s.setup = () => { s.pixelDensity(1); s.createCanvas(W, H).parent('host'); s.noLoop(); MARKS = buildMarks(s);
+      document.getElementById('scrub').addEventListener('input', e => setP((+e.target.value) / 1000, true));
+      document.querySelectorAll('#controls [data-stage]').forEach(b => b.addEventListener('click', () => setP((+b.dataset.stage) / NSTAGE)));
+      document.getElementById('export').addEventListener('click', () => buildSVGSafe(true));
+      window.addEventListener('hashchange', applyHash); applyHash(); setP(P); document.body.dataset.ready = '1'; };
+    s.draw = () => paint(s, P);
+  });
+});
+</script>
+</body>
+</html>

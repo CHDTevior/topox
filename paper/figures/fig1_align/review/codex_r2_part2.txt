@@ -1,0 +1,192 @@
+Reading additional input from stdin...
+OpenAI Codex v0.153.3
+--------
+workdir: /iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/fig1_align
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: max
+reasoning summaries: none
+session id: 01a074ef-c3c1-7d22-9987-5e7ea498268d
+--------
+user
+Blind figure review, round 2, part 2 (fresh thread; you have not read the paper or the source code). Attached, in order:
+- whole.png (the whole figure, 1800 × 1100 canvas at 2×, read at 5.5 inches wide in a paper; 32 px canvas = 7 pt on the page)
+- crop_grid.png (the token grid and what feeds it, 2×) · crop_block.png (the transformer panel, 2×) · crop_lanes.png (the two conditioning lanes, 2×)
+- source_whole.png: the COMPOSITION SOURCE — the arrangement the work borrows (the authors' earlier TikZ draft of the same figure).
+  Compare arrangement, grammar and hierarchy only; the work's palette, type and marks are the chosen identity (the paper's own):
+  judge their execution, never their distance from the source.
+The work is a method-overview figure: a Figure 1 drawn by a paper's authors in the paper's own idiom (Times; teal = skeleton-derived,
+clay = caption/time conditioning, grey data tokens, ink flow, white page).
+Unresolved observations from round 1, quoted:
+- "The structure MLP has no incoming connection, so the figure does not identify which skeleton information it consumes."
+- "recompose the conditioning paths directly beneath their destinations—joint conditioning beneath the grid, caption/time beneath the transformer"
+- "The temporal-attention minigrid crosses its panel's bottom border. 'Tree bias' extends past the spatial panel's right border."
+- "The noisy poses are only roughly 30 canvas px tall … The pale skinned animal also occupies only a small part of its surrounding space."
+- "The rest column has an unexplained decorative-looking cap."
+- "The black input arrow meets the block beside spatial attention … without internal arrows, the execution order is not explicit."
+Visible change made for this round, in the designer's terms: the two conditioning lanes now sit under their destinations (joint
+language under the token grid, caption and time under the transformer, each with its own frozen-encoder box); the tree feeds the
+structure MLP by an explicit branch; the sub-panels were sized around their icons and the internal order is drawn; the rest pose
+points into its column by an arrow; the poses and the skinned crop were enlarged; the modulation rail moved to the block's right.
+Answer as a reader of the paper and a designer of figures would:
+2. As a paper's Figure 1 at 5.5 in: is it worth looking at? Where does the eye land first, second, third; does the distribution
+   of weight and space serve the method; what one change would most improve the whole?
+3. What reads as template-made rather than designed for this method, ranked; for each, what you see, the one change that would
+   help most, and whether it is a parameter of the present construction or a different construction.
+4. Which earlier problems (quoted above) still warrant a redraw?
+6. Which passages hold at reading size — name each and the function it carries. Beyond the quoted observations, what other tell is
+   now material enough to affect the next redraw?
+7. Beside the composition source, arrangement only: which of its conventions does the work keep, which does it break, and does each
+   break help or hurt the reading? Nothing about palette or materials.
+9. One 0–10 for "a reader explains the method correctly from this figure alone".
+=== SCOPE LIMITS (these bound what you PROPOSE, never what you look for) ===
+1. Not a security product; cooperating operator on their own machine; no over-defense. 2. No hashes/checksums. 3. No defensive
+scaffolding. 4. No corner-case obsession. 5. Judge where judgement is needed; no checklists. 6. Propose the direct visual change.
+7. No caveat sprinkling. Report anything actually wrong. Say plainly when something is right. Be concrete and blunt. No preamble.
+warning: Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+hook: SessionStart
+hook: SessionStart Completed
+codex
+I’ll compare the figure and source at reading size, then use the crops to check the connections and containment.
+
+exec
+/usr/bin/bash -lc pwd in /iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/fig1_align
+ succeeded in 0ms:
+/iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/fig1_align
+
+exec
+/usr/bin/bash -lc "rg --files -g 'whole.png' -g 'crop_grid.png' -g 'crop_block.png' -g 'crop_lanes.png' -g 'source_whole.png' -g 'AGENTS.md' review" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/fig1_align
+ succeeded in 0ms:
+review/whole.png
+review/crop_block.png
+review/crop_lanes.png
+review/crop_grid.png
+review/source_whole.png
+
+codex
+The local repairs mostly hold. Two wiring problems remain: the caption/time sum has no outgoing path to AdaLN, and the main input still arrives beside spatial attention. The transformer also dominates the page more than the skeleton representation or motion result.
+
+exec
+/usr/bin/bash -lc "python - <<'PY'
+from PIL import Image
+from pathlib import Path
+for name in ('whole', 'source_whole'):
+    im = Image.open(Path('review') / (name + '.png')).convert('RGB')
+    size = (792, round(im.height * 792 / im.width))
+    out = Path('/tmp') / ('fig1_round2_blind_' + name + '_reading.png')
+    im.resize(size, Image.Resampling.LANCZOS).save(out, dpi=(144, 144))
+    print(f'{name}: {im.size}, inspection preview: {out} {size}, 5.5 in at 144 dpi')
+PY" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/fig1_align
+ succeeded in 195ms:
+whole: (3600, 2200), inspection preview: /tmp/fig1_round2_blind_whole_reading.png (792, 484), 5.5 in at 144 dpi
+source_whole: (1284, 705), inspection preview: /tmp/fig1_round2_blind_source_whole_reading.png (792, 435), 5.5 in at 144 dpi
+
+codex
+At the reading-size preview, the clean rest column, highlighted joint row, and attention-axis icons remain clear. The output representations still read as separate illustrations: their spacing and missing connectors leave “sample and decode” less explicit than the conditioning paths.
+
+codex
+**2.** Yes. The clean rest column, joint conditioning and two attention axes give a reader something useful to understand.
+
+My eye lands first on the tall transformer, second on the teal token grid, third on the clay caption box. The input rigs and finished animal arrive later. That weighting overstates the generic machinery and understates both the skeleton representation and its payoff. Empty space accumulates below the rigs while the conditioning diagram approaches the bottom edge.
+
+**The single most useful change: shorten the transformer stack and raise its caption/time group.** Reduce the cards’ internal space and icon size enough to reclaim roughly a quarter of the stack’s height. The token grid should command more of the composition.
+
+**3.** Ranked:
+
+| Rank | What reads as template-made | Most useful change | Construction |
+|---|---|---|---|
+| 1 | The transformer is a tower of cards inside another card. Its container hierarchy gives routine operations disproportionate importance. | Compress the stack around its labels and attention motifs. | Parameter of the present construction. |
+| 2 | The output column reads as illustrations placed into successive slots: clean poses, motion trail, animal. Their relationships depend on nearby prose. | Join them into an explicit prediction → integration → decoding sequence, with each operation on its connector. | Different construction. |
+| 3 | Four equally emphatic numbered headings make the page resemble a general four-step explainer. “Transformer” receives as much announcement as “Skeleton as context.” | Reduce the heading band’s prominence so the method-specific marks establish the hierarchy. | Parameter of the present construction. |
+
+The Times typography and teal/clay distinction are coherent. The templated impression comes chiefly from container sizing and space allocation.
+
+**4.** Several earlier problems are fixed. The structure MLP now receives an explicit tree branch. Both conditioning lanes sit beneath their destinations. The decorative rest-column cap has become a meaningful arrow. The temporal minigrid and “tree-distance bias” text fit inside their panels. Those repairs should stay.
+
+**The transformer entrance still warrants a redraw.** The black input arrow reaches the outside of the block beside spatial attention. The new internal arrows establish temporal → spatial → MLP, but nothing visibly carries the input to temporal attention. Connect the grid directly to that first operation.
+
+The enlarged noisy poses now distinguish corruption from the clean rest pose; that is enough for their schematic role. The skinned animal is identifiable. Its remaining problem is presentation: the floor-heavy crop and surrounding gaps weaken its role as the result. Tighten that crop and attach it visibly to decoding.
+
+**6.** These passages hold at reading size:
+
+- **Rest pose → teal column, “stays clean”:** establishes the invariant skeleton context.
+- **Joint descriptions + tree structure → highlighted row:** explains conditioning attached to a joint across frames. This is one of the strongest method-specific passages.
+- **Horizontal temporal motif versus vertical spatial motif:** explains the two attention axes without requiring the reader to decode notation.
+- **The caption example:** makes the requested action concrete.
+- **The clean-pose strip and skinned animal:** establish recognizable motion and a usable rigged output, although their computational relationship remains weak.
+- **The unseen-rig callout:** communicates the intended transfer setting and optional adaptation.
+
+The most serious new tell is **the caption/time sum being a dead end**. Both inputs point into the plus, but the AdaLN rail branches from the caption path *before* that plus. No line leaves the sum. Visually, time never reaches AdaLN. Draw the rail from the sum’s output.
+
+The sampling return also lacks a visible source: its right-hand end stops in empty space above the predicted poses. Connect an explicit Euler update to the return arrow, then return it to the target-frame columns.
+
+The grid’s dimensional caption introduces another ambiguity. “240 frames × J joints × 17 ch.” spans the representation without separating the rest column from the target columns. Put the frame-count bracket under the grey columns and label the rest column separately.
+
+There is also one remaining containment defect: the spatial heatmap touches the panel’s right boundary and is crowded by the modulation port. Give the heatmap a clear inset. Enlarging a container has not fully resolved the placement of its contents.
+
+**7.** The work keeps the source’s four-part progression, skeleton examples on the left, poses above the representation, rest column before target columns, highlighted joint row, sampling return above the main path, and unseen-rig note beneath the result. These conventions preserve a recognizable method-overview grammar. It also inherits the source’s loosely connected output gallery; that convention continues to hurt the explanation.
+
+Moving the conditioning paths beneath their destinations **helps**. Replacing the shared lower-left hub with two local encoder boxes makes each route easier to follow. This is the strongest compositional departure.
+
+Changing the transformer’s internal sequence from horizontal to vertical improves the space available for its labels and attention motifs. Its present execution **hurts the overall reading**, because the tower dominates the page and the incoming horizontal flow meets its middle. Vertical ordering can work once the entrance and proportions follow that ordering.
+
+Moving the modulation rail from beneath the operations to their right suits the vertical stack. Running it through the caption rectangle hurts the separation between an input annotation and a connection. Route it outside that rectangle.
+
+Replacing the rest-column cap with an arrow **helps**: the mark now states a relationship. Removing the source’s bracket beneath the target columns **hurts**: the frame count has lost its visible scope.
+
+**9. 6/10.** A reader can explain clean skeleton context, joint conditioning and temporal/spatial attention. To explain sampling and caption/time modulation correctly, they must mentally repair the connections.
+tokens used
+59,458
+**2.** Yes. The clean rest column, joint conditioning and two attention axes give a reader something useful to understand.
+
+My eye lands first on the tall transformer, second on the teal token grid, third on the clay caption box. The input rigs and finished animal arrive later. That weighting overstates the generic machinery and understates both the skeleton representation and its payoff. Empty space accumulates below the rigs while the conditioning diagram approaches the bottom edge.
+
+**The single most useful change: shorten the transformer stack and raise its caption/time group.** Reduce the cards’ internal space and icon size enough to reclaim roughly a quarter of the stack’s height. The token grid should command more of the composition.
+
+**3.** Ranked:
+
+| Rank | What reads as template-made | Most useful change | Construction |
+|---|---|---|---|
+| 1 | The transformer is a tower of cards inside another card. Its container hierarchy gives routine operations disproportionate importance. | Compress the stack around its labels and attention motifs. | Parameter of the present construction. |
+| 2 | The output column reads as illustrations placed into successive slots: clean poses, motion trail, animal. Their relationships depend on nearby prose. | Join them into an explicit prediction → integration → decoding sequence, with each operation on its connector. | Different construction. |
+| 3 | Four equally emphatic numbered headings make the page resemble a general four-step explainer. “Transformer” receives as much announcement as “Skeleton as context.” | Reduce the heading band’s prominence so the method-specific marks establish the hierarchy. | Parameter of the present construction. |
+
+The Times typography and teal/clay distinction are coherent. The templated impression comes chiefly from container sizing and space allocation.
+
+**4.** Several earlier problems are fixed. The structure MLP now receives an explicit tree branch. Both conditioning lanes sit beneath their destinations. The decorative rest-column cap has become a meaningful arrow. The temporal minigrid and “tree-distance bias” text fit inside their panels. Those repairs should stay.
+
+**The transformer entrance still warrants a redraw.** The black input arrow reaches the outside of the block beside spatial attention. The new internal arrows establish temporal → spatial → MLP, but nothing visibly carries the input to temporal attention. Connect the grid directly to that first operation.
+
+The enlarged noisy poses now distinguish corruption from the clean rest pose; that is enough for their schematic role. The skinned animal is identifiable. Its remaining problem is presentation: the floor-heavy crop and surrounding gaps weaken its role as the result. Tighten that crop and attach it visibly to decoding.
+
+**6.** These passages hold at reading size:
+
+- **Rest pose → teal column, “stays clean”:** establishes the invariant skeleton context.
+- **Joint descriptions + tree structure → highlighted row:** explains conditioning attached to a joint across frames. This is one of the strongest method-specific passages.
+- **Horizontal temporal motif versus vertical spatial motif:** explains the two attention axes without requiring the reader to decode notation.
+- **The caption example:** makes the requested action concrete.
+- **The clean-pose strip and skinned animal:** establish recognizable motion and a usable rigged output, although their computational relationship remains weak.
+- **The unseen-rig callout:** communicates the intended transfer setting and optional adaptation.
+
+The most serious new tell is **the caption/time sum being a dead end**. Both inputs point into the plus, but the AdaLN rail branches from the caption path *before* that plus. No line leaves the sum. Visually, time never reaches AdaLN. Draw the rail from the sum’s output.
+
+The sampling return also lacks a visible source: its right-hand end stops in empty space above the predicted poses. Connect an explicit Euler update to the return arrow, then return it to the target-frame columns.
+
+The grid’s dimensional caption introduces another ambiguity. “240 frames × J joints × 17 ch.” spans the representation without separating the rest column from the target columns. Put the frame-count bracket under the grey columns and label the rest column separately.
+
+There is also one remaining containment defect: the spatial heatmap touches the panel’s right boundary and is crowded by the modulation port. Give the heatmap a clear inset. Enlarging a container has not fully resolved the placement of its contents.
+
+**7.** The work keeps the source’s four-part progression, skeleton examples on the left, poses above the representation, rest column before target columns, highlighted joint row, sampling return above the main path, and unseen-rig note beneath the result. These conventions preserve a recognizable method-overview grammar. It also inherits the source’s loosely connected output gallery; that convention continues to hurt the explanation.
+
+Moving the conditioning paths beneath their destinations **helps**. Replacing the shared lower-left hub with two local encoder boxes makes each route easier to follow. This is the strongest compositional departure.
+
+Changing the transformer’s internal sequence from horizontal to vertical improves the space available for its labels and attention motifs. Its present execution **hurts the overall reading**, because the tower dominates the page and the incoming horizontal flow meets its middle. Vertical ordering can work once the entrance and proportions follow that ordering.
+
+Moving the modulation rail from beneath the operations to their right suits the vertical stack. Running it through the caption rectangle hurts the separation between an input annotation and a connection. Route it outside that rectangle.
+
+Replacing the rest-column cap with an arrow **helps**: the mark now states a relationship. Removing the source’s bracket beneath the target columns **hurts**: the frame count has lost its visible scope.
+
+**9. 6/10.** A reader can explain clean skeleton context, joint conditioning and temporal/spatial attention. To explain sampling and caption/time modulation correctly, they must mentally repair the connections.
+codex rc=0

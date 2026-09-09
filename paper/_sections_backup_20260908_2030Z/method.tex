@@ -33,7 +33,7 @@ Truebones rig used in Section~\ref{sec:method:lora}.
 \paragraph{Per-cell normalisation.} Rigs differ in size, proportion and convention by orders of
 magnitude, so every (rig, joint, channel) cell is standardised with its own mean and standard
 deviation ($\sigma$ floored at 0.05), and cells that are constant across a rig's library
-(\num{9{,}123} never-firing contact flags, for instance) are removed from supervision. The
+(\num{5{,}219} never-firing contact flags, for instance) are removed from supervision. The
 statistics are a property of the rig, computed from its motion library and supplied with it at
 deployment, the footing on which motion-transfer tools require example motions of the target
 character~\citep{chen2025motion2motion}.
@@ -50,7 +50,7 @@ rigs, 986 clips) is never trained on by the backbone; App.~\ref{app:rep} gives t
 never noised, followed by the $T{=}240$ target frames that carry the flow interpolant and are the
 only frames denoised and scored. Under the rest-delta parameterisation the rest frame's rotation
 channels are the identity on every rig, so it conveys proportions, joint count and graph rather
-than motion (after per-cell normalisation the prompt also carries the rig's statistics); this is AnyTop's rest-pose first frame~\citep{gat2025anytop}, which we keep.
+than motion; this is AnyTop's rest-pose first frame~\citep{gat2025anytop}, which we keep.
 
 \paragraph{Joint semantics.} Each joint description $d_j$ is embedded once with
 LLM2Vec~\citep{behnamghader2024llm2vec} (4096-d), projected and \emph{added} to every token of joint
@@ -87,8 +87,7 @@ sample $\hat{\mathbf{x}}_1$, and the velocity-space weight of \citet{li2025jit} 
   \qquad w(t)=\frac{1}{\max(1-t,\,\sigma_{\min})^{2}},
   \label{eq:elem}
 \end{equation}
-with $\sigma_{\min}=0.2$, $\delta=10$ (just under the measured 99.99th percentile of the normalised
-targets, \num{11.45}, so \num{99.98}\% of supervision is inside the quadratic region) and a
+with $\sigma_{\min}=0.2$, $\delta=10$ (the 99.99th percentile of the normalised targets) and a
 uniform $t$ sampler (App.~\ref{app:ablation_notes}).
 
 \paragraph{Grouped loss.} A rig with 102 joints has three times the body cells of one with 34 and
@@ -112,18 +111,16 @@ fix the shares.
 \paragraph{Calibration.} The $\gamma_g$ are not hand-tuned. A target share profile over channel
 families is pre-registered, the group energies $E_g$ are measured over one pass of the training set
 under exactly the training crops and masks, and the weights are solved as
-$\gamma=\sqrt{\text{share}/E}$, with the rotation family anchored at $\gamma{=}10$ and the others solved
-relative to it. A \emph{mechanism check} then takes 30 optimiser-free steps of a small arm model and verifies that
-every family's measured share of $\|\partial\mathcal{L}/\partial\hat{\mathbf{x}}_1\|^{2}$, accumulated
-over those steps, matches the $\gamma_g^{2}Q_g$ prediction within 25\%. It certifies the wiring of the
-weights, not that the pre-registered profile is realised during training: the realised share moves with
-the error energies, which evolve. The trainer refuses to start unless the artifact matches the objective
-it is run with ($t$ sampler, $\sigma_{\min}$, Huber knee, masks, batch size; App.~\ref{app:calib}).
+$\gamma=\sqrt{\text{share}/E}$ (anchored at $\gamma{=}10$ for rotations). A \emph{mechanism check}
+then takes 30 optimiser-free steps on a 384-wide, 7-block arm model at batch 8 and verifies that every group's measured share
+of $\|\partial\mathcal{L}/\partial\hat{\mathbf{x}}_1\|^{2}$ matches the $\gamma_g^{2}Q_g$
+prediction within 25\%, and the trainer refuses to start unless the artifact matches the objective
+it is run with ($t$ sampler, $\sigma_{\min}$, Huber knee, masks, batch size). The check verifies the
+implementation at pilot scale (values in App.~\ref{app:calib}).
 
 \paragraph{Auxiliary terms.} A forward-kinematics consistency term between predicted positions and
-positions forward-kinematised from predicted rotations, a velocity term on world joint displacements,
-a foot-lock term gated by the contact channel, and an acceleration-matching term are added in the same
-frame (App.~\ref{app:calib}).
+positions forward-kinematised from predicted rotations, velocity and foot-lock terms gated by the
+contact channel, and an acceleration-matching term are added in the same frame (App.~\ref{app:calib}).
 
 \paragraph{Optimisation.} AdamW, learning rate $1.5\times10^{-4}$ at global batch 128 (the
 \num{36}M pilot: $2\times10^{-4}$), 4k warm-up steps, cosine decay to a $10^{-2}$ floor over 40
@@ -162,8 +159,8 @@ mask ties together clips of the same motion, the same source animation and the s
 evaluator sees only real data, never generated samples, and shares no weights with the generator.
 
 \paragraph{Protocol.} Text$\to$motion R@1/2/3 in pools of 64, matching score and FID in the
-evaluator space, each next to the evaluator's score on the real clips of the same pools (with shuffled
-captions the evaluator scores R@1 \num{0.035} in pools of 32, chance \num{0.031}); generation is fixed at 20 steps,
+evaluator space, each next to the evaluator's score on the real clips of the same pools (shuffled
+captions score \num{0.035} at a chance level of \num{0.031}); generation is fixed at 20 steps,
 $s{=}2$ and one seed and sharded across GPUs under a hashed generation plan with provenance checks.
 Rigs outside the library, for which no evaluator exists, are scored geometrically
 (\S\ref{sec:exp:setup}).

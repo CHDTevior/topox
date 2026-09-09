@@ -1,0 +1,34 @@
+Blind figure review, round 2, part 2 (fresh thread; you have not read the paper or the source code). Attached, in order:
+- whole.png (the whole figure, 1800 × 1100 canvas at 2×, read at 5.5 inches wide in a paper; 32 px canvas = 7 pt on the page)
+- crop_grid.png (the token grid and what feeds it, 2×) · crop_block.png (the transformer panel, 2×) · crop_lanes.png (the two conditioning lanes, 2×)
+- source_whole.png: the COMPOSITION SOURCE — the arrangement the work borrows (the authors' earlier TikZ draft of the same figure).
+  Compare arrangement, grammar and hierarchy only; the work's palette, type and marks are the chosen identity (the paper's own):
+  judge their execution, never their distance from the source.
+The work is a method-overview figure: a Figure 1 drawn by a paper's authors in the paper's own idiom (Times; teal = skeleton-derived,
+clay = caption/time conditioning, grey data tokens, ink flow, white page).
+Unresolved observations from round 1, quoted:
+- "The structure MLP has no incoming connection, so the figure does not identify which skeleton information it consumes."
+- "recompose the conditioning paths directly beneath their destinations—joint conditioning beneath the grid, caption/time beneath the transformer"
+- "The temporal-attention minigrid crosses its panel's bottom border. 'Tree bias' extends past the spatial panel's right border."
+- "The noisy poses are only roughly 30 canvas px tall … The pale skinned animal also occupies only a small part of its surrounding space."
+- "The rest column has an unexplained decorative-looking cap."
+- "The black input arrow meets the block beside spatial attention … without internal arrows, the execution order is not explicit."
+Visible change made for this round, in the designer's terms: the two conditioning lanes now sit under their destinations (joint
+language under the token grid, caption and time under the transformer, each with its own frozen-encoder box); the tree feeds the
+structure MLP by an explicit branch; the sub-panels were sized around their icons and the internal order is drawn; the rest pose
+points into its column by an arrow; the poses and the skinned crop were enlarged; the modulation rail moved to the block's right.
+Answer as a reader of the paper and a designer of figures would:
+2. As a paper's Figure 1 at 5.5 in: is it worth looking at? Where does the eye land first, second, third; does the distribution
+   of weight and space serve the method; what one change would most improve the whole?
+3. What reads as template-made rather than designed for this method, ranked; for each, what you see, the one change that would
+   help most, and whether it is a parameter of the present construction or a different construction.
+4. Which earlier problems (quoted above) still warrant a redraw?
+6. Which passages hold at reading size — name each and the function it carries. Beyond the quoted observations, what other tell is
+   now material enough to affect the next redraw?
+7. Beside the composition source, arrangement only: which of its conventions does the work keep, which does it break, and does each
+   break help or hurt the reading? Nothing about palette or materials.
+9. One 0–10 for "a reader explains the method correctly from this figure alone".
+=== SCOPE LIMITS (these bound what you PROPOSE, never what you look for) ===
+1. Not a security product; cooperating operator on their own machine; no over-defense. 2. No hashes/checksums. 3. No defensive
+scaffolding. 4. No corner-case obsession. 5. Judge where judgement is needed; no checklists. 6. Propose the direct visual change.
+7. No caveat sprinkling. Report anything actually wrong. Say plainly when something is right. Be concrete and blunt. No preamble.

@@ -1,0 +1,136 @@
+Reading additional input from stdin...
+OpenAI Codex v0.153.3
+--------
+workdir: /iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/fig1_align
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: max
+reasoning summaries: none
+session id: 01a074e3-5fa4-7e83-a8df-646014d1e02a
+--------
+user
+Blind figure review, round 1, part 2 (a separate thread from part 1; you have not seen the paper or the source code). Attached, in order:
+- whole.png  (the whole figure, 1800 × 1100 canvas at 2×, read at 5.5 inches wide in a paper; a 32 px canvas label = 7 pt on the page)
+- crop_conditioning.png  (the bottom band, 2×: the two text-conditioning lanes)
+- crop_grid.png  (the token grid and what feeds it, 2×)
+- crop_block.png  (the transformer panel, 2×)
+- process.png  (one labelled panel per build stage: 1 regions and panels · 2 token grid · 3 illustrations · 4 connections · 5 labels)
+The work is a method-overview figure: a Figure 1 drawn by a paper's authors in the paper's own idiom (Times labels; teal for
+everything derived from the skeleton, clay for the caption and time conditioning path, grey data tokens, ink flow, white page).
+
+Answer as a reader of the paper and a designer of figures would:
+2. As a paper's Figure 1 read at 5.5 in: is it worth looking at? Where does the eye land first, second, third; does the
+   distribution of weight and space serve the method; what one change would most improve the whole?
+3. What reads as template-made rather than designed for this method, ranked by how much it hurts the craft claim. For each: what
+   you see and the one change that would help most, and whether that change looks like a parameter of the present construction or
+   a different construction — say what you see that makes you think so. The images are at 2× canvas scale; give numbers where that
+   scale makes them reliable.
+5. Does each panel of process.png add only what its stage names, and is the build order plausible for a designer of such figures?
+   Name the stage and the visible mismatch when it is not.
+6. Which passages hold at reading size — name each and say what function it carries that must not be lost.
+9. One 0–10 for "a reader explains the method correctly from this figure alone". The number does not decide whether the gate passes.
+
+=== SCOPE LIMITS (these bound what you PROPOSE, never what you look for) ===
+1. Not a security product. Cooperating operator on their own machine. No over-defense.
+2. No hashes, checksums or fingerprints.
+3. No defensive scaffolding: no feature flags, migration frameworks, compatibility layers, wrappers, validators, evidence files or JSON state machines.
+4. No corner-case obsession.
+5. Where judgement is needed, judge; no scoring tables, checklists, or re-verification of settled things.
+6. Propose the direct visual or craft change, not helper programs or gate machinery.
+7. Deliverable text is not a defense transcript; no caveat sprinkling.
+Report anything actually wrong. Say plainly when something is right. Be concrete and blunt. No preamble.
+warning: Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+hook: SessionStart
+hook: SessionStart Completed
+codex
+**2.** Yes. The distinction between skeleton conditioning and caption/time conditioning, and the row-versus-column attention diagrams, earn the figure a look.
+
+My eye lands first on the teal/grey token grid, second on the heavily outlined transformer, third on the large clay caption box. The rigs and final animal lose that competition. The visual weight favors rectangular machinery; the examples that make this an **any-rig motion method** are small and scattered.
+
+The one biggest improvement: **recompose the conditioning paths directly beneath their destinations—joint conditioning beneath the grid, caption/time beneath the transformer—and shorten the figure.** That would reduce the long return wires and give the main rig-to-motion sequence more space at the same 5.5-inch width.
+
+**3.** Ranked by how much they hurt the craft claim:
+
+1. **The composition follows reserved compartments more closely than the method’s dependencies.** The large lower-left conditioning assembly, central grid, and right-hand outputs occupy separate territories connected across considerable empty space. Move the conditioning into the compact arrangement described above. **Different construction:** this changes grouping and routing, not merely spacing between existing boxes.
+
+2. **Content visibly fails to fit its containers.** The temporal-attention minigrid crosses its panel’s bottom border. “Tree bias” extends past the spatial panel’s right border. Those are conspicuous finishing errors, especially in otherwise orderly geometry. Size those panels around their actual contents, with roughly **12–16 canvas px of internal clearance—24–32 px in the supplied 2× images**. **Parameter change:** the necessary contents and grouping already exist; their bounds and positions need adjustment.
+
+3. **The conditioning diagram has a standard flowchart’s boxes without a complete account of its inputs.** “Structure MLP” has an output and no visible input. Its placement beside the shared encoder makes its source particularly uncertain. Give skeleton structure an explicit incoming branch into that MLP. **Different construction:** a missing relationship cannot be repaired by adjusting a rectangle or arrow’s length.
+
+4. **The illustrations read as miniatures placed into available slots.** The noisy poses are only roughly **30 canvas px tall**, or **0.09 inches on the page**. They communicate “several poses” but little about those poses. The pale skinned animal also occupies only a small part of its surrounding space. Enlarge the selected examples to use their allotted regions. **Parameter change:** the examples already exist, and there is visible room around them; scale and placement are the immediate problem.
+
+5. **The rest column has an unexplained decorative-looking cap.** A pale blue block sits above the rows shared with the grey target columns. With joints represented by rows, this makes the rest frame appear to contain an extra element. Make the rest column follow the same row structure as the target columns. **Parameter change:** this is a local change to the existing tile grid.
+
+The Times typography and teal/clay distinction are appropriate. The repeated grids also belong to this method: they make the two attention axes understandable. Preserve those choices.
+
+**5.** The stages are not literally exclusive:
+
+- **1, “regions and panels,”** already introduces all four numbered headings. That is sensible for establishing the composition, but it is also label work.
+- **2, “token grid,”** adds the grid and its row highlight. Both fit the stage.
+- **3, “illustrations,”** also introduces the three quoted anatomical labels and their outlined callouts. They visibly arrive before the labels stage.
+- **4, “connections,”** adds wires, summation junctions, the time-input circle, and modulation ports. Those symbols reasonably belong to connections.
+- **5, “labels,”** adds the remaining explanatory text.
+
+The build order is plausible as assembly. Establishing regions, placing illustrations, and then routing connections makes sense. Treating text as the final addition is less convincing as design: the final transformer’s overflows show that text and illustrative content need to participate in panel sizing earlier.
+
+**6.** These passages hold at reading size and carry functions worth preserving:
+
+- **The four numbered headings:** they establish an immediate input → representation → model → output reading order.
+- **The teal rest column, grey target columns, and outlined joint row:** together they explain skeleton context and conditioning shared across time for one joint.
+- **“Temporal attention: a joint over frames” and “Spatial attention: a frame over joints”:** the accompanying horizontal and vertical highlights are the strongest explanatory passage in the figure. They turn the attention factorization into something directly visible.
+- **The teal and clay conditioning routes:** their distinct destinations explain that joint information enters tokens while caption/time information supplies modulation. That distinction remains understandable despite the long routing.
+- **“LLM2Vec / frozen”:** this makes the shared text representation and its frozen status explicit.
+- **“311 rigs · 34–102 joints” and the token dimensions:** these give concrete scale and make variable joint count part of the method’s premise.
+- **“Rotations → FK → skinned”:** this carries the essential decoding relationship, even though the surrounding pictures need stronger visual connections.
+
+The anatomical callouts are below the comfortable main-label scale. The tiny motion examples survive as silhouettes and sequence cues; they do not support close inspection of motion. The tree-bias image survives as a matrix symbol, not as readable matrix structure.
+
+**9. 6/10.** A reader can explain the broad conditioning scheme and factorized transformer. The figure leaves structural features without a source, draws the sampling return without showing the state update, leaves \(s=2\) undefined, and does not establish whether unseen-rig LoRA is required or optional. Those gaps prevent a reliably correct explanation from the figure alone.
+tokens used
+10,736
+**2.** Yes. The distinction between skeleton conditioning and caption/time conditioning, and the row-versus-column attention diagrams, earn the figure a look.
+
+My eye lands first on the teal/grey token grid, second on the heavily outlined transformer, third on the large clay caption box. The rigs and final animal lose that competition. The visual weight favors rectangular machinery; the examples that make this an **any-rig motion method** are small and scattered.
+
+The one biggest improvement: **recompose the conditioning paths directly beneath their destinations—joint conditioning beneath the grid, caption/time beneath the transformer—and shorten the figure.** That would reduce the long return wires and give the main rig-to-motion sequence more space at the same 5.5-inch width.
+
+**3.** Ranked by how much they hurt the craft claim:
+
+1. **The composition follows reserved compartments more closely than the method’s dependencies.** The large lower-left conditioning assembly, central grid, and right-hand outputs occupy separate territories connected across considerable empty space. Move the conditioning into the compact arrangement described above. **Different construction:** this changes grouping and routing, not merely spacing between existing boxes.
+
+2. **Content visibly fails to fit its containers.** The temporal-attention minigrid crosses its panel’s bottom border. “Tree bias” extends past the spatial panel’s right border. Those are conspicuous finishing errors, especially in otherwise orderly geometry. Size those panels around their actual contents, with roughly **12–16 canvas px of internal clearance—24–32 px in the supplied 2× images**. **Parameter change:** the necessary contents and grouping already exist; their bounds and positions need adjustment.
+
+3. **The conditioning diagram has a standard flowchart’s boxes without a complete account of its inputs.** “Structure MLP” has an output and no visible input. Its placement beside the shared encoder makes its source particularly uncertain. Give skeleton structure an explicit incoming branch into that MLP. **Different construction:** a missing relationship cannot be repaired by adjusting a rectangle or arrow’s length.
+
+4. **The illustrations read as miniatures placed into available slots.** The noisy poses are only roughly **30 canvas px tall**, or **0.09 inches on the page**. They communicate “several poses” but little about those poses. The pale skinned animal also occupies only a small part of its surrounding space. Enlarge the selected examples to use their allotted regions. **Parameter change:** the examples already exist, and there is visible room around them; scale and placement are the immediate problem.
+
+5. **The rest column has an unexplained decorative-looking cap.** A pale blue block sits above the rows shared with the grey target columns. With joints represented by rows, this makes the rest frame appear to contain an extra element. Make the rest column follow the same row structure as the target columns. **Parameter change:** this is a local change to the existing tile grid.
+
+The Times typography and teal/clay distinction are appropriate. The repeated grids also belong to this method: they make the two attention axes understandable. Preserve those choices.
+
+**5.** The stages are not literally exclusive:
+
+- **1, “regions and panels,”** already introduces all four numbered headings. That is sensible for establishing the composition, but it is also label work.
+- **2, “token grid,”** adds the grid and its row highlight. Both fit the stage.
+- **3, “illustrations,”** also introduces the three quoted anatomical labels and their outlined callouts. They visibly arrive before the labels stage.
+- **4, “connections,”** adds wires, summation junctions, the time-input circle, and modulation ports. Those symbols reasonably belong to connections.
+- **5, “labels,”** adds the remaining explanatory text.
+
+The build order is plausible as assembly. Establishing regions, placing illustrations, and then routing connections makes sense. Treating text as the final addition is less convincing as design: the final transformer’s overflows show that text and illustrative content need to participate in panel sizing earlier.
+
+**6.** These passages hold at reading size and carry functions worth preserving:
+
+- **The four numbered headings:** they establish an immediate input → representation → model → output reading order.
+- **The teal rest column, grey target columns, and outlined joint row:** together they explain skeleton context and conditioning shared across time for one joint.
+- **“Temporal attention: a joint over frames” and “Spatial attention: a frame over joints”:** the accompanying horizontal and vertical highlights are the strongest explanatory passage in the figure. They turn the attention factorization into something directly visible.
+- **The teal and clay conditioning routes:** their distinct destinations explain that joint information enters tokens while caption/time information supplies modulation. That distinction remains understandable despite the long routing.
+- **“LLM2Vec / frozen”:** this makes the shared text representation and its frozen status explicit.
+- **“311 rigs · 34–102 joints” and the token dimensions:** these give concrete scale and make variable joint count part of the method’s premise.
+- **“Rotations → FK → skinned”:** this carries the essential decoding relationship, even though the surrounding pictures need stronger visual connections.
+
+The anatomical callouts are below the comfortable main-label scale. The tiny motion examples survive as silhouettes and sequence cues; they do not support close inspection of motion. The tree-bias image survives as a matrix symbol, not as readable matrix structure.
+
+**9. 6/10.** A reader can explain the broad conditioning scheme and factorized transformer. The figure leaves structural features without a source, draws the sampling return without showing the state update, leaves \(s=2\) undefined, and does not establish whether unseen-rig LoRA is required or optional. Those gaps prevent a reliably correct explanation from the figure alone.
+codex rc=0

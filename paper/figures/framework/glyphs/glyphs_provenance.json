@@ -1,0 +1,21 @@
+{
+ "rig": "PZ_Alaskan_Moose_Female",
+ "clip": "d34d76e2c0a3e5b0d5e3",
+ "caption": "The female Alaskan moose runs and then gradually transitions to walking",
+ "T": 68,
+ "J": 55,
+ "frames": [
+  0,
+  22,
+  44,
+  67
+ ],
+ "tags": [
+  "\u201cthe head\u201d",
+  "\u201cthe left front foot\u201d",
+  "\u201cthe first tail vertebra\u201d"
+ ],
+ "ckpt": "runs/v2_noik_run12_896_r1acc/best_model.pt",
+ "ckpt_sha256": "9618342a45c6f1fdf2ee8b47aed1ae80b089f0df5e9d7f9db1a48578bc2eed84",
+ "epoch": 289
+}

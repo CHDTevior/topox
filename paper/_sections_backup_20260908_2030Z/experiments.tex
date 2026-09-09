@@ -5,7 +5,8 @@ skeletons on text-conditioned generation (\S\ref{sec:exp:main})? (2) How far doe
 extend to a rig it has never seen, with no training and with about ten clips
 (\S\ref{sec:exp:extend})? (3) How does it relate to the released arbitrary-topology generator
 and to prior work in capability (\S\ref{sec:exp:compare})? (4) Which ingredients matter
-(\S\ref{sec:exp:ablation})?
+(\S\ref{sec:exp:ablation})? Numbers marked \num{blue} are pinned to a specific run and will be
+replaced by the final checkpoint's; \todo{red} marks values still to be computed.
 
 \subsection{Setup}\label{sec:exp:setup}
 
@@ -37,27 +38,24 @@ on the deployable output (the forward kinematics of the predicted rotations): th
 divided by the real clips' value), the jitter ratio (mean second temporal difference, likewise
 normalised) and the root speed ratio. Ratios are taken against \emph{all} real clips of the
 rig at a common 20\,Hz after anti-aliased decimation, so that 20\,fps AnyTop samples and our
-30\,fps output are measured identically. The \emph{FK--pose gap} is the mean distance, in the rig's
-mean bone length, between the joint positions obtained by forward kinematics of the predicted
-rotations and the directly predicted ones: a consistency of the two channels, not a distance to the
-target, read from the training-time validation pass (App.~\ref{app:calib}). Library clips are
-generated at the real clip's length (at most 240 frames)
+30\,fps output are measured identically. The \emph{FK--pose gap} is the mean distance, in units
+of the rig's mean bone length, between the joint positions obtained by forward kinematics of the
+predicted rotations and the directly predicted joint positions; the two channels must agree for
+either to be usable. It is read from the training-time validation pass on the held-out clips (the
+denoiser's clean-sample estimate) and measures the consistency of the two channels, not distance to
+the target. Library clips are generated at the real clip's length (at most 240 frames)
 from the epoch-289 checkpoint with seed 42; the Truebones arms of \S\ref{sec:exp:extend} use the
 epoch-214 snapshot that initialised the adapters, seed 7.
 
 \subsection{One model for 311 skeletons}\label{sec:exp:main}
 
-Table~\ref{tab:main} reports text-to-motion retrieval on the validation set. All \num{311} rigs appear in
-training, so this measures the generation of held-out clips on known rigs; rigs outside the library are
-the subject of \S\ref{sec:exp:extend}. The \num{303}M
+Table~\ref{tab:main} reports text-to-motion retrieval on the validation set. The \num{303}M
 model reaches R@1 \num{0.922} against \num{0.964} for the real clips scored by the same evaluator
 in the same pools, a text--motion matching score of \num{0.764} against \num{0.782}, and an FID of
 \num{0.005}; the \num{36}M pilot, trained on the same data with the same recipe, reaches R@1
 \num{0.897} and FID \num{0.008}. The pools follow the dataset order, so a pool holds clips of one
-rig or of neighbouring rigs; R-precision uses the \num{3{,}840} clips of the 60 complete pools, the
-matching score and the FID all \num{3{,}899}. The 95\% bootstrap interval over pools is
-$[\num{0.907}, \num{0.936}]$ for the \num{303}M R@1 and $[\num{0.955}, \num{0.971}]$ for the real
-clips (App.~\ref{app:controls}).
+rig or of neighbouring rigs and retrieval is decided by the action rather than by the species;
+the matching score and the FID do not depend on the pool composition.
 
 \begin{table}[t]
 \centering\small
@@ -76,12 +74,8 @@ Real clips (reference) & -- & \num{0.964} & \num{0.998} & \num{0.999} & 0 & \num
 \end{tabular}
 \end{table}
 
-\paragraph{What the score responds to.} Re-scoring the same samples in four variants
-(App.~\ref{app:controls}) gives, against the \num{303}M model's R@1 of \num{0.922}: \num{0.923} with
-the positions replaced by the forward kinematics of the generated rotations, \num{0.806} with the
-frames permuted, \num{0.346} holding the clip's own first pose, \num{0.109} holding the rig's rest
-pose, and \num{0.005} with every caption in the pool swapped (chance \num{0.017}). A static pose of
-the right species accounts for a third of every retrieval number here.
+\paragraph{Qualitative results.} Figures~\ref{fig:teaser} and~\ref{fig:qual} show skinned
+renders of samples on held-out clips of library rigs.
 
 \begin{figure}[t]
 \centering
@@ -98,8 +92,7 @@ clips' own.}\label{fig:qual}
 \paragraph{Zero training and per-rig LoRA.} We take four Truebones rigs that differ from the
 library in body plan and joint count -- Buffalo (30 joints), Gazelle (29), Dragon (95 joints, a
 flying rig) and Spider (68) -- and compare three arms on the same held-out clips of each rig:
-(a) the library model with the new rig's per-cell statistics, computed from all of its clips including
-the evaluation clips, as its only rig-specific input (\emph{zero training}); (b) a per-rig
+(a) the library model with the new rig's statistics only (\emph{zero training}); (b) a per-rig
 low-rank adapter trained on the rig's 8--26 training clips (\emph{LoRA}, \S\ref{sec:method:lora});
 (c) a \num{36}M model of the same recipe trained on all \num{802} captioned Truebones clips,
 evaluation clips included, as a seen-clip reference rather than a competing method.
@@ -110,15 +103,11 @@ the seen-clip reference sits at $0.06$--$0.13$.
 
 \begin{table}[t]
 \centering\footnotesize\setlength{\tabcolsep}{3.5pt}
-\caption{Extending \method{} (\num{303}M) to four Truebones rigs, as a diagnostic given the rig's
-statistics: the per-cell statistics and masks of each rig are computed from all of its clips, the
-evaluation clips included, and the adapter checkpoint is the one with the lowest validation loss on
-those clips (a support-only protocol is reported in the final version). \emph{zero}: library model with
+\caption{Extending \method{} (\num{303}M) to four Truebones rigs. \emph{zero}: library model with
 the rig's statistics only (gap read after at most 15 adapter warm-up steps); \emph{LoRA}: per-rig
 adapter at its best validation loss; \emph{TB-only}: a \num{36}M model trained on all Truebones
 clips including these (seen-clip reference; its gap is read the same way as the zero column). Gap in bone lengths; articulation and jitter of the
-sampled FK output relative to all real clips of the rig (1 = real). The same study on the \num{36}M
-pilot backbone, and a single adapter shared by eight flying rigs, are in App.~\ref{app:extend_more}.}\label{tab:lora}
+sampled FK output relative to all real clips of the rig (1 = real).}\label{tab:lora}
 \begin{tabular}{@{}llccccccccc@{}}
 \toprule
 & & \multicolumn{3}{c}{FK--pose gap (bl)$\downarrow$} & \multicolumn{3}{c}{Articulation ratio} & \multicolumn{3}{c}{Jitter ratio} \\
@@ -133,28 +122,46 @@ Spider (68 j.)  & 26 / 6 & \num{1.029} & \num{0.130} & \num{0.088} & \num{2.87} 
 \end{tabular}
 \end{table}
 
+\paragraph{Further arms.} Repeating the study with the \num{36}M pilot as the backbone gives the
+same picture, an adapter shared by eight flying rigs is worse than the species-specific one, and the
+Truebones-only model that has trained on the evaluation clips reproduces their statistics; training an
+adapter beyond about 150 epochs changes nothing. All four are reported in App.~\ref{app:extend_more}.
+
 \subsection{Relation to prior work}\label{sec:exp:compare}
 
-\paragraph{Capabilities.} Table~\ref{tab:capability} (App.~\ref{app:capability}) places \method{} among
-the generators that serve more than one skeleton, by what each returns and what a rig needs to play
-it. \method{} returns per-joint rotations and a world-space root trajectory that the rig plays as
-generated, for \num{311} production rigs, and measures that geometry against ground truth
-(Table~\ref{tab:physical}).
+\paragraph{Capabilities.} Table~\ref{tab:capability} (App.~\ref{app:capability}) places \method{} among the methods that generate motion for more than one skeleton.
 
 
 \paragraph{AnyTop as an in-distribution reference.} The released AnyTop~\citep{gat2025anytop}
 weights trained on the whole Truebones zoo, including the four rigs of Table~\ref{tab:lora}; its
-per-rig geometry (App.~\ref{app:anytop}) is therefore a reference for what a model trained on these
-rigs produces.
+per-rig statistics (App.~\ref{app:anytop}) therefore serve as a reference for what a model trained
+on these rigs produces.
 
 \subsection{Ablations}\label{sec:exp:ablation}
 
-The ablations share the pilot's recipe and checkpoint epoch; App.~\ref{app:ablation_notes} collects
-them, with the notes. Removing the acceleration-matching term leaves the FK--pose gap, retrieval and
-FID unchanged at epoch 200 (Table~\ref{tab:ablation}). Normalising \rep{} by a per-rig scale alone instead of per-cell
+Table~\ref{tab:ablation} collects the ablations that share the pilot's recipe and checkpoint epoch.
+Removing the acceleration-matching term leaves the FK--pose gap, retrieval and FID unchanged at epoch
+200; replacing the rest-frame demonstration by a 64-frame window of real motion costs validation loss
+and FK--pose gap and buys nothing in retrieval (App.~\ref{app:demo64}). Notes in
+App.~\ref{app:ablation_notes}. Normalising \rep{} by a per-rig scale alone instead of per-cell
 mean and standard deviation costs about two points of R@1 and a third of the FID at every matched
 epoch (Table~\ref{tab:rep}); replacing its channel layout by the 13-channel AnyTop layout derived from the same
 clips moves R@1 by under a point at every matched epoch (Table~\ref{tab:repcontent}), while the 17-channel
 layout keeps the leaf-joint articulation, foot contact and root travel that the 13-channel layout loses (Table~\ref{tab:physical}). At a matched budget of 200 epochs the \num{36}M, \num{116}M and
 \num{303}M models reach R@1 \num{0.878}, \num{0.900} and \num{0.914} (Table~\ref{tab:size}).
 
+\begin{table}[t]
+\centering\small
+\caption{Ablations on the \num{36}M pilot at matched optimiser steps (epoch-200 checkpoints;
+validation loss, FK--pose gap, R@1 and FID on the validation set). The variant without the
+acceleration term optimises a different objective, so its validation loss is not listed.}\label{tab:ablation}
+\begin{tabular}{lcccc}
+\toprule
+Variant & Val.\ loss$\downarrow$ & FK--pose gap (bl)$\downarrow$ & R@1$\uparrow$ & FID$\downarrow$ \\
+\midrule
+Full recipe (rest-frame demo, calibrated, $\mathbf{x}$-pred, qk-norm) & \num{0.247} & \num{0.171} & \num{0.878} & \num{0.011} \\
+Without the acceleration-matching term & -- & \num{0.171} & \num{0.877} & \num{0.011} \\
+64-frame motion demonstration instead of the rest frame (App.~\ref{app:demo64}) & \num{0.270} & \num{0.202} & \num{0.878} & \num{0.010} \\
+\bottomrule
+\end{tabular}
+\end{table}

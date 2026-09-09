@@ -1,0 +1,123 @@
+Reading additional input from stdin...
+OpenAI Codex v0.153.3
+--------
+workdir: /iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/fig1_align
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: max
+reasoning summaries: none
+session id: 01a07702-4e0c-73e2-b83c-5eca8196df15
+--------
+user
+Blind figure review, round 5, part 1 (reading of the seventh version: the token-embedding and transformer stages were redrawn in detail). Judge only from the attached image; do not read source or any text file.
+- The attached image is the whole figure (1800 × 1000 canvas at 2×), read at 5.5 inches wide in a paper (32 px canvas = 7 pt).
+The work is a method-overview figure: a Figure 1 drawn by a paper's authors in the paper's own idiom (Times; teal = skeleton-derived, indigo = noise-mixed frames and the sampling loop,
+clay = caption/time conditioning, grey data tokens, ink flow, white page), built in the order stage bands and panels → token grid →
+illustrations and callouts → connections → labels. You have not read the paper. Explain only what the figure shows.
+1. Explain the method in the order the figure reads: who acts, what passes between steps, what each decision changes, what persists
+   through a loop, what ends it. Put "unclear:" in front of any sentence where the figure leaves you unsure. Do not fill gaps from
+   what such methods usually do. Then state the counts, limits and trajectories the figure claims.
+9. One 0–10 for "a reader explains the method correctly from this figure alone", and the three most valuable remaining changes.
+=== SCOPE LIMITS === 1. Not a security product; cooperating operator on their own machine; no over-defense. 2. No hashes/checksums.
+3. No defensive scaffolding. 4. No corner-case obsession. 5. Judge where judgement is needed. 6. Propose the direct visual change.
+7. No caveat sprinkling. Report anything actually wrong. Say plainly when something is right. Be concrete and blunt. No preamble.
+In addition, answer directly (no sub-agents): does a reader now see what the model is, concretely — what one token is made of, what the
+transformer's sub-layers do, what the head predicts and what returns in the loop? Name any label whose type is too small at 5.5 inches, any
+line that a reader could mis-route, and any panel whose information density is out of balance with its neighbours.
+warning: Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+hook: SessionStart
+hook: SessionStart Completed
+codex
+Each joint is represented by a 17-channel token containing position, rotation Δ, velocity, contact and root information. The sequence contains a rest frame followed by 240 noisy target frames. Values are standardised per rig, joint and channel. The individual channel counts within those five groups are not labelled.
+
+The 17-channel vector passes through a linear projection to D dimensions. Frame position, joint slot, a target-frame mask, an encoded joint description and a tree-derived MLP output also enter the container labelled “one D-dim token.”
+
+unclear: The figure does not specify how those six contributions combine; the stacked squares could suggest concatenation or several tokens.
+unclear: “MLP (8-d)” does not identify whether eight dimensions describe its input or output, and the padlocks do not identify which parts of the encoder/projection chains are frozen.
+
+The caption passes through LLM2Vec → MLP, while time \(t\) passes through another MLP. Their outputs are explicitly added to produce \(c\). The orange AdaLN bus carries this conditioning to the temporal attention, spatial attention, MLP and output-head boxes.
+
+Temporal attention connects a joint across frames. Spatial attention connects joints within a frame and includes a tree bias. The highlighted row and column explain these two operations well. An MLP follows, then “LN · linear D → 17.”
+
+unclear: The ×14 enclosure includes the output head, so the repetition scope could include all four boxes or only the preceding transformer layers.
+unclear: The head produces 17 values, but their prediction target is unnamed.
+
+The black output route climbs to the upper motion strip. An indigo return arrow crosses the figure and re-enters the 17 → D projection. Sampling is labelled “×20 Euler steps,” with an exit to “clean prediction after 20 steps.” Rotations then pass through FK and skinning to produce the rendered animal.
+
+unclear: No Euler-update operation is drawn, so I cannot identify the tensor returning to the model or distinguish it from the head’s raw output.
+unclear: The figure does not establish what persists unchanged through the loop—particularly the rest frame and conditioning—or how \(t\) changes; the target-frame mask alone does not establish that behaviour.
+
+For an unseen rig, the callout claims the same pass, with optional LoRA using approximately ten clips.
+
+unclear: The callout does not show where LoRA acts or what choosing it changes.
+
+The numerical claims are **311 rigs; 34–102 joints; 17 input/output channels; one D-dimensional token; an “8-d” tree branch; ×14 repetition; one rest frame plus 240 noisy target frames; 20 Euler steps; and approximately ten clips for optional LoRA**. D has no numerical value. The illustrated progression is noisy motion → clean motion → skinned animal. The example caption requests running followed by slowing to a walk; the pose strips do not clearly establish that speed transition.
+
+**Does the reader now see the model concretely? Partly.** The token ingredients and the two attention axes are clear. Token assembly, the head’s prediction target and the returning state remain unresolved.
+
+At 5.5 inches, these labels are too small:
+
+- Stage 1: the five-item channel legend, “311 rigs · 34–102 joints,” “rest,” “240 noisy target frames,” and the standardisation note.
+- Stage 2: “joint description,” “tree,” “caption,” \(t\), \(c\), “one D-dim token,” and “AdaLN.” The two vertical labels are especially difficult.
+- Stages 3–4: “×14,” “tree bias,” “×20 Euler steps,” and “rotations → FK → skinned.”
+
+The principal routing problem is the **free right endpoint of the indigo loop**: it never visibly joins the black head-output route or a state-update node. A reader can connect it mentally to several different things. The ×14 boundary also gives the head an ambiguous place in the computation.
+
+Stage 2 is substantially denser than its neighbours. Stage 3 packs its content toward the top while leaving roughly its bottom quarter empty. That imbalance forces the embedding and conditioning explanation into small labels.
+
+**7/10** for a reader explaining the method correctly from this figure alone.
+
+The three most valuable changes are:
+
+1. **Complete the sampling computation.** Name the head’s prediction target, draw an Euler-update box, label the returning tensor, and connect a clear “after 20 steps” exit. Mark the fixed inputs and changing state.
+2. **Make construction and repetition explicit.** Replace the token tower’s ambiguous convergence with the actual fusion operator. Draw the ×14 boundary around exactly the repeated sublayers and place the head accordingly.
+3. **Redistribute space and enlarge the secondary labels.** Give stage 2 more room and use the empty lower transformer area for the caption/time branch. Bring the listed labels to at least 32 canvas pixels, especially the channel legend and sampling instructions.
+tokens used
+31,166
+Each joint is represented by a 17-channel token containing position, rotation Δ, velocity, contact and root information. The sequence contains a rest frame followed by 240 noisy target frames. Values are standardised per rig, joint and channel. The individual channel counts within those five groups are not labelled.
+
+The 17-channel vector passes through a linear projection to D dimensions. Frame position, joint slot, a target-frame mask, an encoded joint description and a tree-derived MLP output also enter the container labelled “one D-dim token.”
+
+unclear: The figure does not specify how those six contributions combine; the stacked squares could suggest concatenation or several tokens.
+unclear: “MLP (8-d)” does not identify whether eight dimensions describe its input or output, and the padlocks do not identify which parts of the encoder/projection chains are frozen.
+
+The caption passes through LLM2Vec → MLP, while time \(t\) passes through another MLP. Their outputs are explicitly added to produce \(c\). The orange AdaLN bus carries this conditioning to the temporal attention, spatial attention, MLP and output-head boxes.
+
+Temporal attention connects a joint across frames. Spatial attention connects joints within a frame and includes a tree bias. The highlighted row and column explain these two operations well. An MLP follows, then “LN · linear D → 17.”
+
+unclear: The ×14 enclosure includes the output head, so the repetition scope could include all four boxes or only the preceding transformer layers.
+unclear: The head produces 17 values, but their prediction target is unnamed.
+
+The black output route climbs to the upper motion strip. An indigo return arrow crosses the figure and re-enters the 17 → D projection. Sampling is labelled “×20 Euler steps,” with an exit to “clean prediction after 20 steps.” Rotations then pass through FK and skinning to produce the rendered animal.
+
+unclear: No Euler-update operation is drawn, so I cannot identify the tensor returning to the model or distinguish it from the head’s raw output.
+unclear: The figure does not establish what persists unchanged through the loop—particularly the rest frame and conditioning—or how \(t\) changes; the target-frame mask alone does not establish that behaviour.
+
+For an unseen rig, the callout claims the same pass, with optional LoRA using approximately ten clips.
+
+unclear: The callout does not show where LoRA acts or what choosing it changes.
+
+The numerical claims are **311 rigs; 34–102 joints; 17 input/output channels; one D-dimensional token; an “8-d” tree branch; ×14 repetition; one rest frame plus 240 noisy target frames; 20 Euler steps; and approximately ten clips for optional LoRA**. D has no numerical value. The illustrated progression is noisy motion → clean motion → skinned animal. The example caption requests running followed by slowing to a walk; the pose strips do not clearly establish that speed transition.
+
+**Does the reader now see the model concretely? Partly.** The token ingredients and the two attention axes are clear. Token assembly, the head’s prediction target and the returning state remain unresolved.
+
+At 5.5 inches, these labels are too small:
+
+- Stage 1: the five-item channel legend, “311 rigs · 34–102 joints,” “rest,” “240 noisy target frames,” and the standardisation note.
+- Stage 2: “joint description,” “tree,” “caption,” \(t\), \(c\), “one D-dim token,” and “AdaLN.” The two vertical labels are especially difficult.
+- Stages 3–4: “×14,” “tree bias,” “×20 Euler steps,” and “rotations → FK → skinned.”
+
+The principal routing problem is the **free right endpoint of the indigo loop**: it never visibly joins the black head-output route or a state-update node. A reader can connect it mentally to several different things. The ×14 boundary also gives the head an ambiguous place in the computation.
+
+Stage 2 is substantially denser than its neighbours. Stage 3 packs its content toward the top while leaving roughly its bottom quarter empty. That imbalance forces the embedding and conditioning explanation into small labels.
+
+**7/10** for a reader explaining the method correctly from this figure alone.
+
+The three most valuable changes are:
+
+1. **Complete the sampling computation.** Name the head’s prediction target, draw an Euler-update box, label the returning tensor, and connect a clear “after 20 steps” exit. Mark the fixed inputs and changing state.
+2. **Make construction and repetition explicit.** Replace the token tower’s ambiguous convergence with the actual fusion operator. Draw the ×14 boundary around exactly the repeated sublayers and place the head accordingly.
+3. **Redistribute space and enlarge the secondary labels.** Give stage 2 more room and use the empty lower transformer area for the caption/time branch. Bring the listed labels to at least 32 canvas pixels, especially the channel legend and sampling instructions.
+codex rc=0

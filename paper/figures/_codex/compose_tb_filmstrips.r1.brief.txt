@@ -1,0 +1,34 @@
+Review a small matplotlib figure script for an ICLR appendix figure (repo: /iridisfs/scratch/ts1v23/workspace/noKslot_clean).
+Script: paper/figures/compose_tb_filmstrips.py (read it in full). Rendered result attached as an image (paper/figures/tb_filmstrips.png).
+
+Context you can verify in the repo:
+- Inputs are world dumps renders/cmp_dump_<rig>_<arm>/<clip>.world.npz written by scripts/v2_render_incontext.py --dump_world
+  (dump_format "world-dump-v3"). Keys: gen_ric (T,J,3) = directly predicted joint positions decoded to world space,
+  gen_fk (T,J,3) = forward kinematics of the predicted rotations, gt_w, demo_w, parents (J,), joint_names, caption, ckpt, epoch.
+  World frame: +Y up, +Z forward, X lateral (see paper/figures/skeleton_art.py, whose three-quarter camera the script copies).
+  The root joint (parents<0) position is identical in gen_ric and gen_fk (checked: |ric-fk| at the root = 0).
+- Arms: renders/cmp_dump_<rig>_zerotrain = the 303M library model with the new rig's statistics only (ckpt
+  runs/lora_tb_init_run12_best_snapshot.pt, epoch 214); renders/cmp_dump_<rig>_lora = per-rig LoRA adapter at best val loss.
+  Both arms of a rig dump the same clip ids.
+- Paper claim the figure supports (Table lora): the FK-pose gap (mean distance between FK positions and direct positions, in
+  bone lengths) is 0.25-1.2 for the zero-training arm and 0.08-0.15 after LoRA; the two skeletons must agree for either to be usable.
+- Planned caption: "Truebones arms of Table lora, one held-out clip per rig, six frames spread evenly over the clip, three-quarter
+  view. In every panel the directly predicted joint positions (clay) are overlaid by the forward kinematics of the predicted
+  rotations (teal); where the two skeletons disagree the FK-pose gap is visible. Rows: library model with the rig's statistics
+  only (zero) and the per-rig adapter (LoRA). Frames are anchored on the root horizontally and keep their height above the floor
+  (Dragon, a flying rig: anchored on the root in all axes). Both rows of a rig are drawn at the same scale."
+- Only our generations may be drawn (no ground truth in figures) -- verify the script never draws gt_w or demo_w.
+
+Check, by reading the code and looking at the image:
+1. Projection: is the camera really the one in skeleton_art.py (azimuth 40, elevation 18, body coords (Z,X,Y))? Any axis mix-up?
+2. Anchoring: per-frame root shift; 'ground' keeps Y; the floor line is the projection of (0, floor, 0). Is the floor line placed
+   correctly for a point under the (anchored) root? Any bug when the root index is not 0?
+3. Row/arm bookkeeping: is the 'zero' row really from the zerotrain dump and 'LoRA' from the lora dump; same clip in both rows;
+   frame indices identical across rows (same linspace, same T)? What if T differs between arms?
+4. Draw order/colours: pose (clay) underneath, FK (teal) on top, far bones first -- consistent with the caption?
+5. Scale bookkeeping: same inches-per-unit for both rows of a rig; panel widths equal; nothing clipped (check the image).
+6. Anything that could silently mislead a reader (e.g., a frame being from the wrong clip, dropped joints, hidden bones).
+7. Caption accuracy against what is drawn. Suggest wording fixes if needed.
+
+Output: a numbered list of findings with severity and, at the very end, one line 'VERDICT: PASS' or 'VERDICT: NEEDS-FIX'
+with concrete fixes. Do not modify any files.

@@ -1,0 +1,1799 @@
+Reading additional input from stdin...
+OpenAI Codex v0.153.3
+--------
+workdir: /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: max
+reasoning summaries: none
+session id: 01a07d0d-9564-71f0-bf72-bf9e346a6463
+--------
+user
+Second-round review (fresh, independent) of a small matplotlib figure script for an ICLR appendix figure
+(repo: /iridisfs/scratch/ts1v23/workspace/noKslot_clean). Script: paper/figures/compose_tb_filmstrips.py (read it in full).
+Rendered result attached (paper/figures/tb_filmstrips.png).
+
+A previous reviewer asked for three fixes, now applied: (a) the floor reference is the world datum Y=0 (KTJD frame: +Y up, +Z forward,
+X lateral; the dump renderer's floor), included in the row bounds for ground-anchored rigs; (b) both arms of a rig are loaded first,
+asserted to have the same T, J, parents and caption, and one shared frame-index array is used; (c) bones are drawn farthest first,
+per skeleton, by bone mid-point depth (depth = B @ fwd, larger = farther).
+
+Context you can verify in the repo:
+- Inputs: renders/cmp_dump_<rig>_<arm>/<clip>.world.npz from scripts/v2_render_incontext.py --dump_world (dump_format world-dump-v3):
+  gen_ric (T,J,3) directly predicted joint positions in world space, gen_fk (T,J,3) forward kinematics of the predicted rotations,
+  gt_w, demo_w, parents, joint_names, caption, motion_id, ckpt, epoch. Root position identical in gen_ric and gen_fk.
+- Arms: zerotrain = the 303M library model with the new rig's statistics only (ckpt runs/lora_tb_init_run12_best_snapshot.pt, epoch
+  214, unadapted); lora = per-rig LoRA at best val loss. Only our generations may be drawn (never gt_w / demo_w).
+- Camera copied from paper/figures/skeleton_art.py (azimuth 40, elevation 18, body coords (Z,X,Y)).
+- LaTeX caption now: "Truebones arms of Table lora: one held-out clip per rig, six frames spread evenly over the clip, three-quarter
+  view; the quoted sentence is the conditioning prompt. In every panel the directly predicted joint positions (clay) are overlaid by the
+  forward kinematics of the predicted rotations (teal); a visible separation is the projected FK-pose discrepancy (a single view can
+  hide a disagreement in depth). Rows: the library model with the rig's statistics only (zero, the unadapted snapshot, whereas the zero
+  column of Table lora is read after at most 15 warm-up steps) and the per-rig adapter (LoRA). Frames are anchored on the root
+  horizontally and keep their height above the floor; the grey line marks the floor height beneath the root. The Dragon, a flying rig,
+  is anchored on the root in all axes, which removes its dive trajectory. Both rows of a rig are drawn at the same scale."
+
+Check by reading the code and looking at the image: correctness of the three fixes; any remaining way the figure could mislead a
+reader (wrong clip/arm, hidden bones, wrong floor, scale mismatch between rows, clipping); caption accuracy against what is drawn.
+Output: numbered findings with severity and, at the very end, one line 'VERDICT: PASS' or 'VERDICT: NEEDS-FIX' with concrete fixes.
+Do not modify any files.
+warning: Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+hook: SessionStart
+hook: SessionStart Completed
+codex
+I’ll read the script in full, trace the dump and camera conventions, and inspect the rendered figure against the caption. I’ll keep the review read-only.
+exec
+/usr/bin/bash -lc 'rg -n "noKslot_clean|filmstrip|Truebones|KTJD|review default" /home/ts1v23/.codex/memories/MEMORY.md' in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 0ms:
+5:## Task 1: Update cross-project review default to `gpt-6-astra` with `max`, success
+9:- rollout_summaries/2026-09-04T21-49-18-Fkb7-update_cross_project_codex_review_default_gpt6_astra_max.md (cwd=/iridisfs/scratch/ts1v23/workspace/scene_keyframe, rollout_path=/home/ts1v23/.codex/sessions/2026/09/04/rollout-2026-09-04T22-49-18-01a06e65-c3e7-7c70-b124-88125a6c1f19.jsonl, updated_at=2026-09-04T21:54:49+00:00, thread_id=01a06e65-c3e7-7c70-b124-88125a6c1f19, persistent cross-project review default and fallback verified)
+13:- Codex, gpt-6-astra, model_reasoning_effort=max, MCP, codex exec, AGENTS.md, CLAUDE.md, review default, fallback, --sandbox, ENOENT
+32:# Task Group: /iridisfs/scratch/ts1v23/workspace/noKslot_clean KTJD-17 conversion, channel contract, and low-variance normalization safety
+33:scope: Use for BTJD/Truebones or PZ/Human conversion to KTJD-17, verifying local converted data and channel semantics, or gating PZ/Human training on per-cell normalization safety. This records a completed data release and an unresolved training blocker; it is not authorization to start training.
+34:applies_to: cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean; reuse_rule=safe for KTJD-17 artifacts and code paths in this checkout, but re-check live paths, revisions, masks, and active training config before acting because datasets and wiring can change.
+36:## Task 1: Convert Truebones and PZ/Human to KTJD-17 with real rotation provenance and release them, success
+40:- rollout_summaries/2026-08-19T00-47-11-SPPW-ktjd17_conversion_and_low_variance_normalization_audit.md (cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean, rollout_path=/home/ts1v23/.codex/sessions/2026/08/19/rollout-2026-08-19T01-47-11-01a0177c-83ca-7ef1-8f34-b77e718372b0.jsonl, updated_at=2026-08-21T10:48:23+00:00, thread_id=01a0177c-83ca-7ef1-8f34-b77e718372b0, completed conversion/release with provenance and visual-QA constraints)
+44:- KTJD-17, Truebones, PZ-Human312, rotation-provenance, visual-QA, right-handed, TopoX, 9181f5cccbad23e941bf94c2874daf36e7f288cf, dataset/ktjd17_truebones, dataset/ktjd17_pz_human312
+46:## Task 2: Verify local KTJD-17 artifacts and document the 0-16 channel contract, success
+50:- rollout_summaries/2026-08-19T00-47-11-SPPW-ktjd17_conversion_and_low_variance_normalization_audit.md (cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean, rollout_path=/home/ts1v23/.codex/sessions/2026/08/19/rollout-2026-08-19T01-47-11-01a0177c-83ca-7ef1-8f34-b77e718372b0.jsonl, updated_at=2026-08-21T10:48:23+00:00, thread_id=01a0177c-83ca-7ef1-8f34-b77e718372b0, live local-data and decode-contract audit)
+60:- rollout_summaries/2026-08-19T00-47-11-SPPW-ktjd17_conversion_and_low_variance_normalization_audit.md (cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean, rollout_path=/home/ts1v23/.codex/sessions/2026/08/19/rollout-2026-08-19T01-47-11-01a0177c-83ca-7ef1-8f34-b77e718372b0.jsonl, updated_at=2026-08-21T10:48:23+00:00, thread_id=01a0177c-83ca-7ef1-8f34-b77e718372b0, training blocker identified; no remediation implemented)
+76:- Exact source roots were verified at `data/animo4d_anytop/bvhs`, `scratch/humanml3d_272/motion_data`, and sibling AnyTop Truebones BVHs `/iridisfs/scratch/ts1v23/workspace/Anytop/AnyTop/dataset/truebones/zoo/Truebone_Z-OO`. Retrieve and verify the exact TopoX handoff commit `9181f5cccbad23e941bf94c2874daf36e7f288cf` if its expected local path is absent. [Task 1]
+77:- KTJD-17 is unpadded float32 `[T_valid,J_phys,17]`: `0:3 q_position`; `3:9` global rest-delta column-cont6d; `9:12` world velocity; `12` contact; `13:15` smooth-root XZ; `15:17` heading. Non-root `13:17` are exact zero and excluded by masks. The authoritative names are in `dataset/ktjd17_pz_human312_species_stats/species_stats.json` and `scratch/topox_new_data_release/docs/FORMAT.md`. [Task 1][Task 2]
+80:- Do not assume the PZ/Human stats are active: `scripts/train_v2_incontext.py` defaults to `dataset/ktjd17_truebones`, and `data/ktjd17_percell_stats_v1.npz` is Truebones. Species reporting stats have minimum std about `0.1151`; the failure is in per-rig/per-joint/per-channel stats. [Task 3]
+116:# Task Group: /iridisfs/scratch/ts1v23/workspace/noKslot_clean server dataset availability and download-credential audit
+118:applies_to: cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean, with checked sibling roots under `/iridisfs/scratch/ts1v23/workspace`; reuse_rule=safe as a path-and-probe starting point for this server tree, but re-check dataset contents and credential validity live because both are time-specific.
+124:- rollout_summaries/2026-07-24T05-29-45-RHhs-server_dataset_and_download_credential_audit.md (cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean, rollout_path=/home/ts1v23/.codex/sessions/2026/07/24/rollout-2026-07-24T06-29-45-019f9299-dded-7100-b233-1131b9b7c45e.jsonl, updated_at=2026-07-24T05:43:00+00:00, thread_id=019f9299-dded-7100-b233-1131b9b7c45e, read-only availability audit)
+134:- rollout_summaries/2026-07-24T05-29-45-RHhs-server_dataset_and_download_credential_audit.md (cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean, rollout_path=/home/ts1v23/.codex/sessions/2026/07/24/rollout-2026-07-24T06-29-45-019f9299-dded-7100-b233-1131b9b7c45e.jsonl, updated_at=2026-07-24T05:43:00+00:00, thread_id=019f9299-dded-7100-b233-1131b9b7c45e, credential-presence and non-secret live-probe audit)
+282:- rollout_summaries/2026-05-31T23-45-17-kqd1-slurm_subnet_cross_alloc_ddp_network_check.md (cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean, rollout_path=/home/ts1v23/.codex/sessions/2026/06/01/rollout-2026-06-01T00-45-17-019e806d-75e6-7560-8d59-8bd64dcb8a6f.jsonl, updated_at=2026-05-31T23:53:43+00:00, thread_id=019e806d-75e6-7560-8d59-8bd64dcb8a6f, live subnet and TCP or IB connectivity validation across `a100`, `quad_h200`, `swarm_a100`, and `swarm_h100`)
+341:# Task Group: /iridisfs/scratch/ts1v23/workspace/noKslot_clean HumanML3D twist recovery planning and FK-anchored source remap
+342:scope: Use for `noKslot_clean` when the user wants the v4 human twist-recovery plan reviewed, needs the true HumanML3D slicing convention verified, or wants a safe rule for deciding whether source remapping is reliable enough to recover twist truth.
+343:applies_to: cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean; reuse_rule=safe for HumanML3D or AMASS twist-recovery planning and source-remap audits in this checkout, but treat exact handoff docs, probe outputs, and recoverable-coverage estimates as checkout-specific until rerun.
+349:- rollout_summaries/2026-05-21T15-23-08-DuAK-v4_twist_recovery_review_fk_remap_and_humanml3d_slicing.md (cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean, rollout_path=/home/ts1v23/.codex/sessions/2026/05/21/rollout-2026-05-21T16-23-08-019e4b22-2030-75b0-927e-cfa79c73a236.jsonl, updated_at=2026-07-02T02:04:32+00:00, thread_id=019e4b22-2030-75b0-927e-cfa79c73a236, Rev 2 review of the v4 true-twist branch and Stage-0 slicing gate)
+359:- rollout_summaries/2026-05-21T15-23-08-DuAK-v4_twist_recovery_review_fk_remap_and_humanml3d_slicing.md (cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean, rollout_path=/home/ts1v23/.codex/sessions/2026/05/21/rollout-2026-05-21T16-23-08-019e4b22-2030-75b0-927e-cfa79c73a236.jsonl, updated_at=2026-07-02T02:04:32+00:00, thread_id=019e4b22-2030-75b0-927e-cfa79c73a236, FK-anchored remap decision replacing direct id or caption trust)
+457:# Task Group: /iridisfs/scratch/ts1v23/workspace/noKslot_clean AnyTop and AniMo4D dataset acquisition, shape audit, cleanup, and deferred evaluator memo
+458:scope: Use for `noKslot_clean` when the user asks to acquire or reorganize AnyTop or AniMo4D datasets from Hugging Face, audit motion-shape or frame-mask behavior, clean raw archives after extraction, recall the deferred AnyTopo evaluator plan without implementing it, or remember the repo’s full-length Graph-CodeFlow backbone constraint.
+459:applies_to: cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean; reuse_rule=safe for AnyTop and AniMo4D dataset work in this checkout, but treat on-disk dataset contents, generated docs, and deferred-plan status as checkout-specific.
+465:- rollout_summaries/2026-05-26T13-55-04-l3oW-anytop_planet_zoo_and_animo4d_download_extract_cleanup.md (cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean, rollout_path=/home/ts1v23/.codex/sessions/2026/05/26/rollout-2026-05-26T14-55-04-019e6491-4c00-75f1-b6a3-b5f81e3e838e.jsonl, updated_at=2026-06-07T17:09:33+00:00, thread_id=019e6491-4c00-75f1-b6a3-b5f81e3e838e, private HF download, shard aggregation, extraction, and final raw-archive cleanup)
+475:- rollout_summaries/2026-05-26T13-55-04-l3oW-anytop_planet_zoo_and_animo4d_download_extract_cleanup.md (cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean, rollout_path=/home/ts1v23/.codex/sessions/2026/05/26/rollout-2026-05-26T14-55-04-019e6491-4c00-75f1-b6a3-b5f81e3e838e.jsonl, updated_at=2026-06-07T17:09:33+00:00, thread_id=019e6491-4c00-75f1-b6a3-b5f81e3e838e, header-only shape scan, dataset-local doc, and loader-to-mask tracing)
+485:- rollout_summaries/2026-05-26T13-55-04-l3oW-anytop_planet_zoo_and_animo4d_download_extract_cleanup.md (cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean, rollout_path=/home/ts1v23/.codex/sessions/2026/05/26/rollout-2026-05-26T14-55-04-019e6491-4c00-75f1-b6a3-b5f81e3e838e.jsonl, updated_at=2026-06-07T17:09:33+00:00, thread_id=019e6491-4c00-75f1-b6a3-b5f81e3e838e, public HF download, extraction retry, and raw-directory deletion)
+503:- `/scratch/ts1v23/workspace/noKslot_clean` and `/iridisfs/scratch/ts1v23/workspace/noKslot_clean` resolve to the same directory, which matters when reporting final dataset roots or raw-tree cleanup paths [Task 1][Task 3]
+504:- The Planet Zoo AnyTop release used `46` `.tar.zst.partXX` shards plus `README.md`, `checksums.sha256`, and `parts_manifest.json`; concatenation produced an aggregate whose SHA256 matched the manifest, and the verified extracted root is `/scratch/ts1v23/workspace/noKslot_clean/data/anytop_planet_zoo` [Task 1]
+508:- The AniMo4D dataset came from public repo `Tevior/AniMo4D-AnyTop` pinned to commit `89f6078fc2ed27d74ff8f503b28a90f68afa602f`; the verified extracted root is `/scratch/ts1v23/workspace/noKslot_clean/data/animo4d_anytop`, with final counts `motions=77,894`, `bvhs=77,894`, `animations=0` [Task 3]
+509:- Deferred artifact to keep for later: `/iridisfs/scratch/ts1v23/workspace/noKslot_clean/handoff/20260530_2119_anytop_t2m_evaluator_plan.md` sketches an independent frozen graph-aware AnyTopo text-motion evaluator for PlanetZoo or AnyTop generation metrics; remember it, but do not implement it until the user reopens that work [ad-hoc note]
+511:- Full-length Graph-CodeFlow is the live `noKslot_clean` assumption: `T_fine_max=300`, `temporal_stride=4`, `T_lat_max=75`; future Graph-CodeFlow or `graph_pscf` specs, export scripts, frame seeds, position ids, token-cache assumptions, samplers, and smoke tests must not hardcode `T_lat=16` or assume `64`-frame windows [ad-hoc note]
+
+exec
+/usr/bin/bash -lc "pwd && rg --files -g AGENTS.md -g 'compose_tb_filmstrips.py' -g 'skeleton_art.py' -g '*lora*' paper scripts .codex 2>/dev/null" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 0ms:
+/iridisfs/scratch/ts1v23/workspace/noKslot_clean
+paper/figures/compose_tb_filmstrips.py
+scripts/_build_tb_lora_corpus_v2_mainbody.py
+scripts/_launch_lora_species.sh
+scripts/_render_lora_textprobe.py
+scripts/_test_lora_merge.py
+scripts/_build_tb_lora_corpus.py
+paper/figures/skeleton_art.py
+paper/figures/fig1_align/review/tab_lora_len.png
+
+exec
+/usr/bin/bash -lc 'for review_dir in /iridisfs /iridisfs/scratch /iridisfs/scratch/ts1v23 /iridisfs/scratch/ts1v23/workspace /iridisfs/scratch/ts1v23/workspace/noKslot_clean /iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper /iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures; do if [ -f "$review_dir/AGENTS.md" ]; then printf '"'\\n%s\\n' \""'$review_dir/AGENTS.md"; cat "$review_dir/AGENTS.md"; fi; done' in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 0ms:
+
+/iridisfs/scratch/ts1v23/workspace/AGENTS.md
+# Local Skill Additions
+
+## Available skills
+- telegram-notify: Send concise Telegram progress, blocker, and completion notifications to the user's configured Telegram chat. Use when the user asks to be notified on Telegram, asks for task-complete pings, asks for progress updates on their phone, or says phrases like "通过telegram告诉我", "发telegram通知我", "任务完成后通知我". (file: /iridisfs/scratch/ts1v23/codex-skills/telegram-notify/SKILL.md)
+
+## How to use skills
+- If the user asks for a Telegram notification, open `/iridisfs/scratch/ts1v23/codex-skills/telegram-notify/SKILL.md` and follow it.
+
+exec
+/usr/bin/bash -lc 'nl -ba paper/figures/compose_tb_filmstrips.py' in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 0ms:
+     1	"""Appendix figure: filmstrips of the Truebones arms drawn from the world dumps of scripts/v2_render_incontext.py --dump_world.
+     2	For each rig one held-out clip, two rows (zero training / per-rig LoRA), six frames spread over the clip; in every panel the
+     3	directly predicted joint positions (clay, underneath) are overlaid by the forward kinematics of the predicted rotations
+     4	(teal, on top), so the FK--pose gap of Table lora shows up as separation of the two skeletons.  Only our generations are drawn.
+     5	  python paper/figures/compose_tb_filmstrips.py <out.pdf>"""
+     6	import sys, textwrap
+     7	from pathlib import Path
+     8	import numpy as np
+     9	import matplotlib; matplotlib.use("Agg")
+    10	import matplotlib.pyplot as plt
+    11	
+    12	OUT = Path(sys.argv[1])
+    13	POSE, FK, INK, MUTE = "#B5552F", "#1F6F8B", "#222222", "#9a9a9a"
+    14	ARMS = [("zero", "zerotrain"), ("LoRA", "lora")]                 # row tag -> renders/cmp_dump_<rig>_<arm>
+    15	RIGS = [  # (display name, dump rig key, clip id, anchor): anchor "ground" keeps the height above the floor, "root" follows the root
+    16	    ("Buffalo (30 j.)", "buffalo", "A_Buffalo__Buffalo___SleepUp_140", "ground"),
+    17	    ("Gazelle (29 j.)", "gazelle", "A_Gazelle__Gazelle___Attack1_381", "ground"),
+    18	    ("Dragon (95 j.)", "dragon", "A_Dragon__Dragon___Attack3_299", "root"),
+    19	    ("Spider (68 j.)", "spider", "A_Spider__Spider___Scramble_916", "ground"),
+    20	]
+    21	NF = 6
+    22	FLOOR_Y = 0.0        # KTJD world frame: the floor is the plane Y = 0 (+Y up, +Z forward, X lateral)
+    23	plt.rcParams.update({"font.family": "serif", "font.serif": ["Nimbus Roman", "Times New Roman", "Times"], "font.size": 7, "pdf.fonttype": 42})
+    24	
+    25	# three-quarter camera of paper/figures/skeleton_art.py (azimuth 40 deg, elevation 18 deg) on KTJD world coordinates.
+    26	# Body coordinates are (forward, right, up) = (Z, X, Y).
+    27	_a, _e = np.radians(40.0), np.radians(18.0)
+    28	_cam = np.array([np.cos(_a) * np.cos(_e), np.sin(_a) * np.cos(_e), np.sin(_e)])
+    29	_fwd = -_cam; _up = np.array([0, 0, 1.0]); _right = np.cross(_fwd, _up); _right /= np.linalg.norm(_right); _u = np.cross(_right, _fwd)
+    30	
+    31	def project(P):                                   # P (..., 3) world -> (..., 2) screen, (...,) depth (larger = farther from the camera)
+    32	    B = np.stack([P[..., 2], P[..., 0], P[..., 1]], -1)
+    33	    return np.stack([B @ _right, B @ _u], -1), B @ _fwd
+    34	
+    35	def load(rig, arm, clip):
+    36	    z = np.load(f"renders/cmp_dump_{rig}_{arm}/{clip}.world.npz", allow_pickle=True)
+    37	    assert str(z["dump_format"]) == "world-dump-v3", z["dump_format"]
+    38	    assert str(z["motion_id"]) == clip.split("__", 1)[1], (z["motion_id"], clip)
+    39	    return z["gen_ric"], z["gen_fk"], z["parents"].astype(int), str(z["caption"])
+    40	
+    41	def anchored(pos, fk, parents, anchor):
+    42	    """Per-frame anchoring on the root joint (its position is shared by the two decodes): horizontal always, vertical only
+    43	    for anchor='root'.  With anchor='ground' the floor stays the plane Y = FLOOR_Y."""
+    44	    root = int(np.where(parents < 0)[0][0])
+    45	    shift = pos[:, root:root + 1].copy()
+    46	    if anchor == "ground": shift[..., 1] = 0.0
+    47	    return pos - shift, fk - shift
+    48	
+    49	def draw(ax, P, depth, parents, color, lw, alpha, z):
+    50	    """Bones of one skeleton, farthest bone first (bone depth = mid-point depth)."""
+    51	    j = np.where(parents >= 0)[0]; p = parents[j]
+    52	    for k in np.argsort(-(depth[j] + depth[p]) / 2):
+    53	        a, b = j[k], p[k]
+    54	        ax.plot([P[a, 0], P[b, 0]], [P[a, 1], P[b, 1]], color=color, lw=lw, alpha=alpha, solid_capstyle="round", zorder=z)
+    55	
+    56	W, LAB, GAP, CAP_H, BLOCK_GAP = 5.5, 0.62, 0.04, 0.20, 0.08
+    57	PW = (W - LAB - GAP * (NF - 1)) / NF
+    58	blocks = []
+    59	for name, rig, clip, anchor in RIGS:
+    60	    arms = {tag: load(rig, arm, clip) for tag, arm in ARMS}
+    61	    (T, J), caption, parents = arms["zero"][0].shape[:2], arms["zero"][3], arms["zero"][2]
+    62	    for tag, (pos, fk, par, cap) in arms.items():          # both rows must show the same clip at the same time stamps
+    63	        assert pos.shape == fk.shape == (T, J, 3), (tag, pos.shape, fk.shape, T, J)
+    64	        assert cap == caption and np.array_equal(par, parents), tag
+    65	    idx = np.linspace(0, T - 1, NF).round().astype(int)
+    66	    rows = []
+    67	    for tag, (pos, fk, _, _) in arms.items():
+    68	        pos, fk = anchored(pos[idx], fk[idx], parents, anchor)
+    69	        (sp, dp), (sf, df) = project(pos), project(fk)
+    70	        pts = [sp.reshape(-1, 2), sf.reshape(-1, 2)]
+    71	        if anchor == "ground": pts.append(project(np.array([[0.0, FLOOR_Y, 0.0]]))[0])   # the floor point under the root stays in view
+    72	        pts = np.concatenate(pts)
+    73	        rows.append([tag, sp, dp, sf, df, pts.min(0), pts.max(0)])
+    74	    # one scale (inches per world unit) for both rows of a rig, set by the wider row, so the two arms are drawn at the same size;
+    75	    # each row gets its own vertical extent
+    76	    wmax = max(hi[0] - lo[0] for *_, lo, hi in rows) * 1.08
+    77	    for r in rows:
+    78	        lo, hi = r[5], r[6]; cx = (lo[0] + hi[0]) / 2; pad = 0.04 * wmax
+    79	        r.append((cx - wmax / 2, cx + wmax / 2, lo[1] - pad, hi[1] + pad))
+    80	        r.append(PW * (hi[1] - lo[1] + 2 * pad) / wmax)                     # panel height in inches
+    81	    blocks.append((name, clip, anchor, caption, parents, rows))
+    82	
+    83	H = sum(sum(r[-1] + GAP for r in b[5]) + CAP_H + BLOCK_GAP for b in blocks)
+    84	fig = plt.figure(figsize=(W, H))
+    85	y = H
+    86	for name, clip, anchor, caption, parents, rows in blocks:
+    87	    for r, (tag, sp, dp, sf, df, _lo, _hi, lim, ph) in enumerate(rows):
+    88	        y -= ph
+    89	        fig.text(0.02 / W, (y + ph / 2) / H, f"{name}\n{tag}" if r == 0 else tag, ha="left", va="center", fontsize=7, color=INK, linespacing=1.2)
+    90	        for k in range(NF):
+    91	            ax = fig.add_axes([(LAB + k * (PW + GAP)) / W, y / H, PW / W, ph / H])
+    92	            if anchor == "ground":
+    93	                g = project(np.array([[0.0, FLOOR_Y, 0.0]]))[0][0, 1]
+    94	                ax.axhline(g, color="#d8d8d8", lw=0.5, zorder=1)
+    95	            draw(ax, sp[k], dp[k], parents, POSE, 1.1, 0.9, 2)
+    96	            draw(ax, sf[k], df[k], parents, FK, 0.7, 0.95, 3)
+    97	            ax.set_xlim(lim[0], lim[1]); ax.set_ylim(lim[2], lim[3]); ax.set_aspect("equal"); ax.axis("off")
+    98	        y -= GAP
+    99	    fig.text(LAB / W, (y - 0.02) / H, "\n".join(textwrap.wrap(f"“{caption}”", width=110)), ha="left", va="top", fontsize=7, color=MUTE)
+   100	    y -= CAP_H + BLOCK_GAP
+   101	fig.savefig(OUT, dpi=300); fig.savefig(OUT.with_suffix(".png"), dpi=150); print("wrote", OUT, "size", W, round(H, 2), "in")
+
+exec
+/usr/bin/bash -lc "sed -n '1,34p' /home/ts1v23/.codex/memories/MEMORY.md" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 0ms:
+# Task Group: cross-project Codex review model and CLI/MCP fallback configuration
+scope: Use before any cross-project Codex audit, paper/research/stage review, or reviewer-agent run to select the required model/reasoning pair and correctly configure an MCP or CLI review path.
+applies_to: cwd=/iridisfs/scratch/ts1v23/workspace/scene_keyframe with persistent rules under /home/ts1v23; reuse_rule=safe across the user's projects for review and audit workflows, but treat the checked config and rule-file contents as time-specific.
+
+## Task 1: Update cross-project review default to `gpt-6-astra` with `max`, success
+
+### rollout_summary_files
+
+- rollout_summaries/2026-09-04T21-49-18-Fkb7-update_cross_project_codex_review_default_gpt6_astra_max.md (cwd=/iridisfs/scratch/ts1v23/workspace/scene_keyframe, rollout_path=/home/ts1v23/.codex/sessions/2026/09/04/rollout-2026-09-04T22-49-18-01a06e65-c3e7-7c70-b124-88125a6c1f19.jsonl, updated_at=2026-09-04T21:54:49+00:00, thread_id=01a06e65-c3e7-7c70-b124-88125a6c1f19, persistent cross-project review default and fallback verified)
+
+### keywords
+
+- Codex, gpt-6-astra, model_reasoning_effort=max, MCP, codex exec, AGENTS.md, CLAUDE.md, review default, fallback, --sandbox, ENOENT
+
+## User preferences
+
+- when the user said “改一下跨项目规则，现在gpt-6-astra出了，以后审核默认用gpt-6-astra max审” -> for every cross-project Codex audit, paper/research/stage review, or reviewer agent, use `gpt-6-astra` with reasoning effort `max` without re-asking; do not downgrade either unless explicitly requested. [Task 1] [ad-hoc note]
+- the requested cross-project default applies to both MCP and CLI review paths. [Task 1]
+
+## Reusable knowledge
+
+- MCP calls must explicitly pass `model: "gpt-6-astra"` and `config: {"model_reasoning_effort":"max"}`. Reuse an existing review thread only when its inherited model and effort already match; otherwise start a correctly configured thread with the relevant context. [Task 1] [ad-hoc note]
+- CLI or MCP-disconnection fallback: `codex exec --model gpt-6-astra --config model_reasoning_effort=max "<prompt>"`. [Task 1] [ad-hoc note]
+- At the rollout check, `/home/ts1v23/.codex/config.toml` already specified `model = "gpt-6-astra"` and `model_reasoning_effort = "max"`; the persistent rule sources updated were `/home/ts1v23/.codex/AGENTS.md` and `/home/ts1v23/.claude/CLAUDE.md`. [Task 1] [ad-hoc note]
+
+## Failures and how to do differently
+
+- Symptom: a skill lookup fails with `sed: can't read /iridisfs/home/ts1v23/.agents/meta-optimize/SKILL.md`. Cause: the skill root omitted `skills/`. Fix: use `/iridisfs/home/ts1v23/.agents/skills/meta-optimize/SKILL.md`. [Task 1]
+- Symptom: a maintenance rollout updates an ad-hoc note but the canonical handbook/index remains stale. Cause: final claims were trusted without checking every memory surface. Fix: verify and update `MEMORY.md` and `memory_summary.md` explicitly. [Task 1]
+- Symptom: CLI review invocation fails around sandbox configuration. Cause: prior configuration notes associate `--sandbox` with `ENOENT`. Fix: use the recorded fallback command without `--sandbox`. [Task 1]
+
+# Task Group: /iridisfs/scratch/ts1v23/workspace/noKslot_clean KTJD-17 conversion, channel contract, and low-variance normalization safety
+scope: Use for BTJD/Truebones or PZ/Human conversion to KTJD-17, verifying local converted data and channel semantics, or gating PZ/Human training on per-cell normalization safety. This records a completed data release and an unresolved training blocker; it is not authorization to start training.
+applies_to: cwd=/iridisfs/scratch/ts1v23/workspace/noKslot_clean; reuse_rule=safe for KTJD-17 artifacts and code paths in this checkout, but re-check live paths, revisions, masks, and active training config before acting because datasets and wiring can change.
+
+exec
+/usr/bin/bash -lc "nl -ba paper/figures/skeleton_art.py && rg -n \"dump_world|dump_format|gen_ric|gen_fk|floor|world.npz|caption|motion_id\" scripts/v2_render_incontext.py && rg -n \"Truebones arms|visible separation|tb_filmstrips|tab:lora|label\\{.*lora\" paper -g '*.tex'" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 0ms:
+     1	"""Rest-pose skeleton line art from a KTJD-17 skeleton npz (P_rest_global + parents), for the teaser figure.
+     2	draw_rest(ax, npz_path, view) draws bones as lines and joints as dots in an orthographic side / three-quarter view."""
+     3	import numpy as np
+     4	def load(npz_path):
+     5	    z = np.load(npz_path, allow_pickle=True)
+     6	    return z["P_rest_global"].astype(float), z["parents"].astype(int), [str(s) for s in z["joint_names"]]
+     7	def project(P, view="threequarter", contact_idx=()):
+     8	    # KTJD canonical rest frame (checked on 6 rigs 2026-09-06): hips->head = +Z (forward), feet = -Y (so +Y up),
+     9	    # lateral = X.  Body coords: x forward, y right, z up.
+    10	    C = P - P.mean(0)
+    11	    B = np.stack([C[:, 2], C[:, 0], C[:, 1]], 1)
+    12	    az = {"side": 90.0, "threequarter": 40.0, "front": 5.0}[view]
+    13	    el = {"side": 8.0, "threequarter": 18.0, "front": 12.0}[view]
+    14	    a, e = np.radians(az), np.radians(el)
+    15	    cam = np.array([np.cos(a) * np.cos(e), np.sin(a) * np.cos(e), np.sin(e)])     # camera position direction
+    16	    fwd = -cam; up = np.array([0, 0, 1.0]); right = np.cross(fwd, up); right /= np.linalg.norm(right); u = np.cross(right, fwd)
+    17	    return B @ right, B @ u, B @ fwd
+    18	def draw_rest(ax, npz_path, view="threequarter", color="#b5552f", lw=1.3, dot=4, label=None):
+    19	    P, par, names = load(npz_path)
+    20	    z = np.load(npz_path, allow_pickle=True); contact = z["contact_joint_indices"] if "contact_joint_indices" in z.files else []
+    21	    x, y, d = project(P, view, contact)
+    22	    order = np.argsort(d)                       # far bones first
+    23	    for j in order:
+    24	        p = par[j]
+    25	        if p < 0: continue
+    26	        ax.plot([x[j], x[p]], [y[j], y[p]], color=color, lw=lw, solid_capstyle="round", alpha=0.95, zorder=2)
+    27	    ax.scatter(x, y, s=dot, color="#2b2b2b", zorder=3, linewidths=0)
+    28	    ax.set_aspect("equal"); ax.axis("off")
+    29	    if label: ax.set_title(label, fontsize=9, pad=2, color="#333333")
+    30	    return len(names)
+35:COLS = {"demo": (13, 110, 100), "gen_ric": (176, 61, 8),
+36:        "gen_fk": (91, 44, 184), "gt": (185, 28, 28)}
+76:    # (rig, joint, channel), so de-normalization is the repo convention x*(std+floor)+mean with
+173:def render_gif(out_path, panels, parents, caption, rig, fps=20):
+190:            for tx in range(x0 + 10, x0 + PANEL_W - 4, 28):   # sparse ticks: reads as a floor
+198:        for li, line in enumerate([caption[i:i + 96] for i in range(0, min(len(caption), 192), 96)]):
+223:    ap.add_argument("--dump_world", action="store_true",
+224:                    help="also write <name>.world.npz next to each gif: gen_ric / gen_fk / gt_w / demo_w world positions "
+233:    ap.add_argument("--caption_re", default="",
+234:                    help="with --pick caption: python regex matched (case-insensitive) against "
+235:                         "the target's caption; picks the FIRST matching clip per rig. The "
+238:    ap.add_argument("--pick", choices=("first", "energetic", "caption", "longest"),
+247:    ap.add_argument("--caption_cache", default="data/anytop_caption_llm2vec_v4b272neutral_multi")
+251:                         "generation/stats/captions). The pins drift is printed and written to "
+267:    if a.pick == "caption" and not a.caption_re:
+268:        raise SystemExit("--pick caption requires --caption_re")
+296:    # --dump_world provenance (codex 2026-09-04): a dump must say which checkpoint produced it
+297:    dump_ckpt_sha = _sha256_file(a.ckpt) if a.dump_world else ""
+309:            for k_ in ("ktjd_root", "joint_sem", "caption_cache", "texts_json"):
+321:        base = Ktjd17Base(a.ktjd_root, caption_emb_cache=a.caption_cache,
+352:                             load_captions=True, caption_emb_cache=a.caption_cache,
+353:                             random_caption=False, augment=False, joint_semantics=a.joint_sem,
+396:                if a.pick == "caption":
+399:                    # c_dir), so the QA set must deliberately contain clips whose captions
+402:                    rx = re.compile(a.caption_re, re.I)
+404:                           if rx.search(str(base[ds.index[i][1]].get("caption", "")))]
+406:                        print(f"[render] SKIP {bucket}:{r} -- no caption matches "
+407:                              f"{a.caption_re!r}", flush=True)
+499:            gen_ric, gen_fk = world_of_ktjd(gseg, base, rig, strict_gt=False)
+506:            gen_ric = world_of(gseg, mean, std)
+507:            gen_fk = world_of(gseg, mean, std, recover="fk", parents=parents, offsets=offsets)
+509:        jit_all, jit_root, gt_all, gt_root = jitter_ratio(gen_ric, gt_w)
+510:        jfk_all, jfk_root, _, _ = jitter_ratio(gen_fk, gt_w)
+513:        cap = str(t_item.get("caption", ""))
+514:        name = f"{bucket}_{rig}__{item['motion_id'][:48]}"
+515:        if a.dump_world:
+519:            np.savez(out / f"{name}.world.npz", gen_ric=gen_ric, gen_fk=gen_fk, gt_w=gt_w, demo_w=demo_w,
+522:                     motion_id=np.array(str(item["motion_id"])), caption=np.array(cap),
+525:                     dump_format=np.array("world-dump-v3"), ckpt=np.array(str(a.ckpt)),
+538:                    ("gen_ric", f"GEN pos ep{ep} s{a.steps}", gen_ric),
+539:                    ("gen_fk", f"GEN fk ep{ep} s{a.steps}", gen_fk),
+548:                     f"\tcaption: {cap}\tdemo={item['demo_id']} target={item['motion_id']}")
+550:        f"ckpt={a.ckpt} epoch={ep} steps={a.steps} seed={a.seed} cfg_text={a.cfg_text} smooth_mincutoff={a.smooth_mincutoff} smooth_beta={a.smooth_beta} panels=demo|gen_ric|gen_fk|gt\n"
+paper/sections/appendix.tex:117:\section{Adapter settings}\label{app:lora}
+paper/sections/appendix.tex:137:\paragraph{Hyper-parameters.} Table~\ref{tab:lora_hp} lists the per-rig settings. The learning rate
+paper/sections/appendix.tex:150:split by source animation.}\label{tab:lora_hp}
+paper/sections/appendix.tex:181:\paragraph{How long to train the adapter.} Table~\ref{tab:lora_len} re-trains the four adapters of
+paper/sections/appendix.tex:182:Table~\ref{tab:lora} with a snapshot every 50 epochs (Dragon: every 150 of 900) and scores every snapshot under the protocol
+paper/sections/appendix.tex:192:Table~\ref{tab:lora}); FK--pose gap in bone lengths on the validation clips, articulation and jitter of the sampled FK output
+paper/sections/appendix.tex:194:600 / 900 epochs.}\label{tab:lora_len}
+paper/sections/appendix.tex:226:Table~\ref{tab:lora} scored under the same 30\,Hz protocol -- articulation \num{0.52} against \num{0.49}, jitter \num{0.95}
+paper/sections/appendix.tex:254:\paragraph{Does the adapted rig still follow language?} We take the Buffalo adapter of Table~\ref{tab:lora} and give it
+paper/sections/appendix.tex:262:the same under-articulation Table~\ref{tab:lora} measures on the adapter's own clips.
+paper/sections/appendix.tex:316:Table~\ref{tab:lora}), and are not a ranking. We sample the released weights eight times per rig
+paper/sections/appendix.tex:333:Table~\ref{tab:lora}). Spider's real root is static, so its
+paper/sections/appendix.tex:460:Figure~\ref{fig:tb_filmstrips} shows the zero-training and LoRA arms of Table~\ref{tab:lora} on one
+paper/sections/appendix.tex:465:FK--pose gap in Table~\ref{tab:lora} measures.
+paper/sections/appendix.tex:469:\includegraphics[width=\linewidth]{figures/tb_filmstrips.pdf}
+paper/sections/appendix.tex:470:\caption{Truebones arms of Table~\ref{tab:lora}: one held-out clip per rig, six frames spread evenly
+paper/sections/appendix.tex:473:rotations (teal); a visible separation is the projected FK--pose discrepancy (a single view can hide
+paper/sections/appendix.tex:475:unadapted snapshot, whereas the zero column of Table~\ref{tab:lora} is read after at most 15
+paper/sections/appendix.tex:479:rows of a rig are drawn at the same scale.}\label{fig:tb_filmstrips}
+paper/sections/experiments.tex:47:from the epoch-289 checkpoint with seed 42; the Truebones arms of \S\ref{sec:exp:extend} use the
+paper/sections/experiments.tex:99:Table~\ref{tab:lora} gives the FK--pose gap on the held-out clips before and after adaptation next
+paper/sections/experiments.tex:110:sampled FK output relative to all real clips of the rig (1 = real).}\label{tab:lora}
+paper/sections/experiments.tex:136:weights trained on the whole Truebones zoo, including the four rigs of Table~\ref{tab:lora}; its
+paper/sections/method.tex:137:\subsection{Extending the model to a rig it has never seen}\label{sec:method:lora}
+
+exec
+/usr/bin/bash -lc "sed -n '1,230p' scripts/v2_render_incontext.py && sed -n '268,437p' scripts/v2_render_incontext.py && sed -n '448,560p' scripts/v2_render_incontext.py" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 0ms:
+#!/usr/bin/env python3
+"""Render 4-panel skeleton GIFs from an in-context DiT checkpoint.
+
+Layout per clip (GT stays the RED rightmost panel, per the established convention):
+    DEMO (teal, ric) | GEN pos (orange, ric) | GEN fk (purple, rot6d-FK) | TARGET GT (red, ric)
+The GENERATED motion is drawn under BOTH recoveries on purpose: H4 measured 4-19% disagreement
+between the position family and the rotation family on generated output, and two panels make that
+disagreement visible instead of hiding it behind whichever family we pick. GT needs one panel only
+(the families agree to 0.000% on real data). One shared scale across all four panels.
+True-speed playback: every real frame at the CORPUS's own rate (13ch 20 fps, KTJD-17 30 fps),
+no subsampling.
+
+Read-only w.r.t. training state; writes GIFs + summary.txt (jitter for both recoveries).
+"""
+import argparse, hashlib, json, pickle, sys
+from pathlib import Path
+
+import numpy as np
+import torch
+from PIL import Image, ImageDraw
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.data.anytop_dataset import (AnyTopDataset, _STD_FLOOR,                 # noqa: E402
+                                     _recover_world_positions)
+from src.data.anytop_rot6d_fk import recover_from_bvh_rot_np                     # noqa: E402
+from src.data.incontext_pairs import (InContextPairs, collate, read_split,      # noqa: E402
+                                      truebones_types, pzh_types, DEMO_FRAMES, TARGET_FRAMES)
+from src.models.v2.dit_motion import InContextMotionDiT, sample                  # noqa: E402
+
+PANEL_W, PANEL_H, GAP, FOOT = 300, 360, 12, 66
+# The GENERATED motion is drawn under BOTH recoveries: H4 measured a 4-19% disagreement between
+# the position family (RIC) and the rotation family (FK) on generated output -- two panels make
+# that disagreement visible to the eye instead of hiding it behind whichever family we pick.
+# GT needs one panel only (the two families agree to 0.000% on real data).
+COLS = {"demo": (13, 110, 100), "gen_ric": (176, 61, 8),
+        "gen_fk": (91, 44, 184), "gt": (185, 28, 28)}
+
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 24), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def world_of(norm_txjc, mean, std, recover="ric", parents=None, offsets=None):
+    """World positions via either channel family. The two disagree exactly where the model is
+    inconsistent, so rendering BOTH localises noise: ric reads per-frame positions (ch0:3),
+    fk rebuilds them from rotations (ch3:9) over the bone chain.
+    """
+    if norm_txjc.shape[-1] != 13:
+        # S0c contract guard: the legacy AnyTop/RIFKE recovery must never consume KTJD tensors
+        # (17/18 channels) -- that path would silently misread the channel layout.
+        raise ValueError(f"legacy world_of expects 13 channels, got {norm_txjc.shape[-1]} -- "
+                         f"KTJD tensors must go through world_of_ktjd")
+    raw = (norm_txjc * (std[None] + _STD_FLOOR) + mean[None]).astype(np.float64)
+    if recover == "fk":
+        return recover_from_bvh_rot_np(raw, parents, offsets)        # [T,J,3]
+    return _recover_world_positions(raw)                             # [T,J,3]
+
+
+def world_of_ktjd(norm_seg18, base, rig, strict_gt):
+    """KTJD-17 world positions via the OFFICIAL codec, both paths at once.
+
+    norm_seg18 [T,J,18] normalized (plane 17 = heading flag, sliced off); de-normalized with the
+    adapter's exact std trick, then decode_ktjd17 (direct + FK, NO temporal integration --
+    velocity channels are never integrated, per the KTJD contract). strict_gt=False for model
+    output (degenerate predicted 6D tolerated and reported by the codec).
+    Returns (direct [T,J,3], fk [T,J,3]).
+    """
+    from src.data.ktjd17.decoder import decode_ktjd17
+    sk = base._skeleton(rig)
+    J = norm_seg18.shape[1]
+    # per-cell mean/std (2026-08-21): the served/predicted tensor is standardized per
+    # (rig, joint, channel), so de-normalization is the repo convention x*(std+floor)+mean with
+    # BOTH taken from the stats artifact (codex round-S7 blocker 2: this used the superseded
+    # scale-only path and called a function that no longer exists).
+    mu_r, sd_r = base._stats(rig)          # the view's serving normalization (percell or the scale_only ablation)
+    mean, std = mu_r[:J, :17], sd_r[:J, :17]
+    raw = (norm_seg18[..., :17] * (std[None] + _STD_FLOOR) + mean[None]).astype(np.float64)
+    dec = decode_ktjd17(raw, parents=sk["parents"], R_rest_global=sk["R_rest_global"],
+                        R_rest_local=sk["R_rest_local"],
+                        offset_parent_local=sk["offset_parent_local"],
+                        rotation_source_kind=sk["rotation_source_kind"], strict_gt=strict_gt)
+    return dec.positions_direct, dec.positions_fk
+
+
+def one_euro(x, fps=20.0, min_cutoff=1.5, beta=0.3, d_cutoff=1.0):
+    """One-euro filter along axis 0 of x [T, ...] (Casiez et al. 2012), the game-industry
+    standard adaptive low-pass: strong smoothing at low speeds (kills uniform micro-jitter on
+    near-static joints -- the measured failure mode, see jitter_analysis_s32.txt), weak at high
+    speeds (bursts stay sharp). Pure post-process on the MODEL OUTPUT channels; deployment
+    candidate (user 2026-08-28 plan b)."""
+    import numpy as _np
+    def alpha(cutoff):
+        tau = 1.0 / (2 * _np.pi * cutoff)
+        te = 1.0 / fps
+        return 1.0 / (1.0 + tau / te)
+    y = x.copy()
+    dx_prev = _np.zeros_like(x[0])
+    for t in range(1, x.shape[0]):
+        dx = (x[t] - y[t - 1]) * fps
+        a_d = alpha(d_cutoff)
+        dx_hat = a_d * dx + (1 - a_d) * dx_prev
+        cutoff = min_cutoff + beta * _np.abs(dx_hat)
+        a = alpha(cutoff)
+        y[t] = a * x[t] + (1 - a) * y[t - 1]
+        dx_prev = dx_hat
+    return y
+
+
+def jitter_ratio(gen_w, gt_w):
+    """Second-difference acceleration ratio gen/GT -- the milestone-comparable jitter number.
+    Reported for all joints and for the root row separately (root mixes in velocity-integration
+    noise). GT is the natural denominator: ~1.0 means as smooth as real motion."""
+    def acc(w):
+        if w.shape[0] < 3:
+            return None
+        a = w[2:] - 2 * w[1:-1] + w[:-2]
+        return np.linalg.norm(a, axis=-1)
+    ga, ta = acc(gen_w), acc(gt_w)
+    if ga is None or ta is None:
+        return float("nan"), float("nan"), float("nan"), float("nan")
+    # the raw GT denominators ride along: a near-static GT makes the ratio arbitrarily large,
+    # so the ratio is only interpretable next to its denominator.
+    gt_all, gt_root = float(ta.mean()), float(ta[:, 0].mean())
+    allr = float(ga.mean() / max(gt_all, 1e-9))
+    rootr = float(ga[:, 0].mean() / max(gt_root, 1e-9))
+    return allr, rootr, gt_all, gt_root
+
+
+def draw_panel(img, xy, parents, col, x0):
+    d = ImageDraw.Draw(img)
+    for j, p in enumerate(parents):
+        if p < 0:
+            continue
+        d.line([x0 + xy[j, 0], xy[j, 1], x0 + xy[p, 0], xy[p, 1]], fill=col, width=3)
+    for j in range(len(parents)):
+        r = 4 if j == 0 else 2
+        d.ellipse([x0 + xy[j, 0] - r, xy[j, 1] - r, x0 + xy[j, 0] + r, xy[j, 1] + r], fill=col)
+
+
+def project(seqs, yaw_deg=28.0):
+    """Shared orthographic projection: x' = x cosA + z sinA, y' = y (up). One bbox over ALL
+    sequences so panels share scale; returns (list of [T,J,2] pixel coords, ground_row_px).
+
+    The bbox is FORCED to include world y=0: with a pure-yaw projection the whole ground plane
+    maps to one horizontal pixel row, so returning that row lets the caller draw a ground line --
+    the reference the eye needs to see root-height drift ("每个物种有点飘", user 2026-08-20).
+    The line is the ABSOLUTE world y=0 reference, not a promise that GT touches it: recovered
+    rest-pose minima vary by rig (Pteranodon +1.31 aloft, Dragon -0.25 below zero; codex probe),
+    so read it as a fixed altitude datum shared by all four panels -- GEN drifting relative to
+    the GT panel's height above the line is the signal."""
+    a = np.radians(yaw_deg)
+    flat = [np.stack([s[..., 0] * np.cos(a) + s[..., 2] * np.sin(a), s[..., 1]], axis=-1)
+            for s in seqs]
+    allp = np.concatenate([f.reshape(-1, 2) for f in flat], axis=0)
+    lo, hi = allp.min(0), allp.max(0)
+    lo[1] = min(lo[1], 0.0)            # ground always in frame
+    hi[1] = max(hi[1], 0.0)
+    span = float(max(hi[0] - lo[0], hi[1] - lo[1], 1e-6))
+    sc = (min(PANEL_W, PANEL_H) - 46) / span
+    out = []
+    for f in flat:
+        px = (f[..., 0] - (lo[0] + hi[0]) / 2) * sc + PANEL_W / 2
+        py = PANEL_H - ((f[..., 1] - (lo[1] + hi[1]) / 2) * sc + PANEL_H / 2)
+        out.append(np.stack([px, py], axis=-1))
+    ground_px = PANEL_H - ((0.0 - (lo[1] + hi[1]) / 2) * sc + PANEL_H / 2)
+    return out, float(ground_px)
+
+
+def render_gif(out_path, panels, parents, caption, rig, fps=20):
+    """panels: list of (color_key, tag, seq [T,J,3]); shared scale across all of them."""
+    names = [c for c, _, _ in panels]
+    tags = [t for _, t, _ in panels]
+    seqs, ground_px = project([w for _, _, w in panels])
+    T = max(s.shape[0] for s in seqs)
+    W = PANEL_W * len(panels) + GAP * (len(panels) - 1)
+    frames = []
+    for t in range(T):
+        img = Image.new("RGB", (W, PANEL_H + FOOT), (246, 248, 247))
+        d = ImageDraw.Draw(img)
+        for k, (name, seq) in enumerate(zip(names, seqs)):
+            x0 = k * (PANEL_W + GAP)
+            # ground: shaded underground band + line at world y=0, drawn UNDER the skeleton
+            gy = min(max(ground_px, 0), PANEL_H - 1)
+            d.rectangle([x0, gy, x0 + PANEL_W - 1, PANEL_H - 1], fill=(236, 240, 238))
+            d.line([x0, gy, x0 + PANEL_W - 1, gy], fill=(170, 186, 178), width=2)
+            for tx in range(x0 + 10, x0 + PANEL_W - 4, 28):   # sparse ticks: reads as a floor
+                d.line([tx, gy, tx - 6, gy + 5], fill=(198, 210, 202), width=1)
+            d.rectangle([x0, 0, x0 + PANEL_W - 1, PANEL_H - 1], outline=(216, 223, 225))
+            tt = min(t, seq.shape[0] - 1)                    # shorter panels freeze on last frame
+            draw_panel(img, seq[tt], parents, COLS[name], x0)
+            d.text((x0 + 8, 6), tags[k], fill=COLS[name])
+            d.text((x0 + 8, PANEL_H - 18), f"f{tt+1}/{seq.shape[0]}", fill=(116, 133, 150))
+        d.text((8, PANEL_H + 8), rig, fill=(15, 23, 32))
+        for li, line in enumerate([caption[i:i + 96] for i in range(0, min(len(caption), 192), 96)]):
+            d.text((8, PANEL_H + 26 + 16 * li), line, fill=(64, 80, 94))
+        frames.append(img)
+    # true speed = the CORPUS's own frame rate (13ch AnyTop 20fps, KTJD-17 30fps). Playing 30fps
+    # data at 20fps is a 2/3 slow-motion that makes low-amplitude motion read as frozen.
+    frames[0].save(out_path, save_all=True, append_images=frames[1:],
+                   duration=round(1000.0 / fps), loop=0)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--rigs_A", default="Alligator,Trex")
+    ap.add_argument("--rigs_B", default="BrownBear,Elephant")
+    ap.add_argument("--steps", type=int, default=10)
+    ap.add_argument("--smooth_mincutoff", type=float, default=0.0,
+                    help="one-euro post-filter on the generated channels (0 = off); typical "
+                         "1.5 mild / 0.8 strong at 30fps source")
+    ap.add_argument("--smooth_beta", type=float, default=0.3)
+    ap.add_argument("--cfg_text", type=float, default=1.0,
+                    help="text-axis classifier-free guidance at inference; 1.0 = off (bare "
+                         "conditional). The text-dropped branch was trained (p_drop_text 0.1), "
+                         "the demo axis was NOT (p_drop_demo 0) -- so only cfg_text is exposed.")
+    ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--dump_world", action="store_true",
+                    help="also write <name>.world.npz next to each gif: gen_ric / gen_fk / gt_w / demo_w world positions "
+                         "[T,J,3], joint names, parents, fps -- the input of scripts/_compare_external_bvh_geometry.py")
+    ap.add_argument("--corpus", choices=("truebones", "pzh", "ktjd17"), default="truebones")
+    ap.add_argument("--ktjd_root", default="dataset/ktjd17_truebones")
+    ap.add_argument("--demo_frames", type=int, default=DEMO_FRAMES)
+    ap.add_argument("--target_frames", type=int, default=TARGET_FRAMES)
+    ap.add_argument("--rigs_T", default="",
+        raise SystemExit("--pick caption requires --caption_re")
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
+
+    ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)  # our own ckpt; contains numpy RNG state, rejected by 2.6's weights_only default
+    ca = ck["args"]
+    # The model width comes from the ckpt, so the CORPUS must too -- a default --corpus of
+    # truebones against a KTJD ckpt would build the right width and then feed it the wrong
+    # decode semantics (codex round-2). Refuse the mismatch instead of silently rendering.
+    if str(ca.get("corpus", "truebones")) != a.corpus:
+        raise SystemExit(f"[refuse] ckpt was trained on corpus {ca.get('corpus')!r} but "
+                         f"--corpus is {a.corpus!r}; pass the matching corpus")
+    mkw = dict(in_ch=17 if ca.get("corpus") == "ktjd17" else 13,
+               dim=ca["dim"], depth=ca["depth"], n_heads=ca["heads"],
+               d_text=4096, d_joint_sem=4096,
+               use_struct_feats=bool(ca.get("struct_feats", False)),
+               use_dir_bias=bool(ca.get("dir_bias", False)),
+               qk_norm=bool(ca.get("qk_norm", False)),
+               use_ref_text=bool(ca.get("ref_text", False)))
+    if bool(ca.get("two_stage", False)):
+        from src.models.v2.dit_motion import TwoStageInContextDiT
+        model = TwoStageInContextDiT(root_dim=int(ca.get("root_dim", 192)), root_depth=4,
+                                     **mkw).to(dev)
+    else:
+        model = InContextMotionDiT(**mkw).to(dev)
+    model.load_state_dict(ck["model"]); model.eval()
+    ep = ck.get("epoch", -1)
+    print(f"[render] ckpt {a.ckpt} (epoch {ep}) on {dev}", flush=True)
+    # --dump_world provenance (codex 2026-09-04): a dump must say which checkpoint produced it
+    dump_ckpt_sha = _sha256_file(a.ckpt) if a.dump_world else ""
+
+    corpus_swap_note = ""
+    eff_pc, eff_excl = "", None          # effective per-cell stats / clip cut actually used (dumped with hashes)
+    if a.corpus == "ktjd17":
+        from src.data.ktjd17_incontext import Ktjd17Base, ktjd17_split_names
+        pins_ck = ck.get("ktjd_pins") or {}
+        # The CHECKPOINT names the data it was trained on. Unless this is an explicit zero-shot
+        # corpus swap, every data argument is back-filled from the ckpt BEFORE the loader is built
+        # (codex 2026-09-02 round 4: filling ktjd_root afterwards built a LoRA ckpt's PARENT view
+        # and its derived-view pins were then skipped by the key-intersection drift check).
+        if not a.allow_corpus_swap:
+            for k_ in ("ktjd_root", "joint_sem", "caption_cache", "texts_json"):
+                if k_ in ca and getattr(a, k_) != ca[k_]:
+                    print(f"[render] {k_}: {getattr(a, k_)!r} -> {ca[k_]!r} (from ckpt)", flush=True)
+                    setattr(a, k_, ca[k_])
+        # the EFFECTIVE stats and cut, resolved ONCE and dumped as such (codex 2026-09-04 round 2: the dump used
+        # to record the CLI value, which is empty for a LoRA ckpt whose cut comes from the checkpoint). The cut
+        # comes from the CKPT, never a render-time default: rendering a model against data it was not trained
+        # on is the drift this refuses -- except for an explicit zero-shot corpus swap, whose own cut applies.
+        eff_pc = a.percell_stats or ca.get("ktjd_percell_stats", "data/ktjd17_percell_stats_v1.npz")
+        # swap: the CLI cut verbatim (none given == no cut) -- a ckpt's cut names clips of ANOTHER corpus and must
+        # never leak into a swap (codex 2026-09-04 round 3); no swap: the ckpt's own cut
+        eff_excl = (a.exclude_clips or None) if a.allow_corpus_swap else (ca.get("exclude_clips") or None)
+        base = Ktjd17Base(a.ktjd_root, caption_emb_cache=a.caption_cache,
+                          joint_semantics=a.joint_sem, texts_json=a.texts_json,
+                          percell_stats=eff_pc, exclude_clips=eff_excl,
+                          normalization=str(ca.get("rep_norm", "percell")))
+        # `exclusion` is NOT in base.provenance -- it lives on base.provenance_exclusion -- so a
+        # key-intersection drift check silently misses a swapped cut file at the same path, which
+        # changes render/eval membership under an unchanged checkpoint (codex 2026-08-21 (A)4).
+        live = {**base.provenance, "exclusion": base.provenance_exclusion}
+        # BIDIRECTIONAL over the DATA pins: a data pin the ckpt carries but the live corpus lacks
+        # (a derived view's manifest/derivation sha rendered against its parent) is drift, not a
+        # skip. Objective pins the trainer adds to ktjd_pins (gammas, gamma_calib_*, group_spec,
+        # gate_override, in_ch, ...) describe the run, not the data, and are not compared here.
+        data_keys = set(live) | {"manifest_sha256", "derivation_sha256"}
+        drift = sorted(k for k, v in pins_ck.items()
+                       if k in data_keys and (k not in live or live[k] != v))
+        if drift and a.allow_corpus_swap:
+            corpus_swap_note = (f"ZERO-SHOT CORPUS SWAP: ckpt pins differ on {drift}; rendered on "
+                                f"{a.ktjd_root} with stats {a.percell_stats or 'ckpt'} by explicit request")
+            print(f"[render] {corpus_swap_note}", flush=True)
+        elif drift:
+            raise SystemExit(f"[refuse] render-time data does not match what this checkpoint was "
+                             f"trained on: {drift}. Rendering a model against replaced artifacts "
+                             f"produces a picture of nothing (pass --allow_corpus_swap for a "
+                             f"deliberate zero-shot baseline on another corpus).")
+        names = ktjd17_split_names(a.ktjd_root, exclude=eff_excl)
+        tb = None
+    else:
+        cond = pickle.load(open(f"{a.data_root}/_cond_normalized_J144.pkl", "rb"))
+        tb = truebones_types(cond.keys()) if a.corpus == "truebones" else pzh_types(cond.keys())
+        names = {k: read_split(a.splits_dir, k) for k in ("train", "val", "held_representative")}
+        base = AnyTopDataset(data_root=a.data_root, split="all", num_frames=300, max_joints=144,
+                             load_captions=True, caption_emb_cache=a.caption_cache,
+                             random_caption=False, augment=False, joint_semantics=a.joint_sem,
+                             species_whitelist=tb, splits_dir=a.splits_dir,
+                             texts_json_name=a.texts_json)
+    # rest-demo runs must be rendered the way they were trained, and the checkpoint is the
+    # authority -- deriving it from the ckpt stops a silent 64-frame-demo render of a 1-frame arm.
+    # EVERY window-defining knob comes from the CHECKPOINT (codex round-S8 blocker 2): rendering a
+    # different target window, corpus root or conditioning surface than the run was trained on
+    # makes the visual acceptance meaningless, and visual acceptance is this project's only
+    # quality gate.
+    for k_ in ("target_frames",):                  # ktjd_root is back-filled BEFORE the loader above
+        if k_ in ca and getattr(a, k_) != ca[k_]:
+            print(f"[render] {k_}: {getattr(a, k_)!r} -> {ca[k_]!r} (from ckpt)", flush=True)
+            setattr(a, k_, ca[k_])
+    ck_rest = bool(ca.get("demo_rest", False))
+    if ck_rest:
+        if int(ca.get("demo_frames", 0)) != 1:
+            raise SystemExit(f"[refuse] ckpt has demo_rest with demo_frames="
+                             f"{ca.get('demo_frames')}; expected 1")
+        a.demo_frames = 1
+        print("[render] ckpt trained with --demo_rest: 1-frame rest demo", flush=True)
+    PK = dict(demo_rest=ck_rest, emit_ref_text=bool(ca.get("ref_text", False)),
+              demo_frames=a.demo_frames, target_frames=a.target_frames,
+              emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)))
+    dsA = InContextPairs(base, names["val"], names["train"], object_types=tb,
+                         balance_skeletons=False, seed=a.seed, **PK)
+    # the merged no-IK corpus ships only train/val; a missing held bucket renders nothing for B
+    _held = names.get("held_representative", set())
+    dsB = (InContextPairs(base, _held, _held, object_types=tb,
+                          balance_skeletons=False, seed=a.seed, **PK) if _held else None)
+    dsT = InContextPairs(base, names["train"], names["train"], object_types=tb,
+                         balance_skeletons=False, seed=a.seed, **PK)
+
+    jobs = []
+    for bucket, rigs, ds in (("A", a.rigs_A, dsA), ("B", a.rigs_B, dsB), ("T", a.rigs_T, dsT)):
+        if ds is None:
+            continue
+        for r in [x.strip() for x in rigs.split(",") if x.strip()]:
+            if r not in ds.types:
+                print(f"[render] SKIP {bucket}:{r} -- not in bucket "
+                      f"({'A held?' if bucket == 'A' else 'train?'})", flush=True)
+                continue
+            positions = [i for i, (ot, _) in enumerate(ds.index) if ot == r]
+            if not a.all_targets:
+                if a.pick == "caption":
+                    # Turning-motion acceptance probe: heading is the one axis with neither an
+                    # augmentation nor a condition backing it (user 2026-08-20: no yaw aug; no
+                    # c_dir), so the QA set must deliberately contain clips whose captions
+                    # DESCRIBE a turn -- otherwise the known exposure goes unexamined.
+                    import re
+                    rx = re.compile(a.caption_re, re.I)
+                    hit = [i for i in positions
+                           if rx.search(str(base[ds.index[i][1]].get("caption", "")))]
+                    if not hit:
+                        print(f"[render] SKIP {bucket}:{r} -- no caption matches "
+                              f"{a.caption_re!r}", flush=True)
+                        continue
+                    positions = hit[:1]
+                elif a.pick == "longest" and len(positions) > 1:
+                    # Short clips hide the failure modes that only appear over time (drift,
+                    # accumulating jitter, a pose that is fine for a second then decays). `first`
+                    # picked 28-51 frame clips (~1-1.7 s) while this corpus holds up to 374.
+                    # Ranked on the GT's own length, capped by the model's target window.
+                    def _len(ix):
+                        return min(int(base[ds.index[ix][1]]["num_frames"]), ds.Tt)
+                    positions = [max(positions, key=_len)]
+                elif a.pick == "energetic" and len(positions) > 1:
+                    # GT motion energy = mean frame-to-frame displacement of the DE-NORMALIZED
+                    # RIC positions over the head window (codex 01a01b1a: measuring in the
+                    # per-rig-normalized space distorts the ranking -- the winner changed for
+                    # Horse/Anaconda/Monkey/Raptor). Physical space, GT-only, no RNG involved.
+                    def _energy(ix):
+                        gt_it = base[ds.index[ix][1]]
+                        Jn = int(gt_it["num_joints"])
+                        Tn = min(int(gt_it["num_frames"]), ds.Tt)
+                        if Tn < 2:
+                            return 0.0
+                        xn = np.asarray(gt_it["anytop_x"])[:Jn, :, :Tn].transpose(2, 0, 1)
+                        if a.corpus == "ktjd17":
+                            xw, _ = world_of_ktjd(xn, base, ds.index[ix][0], strict_gt=True)
+                        else:
+                            mn = np.asarray(gt_it["anytop_mean"])[:Jn]
+                            sd = np.asarray(gt_it["anytop_std"])[:Jn]
+                            raw = (xn * (sd[None] + _STD_FLOOR) + mn[None]).astype(np.float64)
+                            xw = _recover_world_positions(raw)   # WORLD, incl. root translation
+                        return float(np.linalg.norm(np.diff(xw, axis=0), axis=-1).mean())
+        item = ds[pos]
+        b = {k: (v.to(dev) if torch.is_tensor(v) else v)
+             for k, v in collate([item]).items()}
+        J = int(item["n_joints"])
+        t_real = int(item["frame_valid"][a.demo_frames:].sum())
+        d_real = int(item["frame_valid"][:a.demo_frames].sum())
+
+        torch.manual_seed(a.seed)
+        with torch.no_grad():
+            g2kw = {k: b[k] for k in ("struct_feats", "updown") if k in b}
+            if a.corpus == "ktjd17":
+                cvj = torch.from_numpy(base.static_masks(rig)["channel_valid"]).to(dev)
+                cv = torch.zeros(1, b["x"].shape[2], 17, dtype=torch.bool, device=dev)
+                cv[0, :cvj.shape[0]] = cvj
+                x_in = b["x"][..., :17].contiguous()
+                g2kw["channel_valid"] = cv
+                # demo-side heading validity (plane 17); sample() ignores it on target frames
+                g2kw["heading_valid"] = b["x"][:, :, 0, 17] > 0.5
+                if "demo_text" in b:
+                    g2kw["demo_text"] = b["demo_text"]
+                # anchored ckpts sample from anchor + N(0,I) -- rendering without the anchor
+                # would sample from the WRONG base distribution
+                anc_mode = str(ca.get("anchor", "none"))
+                if anc_mode != "none":
+                    from scripts.train_v2_incontext import ktjd_anchor
+                    rest_lut = ({rig: torch.from_numpy(base.rest_anchor_frame(rig))}
+                                if anc_mode == "rest" else None)
+                    g2kw["anchor"] = ktjd_anchor(b, x_in, anc_mode, rest_lut, a.demo_frames)
+            else:
+                x_in = b["x"]
+            gen = sample(model, x_in, b["is_target"], a.steps, cfg_text=a.cfg_text,
+                         demo_frames=a.demo_frames,
+                         joint_bias=b["joint_bias"], frame_valid=b["frame_valid"],
+                         joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"],
+                         **g2kw)
+        gen = gen[0].float().cpu().numpy()
+        if a.smooth_mincutoff > 0:
+            # smooth ONLY the target frames of the model-output channels; the demo frame is GT.
+            # fps follows the corpus: KTJD-17 is 30fps, the legacy 13ch corpora are 20fps
+            # (codex 2026-08-28: a hard-coded 30 would mistune the filter for those renders)
+            _fps = 30.0 if a.corpus == "ktjd17" else 20.0
+            gen[a.demo_frames:] = one_euro(gen[a.demo_frames:], fps=_fps,
+                                           min_cutoff=a.smooth_mincutoff, beta=a.smooth_beta)
+        gt = b["x"][0].float().cpu().numpy()
+
+        t_item = base[ds.index[pos][1]]
+        parents = [int(p) for p in t_item["parent_indices"][:J]]
+        gseg = gen[a.demo_frames:a.demo_frames + t_real, :J]
+        gtseg = gt[a.demo_frames:a.demo_frames + t_real, :J]
+        if a.corpus == "ktjd17":
+            demo_w, _ = world_of_ktjd(gt[:d_real, :J], base, rig, strict_gt=True)
+            gen_ric, gen_fk = world_of_ktjd(gseg, base, rig, strict_gt=False)
+            gt_w, _ = world_of_ktjd(gtseg, base, rig, strict_gt=True)
+        else:
+            mean = np.asarray(t_item["anytop_mean"])[:J]
+            std = np.asarray(t_item["anytop_std"])[:J]
+            offsets = np.asarray(t_item["rest_offsets"])[:J]
+            demo_w = world_of(gt[:d_real, :J], mean, std)
+            gen_ric = world_of(gseg, mean, std)
+            gen_fk = world_of(gseg, mean, std, recover="fk", parents=parents, offsets=offsets)
+            gt_w = world_of(gtseg, mean, std)
+        jit_all, jit_root, gt_all, gt_root = jitter_ratio(gen_ric, gt_w)
+        jfk_all, jfk_root, _, _ = jitter_ratio(gen_fk, gt_w)
+        static_warn = "  [near-static GT, ratio inflated]" if gt_all < 1e-3 else ""
+
+        cap = str(t_item.get("caption", ""))
+        name = f"{bucket}_{rig}__{item['motion_id'][:48]}"
+        if a.dump_world:
+            _jn = [str(x) for x in base._skeleton(rig)["joint_names"]][:J] if a.corpus == "ktjd17" else [f"j{i}" for i in range(J)]
+            _gen_id = (json.loads((Path(a.ktjd_root) / "generation.json").read_text())["generation_id"]
+                       if a.corpus == "ktjd17" else "")
+            np.savez(out / f"{name}.world.npz", gen_ric=gen_ric, gen_fk=gen_fk, gt_w=gt_w, demo_w=demo_w,
+                     joint_names=np.array(_jn), parents=np.array(parents, dtype=np.int64),
+                     fps=np.array(30.0 if a.corpus == "ktjd17" else 20.0), rig=np.array(rig),
+                     motion_id=np.array(str(item["motion_id"])), caption=np.array(cap),
+                     # provenance (codex 2026-09-04): the consumer must be able to tell WHICH model, sampler and
+                     # corpus produced a dump, and refuse to pool dumps that disagree
+                     dump_format=np.array("world-dump-v3"), ckpt=np.array(str(a.ckpt)),
+                     ckpt_sha256=np.array(dump_ckpt_sha), epoch=np.array(int(ep)), steps=np.array(int(a.steps)),
+                     cfg_text=np.array(float(a.cfg_text)), seed=np.array(int(a.seed)),
+                     smooth_mincutoff=np.array(float(a.smooth_mincutoff)), smooth_beta=np.array(float(a.smooth_beta)),
+                     corpus=np.array(a.corpus), ktjd_root=np.array(str(a.ktjd_root) if a.corpus == "ktjd17" else ""),
+                     generation_id=np.array(_gen_id),
+                     percell_stats=np.array(str(eff_pc or "")),
+                     percell_sha256=np.array(_sha256_file(eff_pc) if eff_pc else ""),
+                     exclude_clips=np.array(str(eff_excl or "")),
+                     exclude_sha256=np.array(_sha256_file(eff_excl) if eff_excl else ""),
+                     units=np.array("source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"))
+        render_gif(out / f"{name}.gif",
+                   [("demo", f"DEMO {item['demo_id']}", demo_w),
+                    ("gen_ric", f"GEN pos ep{ep} s{a.steps}", gen_ric),
+                    ("gen_fk", f"GEN fk ep{ep} s{a.steps}", gen_fk),
+                    ("gt", "TARGET GT", gt_w)],
+                   parents, cap, f"[{bucket}] {rig}",
+                   fps=30 if a.corpus == "ktjd17" else 20)
+        print(f"[render] {name}.gif  (demo {d_real}f | target {t_real}f, J={J})  "
+              f"jitter ric {jit_all:.2f}x fk {jfk_all:.2f}x (GT {gt_all:.4f}) "
+              f"root ric {jit_root:.2f}x fk {jfk_root:.2f}x{static_warn}", flush=True)
+        lines.append(f"{name}\tjitter_ric={jit_all:.3f}x jitter_fk={jfk_all:.3f}x(gt={gt_all:.5f}) "
+                     f"root_ric={jit_root:.3f}x root_fk={jfk_root:.3f}x{static_warn}"
+                     f"\tcaption: {cap}\tdemo={item['demo_id']} target={item['motion_id']}")
+    (out / "summary.txt").write_text(
+        f"ckpt={a.ckpt} epoch={ep} steps={a.steps} seed={a.seed} cfg_text={a.cfg_text} smooth_mincutoff={a.smooth_mincutoff} smooth_beta={a.smooth_beta} panels=demo|gen_ric|gen_fk|gt\n"
+        + (f"{corpus_swap_note}\n" if a.corpus == "ktjd17" and corpus_swap_note else "")
+        + "\n".join(lines) + "\n")
+    print(f"[render] DONE -> {out}", flush=True)
+
+
+if __name__ == "__main__":
+    main()
+
+exec
+/usr/bin/bash -lc "sed -n '452,486p' paper/sections/appendix.tex && sed -n '82,138p' paper/sections/experiments.tex && sed -n '117,182p' paper/sections/appendix.tex && rg --files renders | rg 'cmp_dump_(buffalo|gazelle|dragon|spider)_(zerotrain|lora)/' && rg -n \"cmp_dump_|lora_tb_init_run12_best_snapshot|SleepUp_140|Attack1_381|Attack3_299|Scramble_916\" paper/figures scripts configs -g '*.py' -g '*.sh' -g '*.json' -g '*.yaml' -g '*.md'" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+exec
+/usr/bin/bash -lc "command -v python && python -B -c 'import sys; import numpy; import matplotlib; import PIL; print(sys.executable); print(numpy.__version__, matplotlib.__version__, PIL.__version__)' && git status --short -- paper/figures/compose_tb_filmstrips.py paper/figures/tb_filmstrips.png paper/figures/tb_filmstrips.pdf paper/sections/appendix.tex" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 481ms:
+renders/cmp_dump_spider_lora/A_Spider__Spider___Fangy_921.world.npz
+renders/cmp_dump_spider_lora/A_Spider__Spider___Scramble_916.gif
+renders/cmp_dump_spider_lora/A_Spider__Spider___RetreatInjured_905.world.npz
+renders/cmp_dump_spider_lora/summary.txt
+renders/cmp_dump_spider_lora/A_Spider__Spider___RetreatInjured_905.gif
+renders/cmp_dump_spider_lora/A_Spider__Spider___Scramble_916.world.npz
+renders/cmp_dump_spider_lora/A_Spider__Spider___Fangy_920.world.npz
+renders/cmp_dump_spider_lora/A_Spider__Spider___Fangy_920.gif
+renders/cmp_dump_spider_lora/A_Spider__Spider___Hurt_908.world.npz
+renders/cmp_dump_spider_lora/A_Spider__Spider___weaver_895.gif
+renders/cmp_dump_spider_lora/A_Spider__Spider___Hurt_908.gif
+renders/cmp_dump_spider_lora/A_Spider__Spider___Fangy_921.gif
+renders/cmp_dump_spider_lora/A_Spider__Spider___weaver_895.world.npz
+renders/cmp_dump_gazelle_zerotrain/summary.txt
+renders/cmp_dump_gazelle_zerotrain/A_Gazelle__Gazelle___Attack1_381.world.npz
+renders/cmp_dump_gazelle_zerotrain/A_Gazelle__Gazelle___Attack1_381.gif
+renders/cmp_dump_gazelle_zerotrain/A_Gazelle__Gazelle___HeadPoke_382.gif
+renders/cmp_dump_gazelle_zerotrain/A_Gazelle__Gazelle___HeadPoke_382.world.npz
+renders/cmp_dump_dragon_lora/A_Dragon__Dragon___Idle3_293.gif
+renders/cmp_dump_dragon_lora/A_Dragon__Dragon___Attack3_299.gif
+renders/cmp_dump_dragon_lora/summary.txt
+renders/cmp_dump_dragon_lora/A_Dragon__Dragon___Idle3_293.world.npz
+renders/cmp_dump_dragon_lora/A_Dragon__Dragon___Attack3_299.world.npz
+renders/cmp_dump_dragon_lora/A_Dragon__Dragon___Idle3_294.gif
+renders/cmp_dump_dragon_lora/A_Dragon__Dragon___Idle3_294.world.npz
+renders/cmp_dump_spider_zerotrain/A_Spider__Spider___Fangy_921.world.npz
+renders/cmp_dump_spider_zerotrain/A_Spider__Spider___Scramble_916.gif
+renders/cmp_dump_spider_zerotrain/A_Spider__Spider___RetreatInjured_905.world.npz
+renders/cmp_dump_spider_zerotrain/summary.txt
+renders/cmp_dump_spider_zerotrain/A_Spider__Spider___RetreatInjured_905.gif
+renders/cmp_dump_spider_zerotrain/A_Spider__Spider___Scramble_916.world.npz
+renders/cmp_dump_spider_zerotrain/A_Spider__Spider___Fangy_920.world.npz
+renders/cmp_dump_spider_zerotrain/A_Spider__Spider___Fangy_920.gif
+renders/cmp_dump_spider_zerotrain/A_Spider__Spider___Hurt_908.world.npz
+renders/cmp_dump_spider_zerotrain/A_Spider__Spider___weaver_895.gif
+renders/cmp_dump_spider_zerotrain/A_Spider__Spider___Hurt_908.gif
+renders/cmp_dump_spider_zerotrain/A_Spider__Spider___Fangy_921.gif
+renders/cmp_dump_spider_zerotrain/A_Spider__Spider___weaver_895.world.npz
+renders/cmp_dump_gazelle_lora/summary.txt
+renders/cmp_dump_gazelle_lora/A_Gazelle__Gazelle___Attack1_381.world.npz
+renders/cmp_dump_gazelle_lora/A_Gazelle__Gazelle___Attack1_381.gif
+renders/cmp_dump_gazelle_lora/A_Gazelle__Gazelle___HeadPoke_382.gif
+renders/cmp_dump_gazelle_lora/A_Gazelle__Gazelle___HeadPoke_382.world.npz
+renders/cmp_dump_buffalo_zerotrain/A_Buffalo__Buffalo___Shot_152.gif
+renders/cmp_dump_buffalo_zerotrain/A_Buffalo__Buffalo___SleepUp_141.world.npz
+renders/cmp_dump_buffalo_zerotrain/A_Buffalo__Buffalo___Cud_146.gif
+renders/cmp_dump_buffalo_zerotrain/A_Buffalo__Buffalo___Cud_146.world.npz
+renders/cmp_dump_buffalo_zerotrain/summary.txt
+renders/cmp_dump_buffalo_zerotrain/A_Buffalo__Buffalo___Shot_152.world.npz
+renders/cmp_dump_buffalo_zerotrain/A_Buffalo__Buffalo___SleepUp_140.gif
+renders/cmp_dump_buffalo_zerotrain/A_Buffalo__Buffalo___SleepUp_140.world.npz
+renders/cmp_dump_buffalo_zerotrain/A_Buffalo__Buffalo___Cud_147.world.npz
+renders/cmp_dump_buffalo_zerotrain/A_Buffalo__Buffalo___Cud_147.gif
+renders/cmp_dump_buffalo_zerotrain/A_Buffalo__Buffalo___SleepUp_141.gif
+renders/cmp_dump_dragon_zerotrain/A_Dragon__Dragon___Idle3_293.gif
+renders/cmp_dump_dragon_zerotrain/A_Dragon__Dragon___Attack3_299.gif
+renders/cmp_dump_dragon_zerotrain/summary.txt
+renders/cmp_dump_dragon_zerotrain/A_Dragon__Dragon___Idle3_293.world.npz
+renders/cmp_dump_dragon_zerotrain/A_Dragon__Dragon___Attack3_299.world.npz
+renders/cmp_dump_dragon_zerotrain/A_Dragon__Dragon___Idle3_294.gif
+renders/cmp_dump_dragon_zerotrain/A_Dragon__Dragon___Idle3_294.world.npz
+renders/cmp_dump_buffalo_lora/A_Buffalo__Buffalo___Shot_152.gif
+renders/cmp_dump_buffalo_lora/A_Buffalo__Buffalo___SleepUp_141.world.npz
+renders/cmp_dump_buffalo_lora/A_Buffalo__Buffalo___Cud_146.gif
+renders/cmp_dump_buffalo_lora/A_Buffalo__Buffalo___Cud_146.world.npz
+renders/cmp_dump_buffalo_lora/summary.txt
+renders/cmp_dump_buffalo_lora/A_Buffalo__Buffalo___Shot_152.world.npz
+renders/cmp_dump_buffalo_lora/A_Buffalo__Buffalo___SleepUp_140.gif
+renders/cmp_dump_buffalo_lora/A_Buffalo__Buffalo___SleepUp_140.world.npz
+renders/cmp_dump_buffalo_lora/A_Buffalo__Buffalo___Cud_147.world.npz
+renders/cmp_dump_buffalo_lora/A_Buffalo__Buffalo___Cud_147.gif
+renders/cmp_dump_buffalo_lora/A_Buffalo__Buffalo___SleepUp_141.gif
+paper/figures/compose_tb_filmstrips.py:14:ARMS = [("zero", "zerotrain"), ("LoRA", "lora")]                 # row tag -> renders/cmp_dump_<rig>_<arm>
+paper/figures/compose_tb_filmstrips.py:16:    ("Buffalo (30 j.)", "buffalo", "A_Buffalo__Buffalo___SleepUp_140", "ground"),
+paper/figures/compose_tb_filmstrips.py:17:    ("Gazelle (29 j.)", "gazelle", "A_Gazelle__Gazelle___Attack1_381", "ground"),
+paper/figures/compose_tb_filmstrips.py:18:    ("Dragon (95 j.)", "dragon", "A_Dragon__Dragon___Attack3_299", "root"),
+paper/figures/compose_tb_filmstrips.py:19:    ("Spider (68 j.)", "spider", "A_Spider__Spider___Scramble_916", "ground"),
+paper/figures/compose_tb_filmstrips.py:36:    z = np.load(f"renders/cmp_dump_{rig}_{arm}/{clip}.world.npz", allow_pickle=True)
+paper/figures/teaser_spec.json:63:  "npz": "renders/cmp_dump_dragon_lora/A_Dragon__Dragon___Attack3_299.world.npz",
+configs/tb_lora_Buzzard_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Buzzard_only_exclusions.json:230:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Buzzard_only_exclusions.json:314:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Buzzard_only_exclusions.json:851:  "Spider___Scramble_916": "all",
+configs/tb_lora_Horse_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Horse_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Horse_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Horse_only_exclusions.json:833:  "Spider___Scramble_916": "all",
+configs/tb_lora_Alligator_only_exclusions.json:123:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Alligator_only_exclusions.json:218:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Alligator_only_exclusions.json:302:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Alligator_only_exclusions.json:839:  "Spider___Scramble_916": "all",
+configs/tb_lora_Stego_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Stego_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Stego_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Stego_only_exclusions.json:861:  "Spider___Scramble_916": "all",
+configs/tb_lora_PolarBear_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_PolarBear_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_PolarBear_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_PolarBear_only_exclusions.json:851:  "Spider___Scramble_916": "all",
+configs/tb_lora_Lion_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Lion_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Lion_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Lion_only_exclusions.json:845:  "Spider___Scramble_916": "all",
+configs/tb_lora_Mammoth_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Mammoth_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Mammoth_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Mammoth_only_exclusions.json:848:  "Spider___Scramble_916": "all",
+configs/tb_lora_Bear_only_exclusions.json:124:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Bear_only_exclusions.json:219:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Bear_only_exclusions.json:303:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Bear_only_exclusions.json:840:  "Spider___Scramble_916": "all",
+configs/tb_lora_SabreToothTiger_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_SabreToothTiger_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_SabreToothTiger_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_SabreToothTiger_only_exclusions.json:823:  "Spider___Scramble_916": "all",
+configs/tb_lora_Raptor3_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Raptor3_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Raptor3_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Raptor3_only_exclusions.json:848:  "Spider___Scramble_916": "all",
+configs/tb_lora_Coyote_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Coyote_only_exclusions.json:230:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Coyote_only_exclusions.json:314:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Coyote_only_exclusions.json:851:  "Spider___Scramble_916": "all",
+configs/tb_lora_Anaconda_only_exclusions.json:126:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Anaconda_only_exclusions.json:221:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Anaconda_only_exclusions.json:305:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Anaconda_only_exclusions.json:842:  "Spider___Scramble_916": "all",
+configs/tb_lora_Pigeon_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Pigeon_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Pigeon_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Pigeon_only_exclusions.json:850:  "Spider___Scramble_916": "all",
+configs/tb_lora_SpiderG_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_SpiderG_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_SpiderG_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_SpiderG_only_exclusions.json:842:  "Spider___Scramble_916": "all",
+configs/tb_lora_Hippopotamus_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Hippopotamus_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Hippopotamus_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Hippopotamus_only_exclusions.json:851:  "Spider___Scramble_916": "all",
+configs/tb_lora_Pteranodon_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Pteranodon_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Pteranodon_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Pteranodon_only_exclusions.json:849:  "Spider___Scramble_916": "all",
+configs/tb_lora_Buffalo_only_exclusions.json:220:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Buffalo_only_exclusions.json:304:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Buffalo_only_exclusions.json:841:  "Spider___Scramble_916": "all",
+configs/tb_lora_Rhino_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Rhino_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Rhino_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Rhino_only_exclusions.json:851:  "Spider___Scramble_916": "all",
+configs/tb_lora_Scorpion_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Scorpion_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Scorpion_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Scorpion_only_exclusions.json:847:  "Spider___Scramble_916": "all",
+configs/tb_lora_Cricket_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Cricket_only_exclusions.json:229:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Cricket_only_exclusions.json:313:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Cricket_only_exclusions.json:850:  "Spider___Scramble_916": "all",
+configs/tb_lora_SandMouse_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_SandMouse_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_SandMouse_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_SandMouse_only_exclusions.json:847:  "Spider___Scramble_916": "all",
+configs/tb_lora_FireAnt_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_FireAnt_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_FireAnt_only_exclusions.json:300:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_FireAnt_only_exclusions.json:837:  "Spider___Scramble_916": "all",
+configs/tb_lora_Parrot_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Parrot_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Parrot_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Parrot_only_exclusions.json:847:  "Spider___Scramble_916": "all",
+configs/tb_lora_Gazelle_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Gazelle_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Gazelle_only_exclusions.json:851:  "Spider___Scramble_916": "all",
+configs/tb_lora_HermitCrab_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_HermitCrab_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_HermitCrab_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_HermitCrab_only_exclusions.json:849:  "Spider___Scramble_916": "all",
+configs/tb_lora_Bird_only_exclusions.json:128:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Bird_only_exclusions.json:223:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Bird_only_exclusions.json:307:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Bird_only_exclusions.json:844:  "Spider___Scramble_916": "all",
+configs/tb_lora_Raptor2_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Raptor2_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Raptor2_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Raptor2_only_exclusions.json:821:  "Spider___Scramble_916": "all",
+configs/tb_lora_Tyranno_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Tyranno_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Tyranno_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Tyranno_only_exclusions.json:861:  "Spider___Scramble_916": "all",
+configs/tb_lora_group_flyers_exclusions.json:166:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_group_flyers_exclusions.json:310:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_group_flyers_exclusions.json:812:  "Spider___Scramble_916": "all",
+configs/tb_lora_Pirrana_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Pirrana_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Pirrana_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Pirrana_only_exclusions.json:850:  "Spider___Scramble_916": "all",
+configs/tb_lora_Crocodile_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Crocodile_only_exclusions.json:229:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Crocodile_only_exclusions.json:313:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Crocodile_only_exclusions.json:850:  "Spider___Scramble_916": "all",
+configs/tb_lora_Lynx_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Lynx_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Lynx_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Lynx_only_exclusions.json:848:  "Spider___Scramble_916": "all",
+configs/tb_lora_Turtle_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Turtle_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Turtle_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Turtle_only_exclusions.json:861:  "Spider___Scramble_916": "all",
+configs/tb_lora_Raptor_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Raptor_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Raptor_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Raptor_only_exclusions.json:848:  "Spider___Scramble_916": "all",
+configs/tb_lora_Bat_only_exclusions.json:135:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Bat_only_exclusions.json:230:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Bat_only_exclusions.json:314:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Bat_only_exclusions.json:851:  "Spider___Scramble_916": "all",
+configs/tb_lora_Spider_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Spider_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Spider_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_BrownBear_only_exclusions.json:123:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_BrownBear_only_exclusions.json:218:  "Dragon___Attack3_299": "all",
+configs/tb_lora_BrownBear_only_exclusions.json:302:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_BrownBear_only_exclusions.json:839:  "Spider___Scramble_916": "all",
+configs/tb_lora_Dragon_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Dragon_only_exclusions.json:311:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Dragon_only_exclusions.json:848:  "Spider___Scramble_916": "all",
+configs/tb_lora_Camel_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Camel_only_exclusions.json:223:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Camel_only_exclusions.json:307:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Camel_only_exclusions.json:844:  "Spider___Scramble_916": "all",
+configs/tb_lora_Ostrich_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Ostrich_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Ostrich_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Ostrich_only_exclusions.json:851:  "Spider___Scramble_916": "all",
+configs/tb_lora_Hound_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Hound_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Hound_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Hound_only_exclusions.json:849:  "Spider___Scramble_916": "all",
+configs/tb_lora_Eagle_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Eagle_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Eagle_only_exclusions.json:312:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Eagle_only_exclusions.json:849:  "Spider___Scramble_916": "all",
+configs/tb_lora_Leapord_only_exclusions.json:145:  "Buffalo___SleepUp_140": "all",
+configs/tb_lora_Leapord_only_exclusions.json:240:  "Dragon___Attack3_299": "all",
+configs/tb_lora_Leapord_only_exclusions.json:324:  "Gazelle___Attack1_381": "all",
+configs/tb_lora_Leapord_only_exclusions.json:846:  "Spider___Scramble_916": "all",
+scripts/_build_tb_lora_corpus.py:21:     SleepUp_140/141 -- and those must never straddle train/val), shuffle groups with a fixed seed
+scripts/_build_pseudo_view_ktjd17.py:37:  python scripts/_build_pseudo_view_ktjd17.py --ckpt runs/lora_tb_init_run12_best_snapshot.pt --rig Buffalo \
+
+ succeeded in 491ms:
+/scratch/ts1v23/.conda/bin/python
+2.2.0 3.10.8 12.1.1
+?? paper/figures/compose_tb_filmstrips.py
+?? paper/figures/tb_filmstrips.pdf
+?? paper/figures/tb_filmstrips.png
+?? paper/sections/appendix.tex
+
+codex
+The three fixes are present in the code, and the bounds calculation gives both rows of each rig the same scale. I’m now checking the dump metadata and rendered geometry for arm mix-ups, clipping, and caption mismatches.
+exec
+/usr/bin/bash -lc "nl -ba scripts/v2_render_incontext.py | sed -n '350,442p;486,555p' && nl -ba paper/sections/appendix.tex | sed -n '454,482p' && nl -ba paper/sections/experiments.tex | sed -n '92,133p' && rg -n \"def ktjd17_split_names|class Ktjd17Base|manifest|split|motion_id\" src/data/ktjd17_incontext.py | head -60" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 0ms:
+   350	        names = {k: read_split(a.splits_dir, k) for k in ("train", "val", "held_representative")}
+   351	        base = AnyTopDataset(data_root=a.data_root, split="all", num_frames=300, max_joints=144,
+   352	                             load_captions=True, caption_emb_cache=a.caption_cache,
+   353	                             random_caption=False, augment=False, joint_semantics=a.joint_sem,
+   354	                             species_whitelist=tb, splits_dir=a.splits_dir,
+   355	                             texts_json_name=a.texts_json)
+   356	    # rest-demo runs must be rendered the way they were trained, and the checkpoint is the
+   357	    # authority -- deriving it from the ckpt stops a silent 64-frame-demo render of a 1-frame arm.
+   358	    # EVERY window-defining knob comes from the CHECKPOINT (codex round-S8 blocker 2): rendering a
+   359	    # different target window, corpus root or conditioning surface than the run was trained on
+   360	    # makes the visual acceptance meaningless, and visual acceptance is this project's only
+   361	    # quality gate.
+   362	    for k_ in ("target_frames",):                  # ktjd_root is back-filled BEFORE the loader above
+   363	        if k_ in ca and getattr(a, k_) != ca[k_]:
+   364	            print(f"[render] {k_}: {getattr(a, k_)!r} -> {ca[k_]!r} (from ckpt)", flush=True)
+   365	            setattr(a, k_, ca[k_])
+   366	    ck_rest = bool(ca.get("demo_rest", False))
+   367	    if ck_rest:
+   368	        if int(ca.get("demo_frames", 0)) != 1:
+   369	            raise SystemExit(f"[refuse] ckpt has demo_rest with demo_frames="
+   370	                             f"{ca.get('demo_frames')}; expected 1")
+   371	        a.demo_frames = 1
+   372	        print("[render] ckpt trained with --demo_rest: 1-frame rest demo", flush=True)
+   373	    PK = dict(demo_rest=ck_rest, emit_ref_text=bool(ca.get("ref_text", False)),
+   374	              demo_frames=a.demo_frames, target_frames=a.target_frames,
+   375	              emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)))
+   376	    dsA = InContextPairs(base, names["val"], names["train"], object_types=tb,
+   377	                         balance_skeletons=False, seed=a.seed, **PK)
+   378	    # the merged no-IK corpus ships only train/val; a missing held bucket renders nothing for B
+   379	    _held = names.get("held_representative", set())
+   380	    dsB = (InContextPairs(base, _held, _held, object_types=tb,
+   381	                          balance_skeletons=False, seed=a.seed, **PK) if _held else None)
+   382	    dsT = InContextPairs(base, names["train"], names["train"], object_types=tb,
+   383	                         balance_skeletons=False, seed=a.seed, **PK)
+   384	
+   385	    jobs = []
+   386	    for bucket, rigs, ds in (("A", a.rigs_A, dsA), ("B", a.rigs_B, dsB), ("T", a.rigs_T, dsT)):
+   387	        if ds is None:
+   388	            continue
+   389	        for r in [x.strip() for x in rigs.split(",") if x.strip()]:
+   390	            if r not in ds.types:
+   391	                print(f"[render] SKIP {bucket}:{r} -- not in bucket "
+   392	                      f"({'A held?' if bucket == 'A' else 'train?'})", flush=True)
+   393	                continue
+   394	            positions = [i for i, (ot, _) in enumerate(ds.index) if ot == r]
+   395	            if not a.all_targets:
+   396	                if a.pick == "caption":
+   397	                    # Turning-motion acceptance probe: heading is the one axis with neither an
+   398	                    # augmentation nor a condition backing it (user 2026-08-20: no yaw aug; no
+   399	                    # c_dir), so the QA set must deliberately contain clips whose captions
+   400	                    # DESCRIBE a turn -- otherwise the known exposure goes unexamined.
+   401	                    import re
+   402	                    rx = re.compile(a.caption_re, re.I)
+   403	                    hit = [i for i in positions
+   404	                           if rx.search(str(base[ds.index[i][1]].get("caption", "")))]
+   405	                    if not hit:
+   406	                        print(f"[render] SKIP {bucket}:{r} -- no caption matches "
+   407	                              f"{a.caption_re!r}", flush=True)
+   408	                        continue
+   409	                    positions = hit[:1]
+   410	                elif a.pick == "longest" and len(positions) > 1:
+   411	                    # Short clips hide the failure modes that only appear over time (drift,
+   412	                    # accumulating jitter, a pose that is fine for a second then decays). `first`
+   413	                    # picked 28-51 frame clips (~1-1.7 s) while this corpus holds up to 374.
+   414	                    # Ranked on the GT's own length, capped by the model's target window.
+   415	                    def _len(ix):
+   416	                        return min(int(base[ds.index[ix][1]]["num_frames"]), ds.Tt)
+   417	                    positions = [max(positions, key=_len)]
+   418	                elif a.pick == "energetic" and len(positions) > 1:
+   419	                    # GT motion energy = mean frame-to-frame displacement of the DE-NORMALIZED
+   420	                    # RIC positions over the head window (codex 01a01b1a: measuring in the
+   421	                    # per-rig-normalized space distorts the ranking -- the winner changed for
+   422	                    # Horse/Anaconda/Monkey/Raptor). Physical space, GT-only, no RNG involved.
+   423	                    def _energy(ix):
+   424	                        gt_it = base[ds.index[ix][1]]
+   425	                        Jn = int(gt_it["num_joints"])
+   426	                        Tn = min(int(gt_it["num_frames"]), ds.Tt)
+   427	                        if Tn < 2:
+   428	                            return 0.0
+   429	                        xn = np.asarray(gt_it["anytop_x"])[:Jn, :, :Tn].transpose(2, 0, 1)
+   430	                        if a.corpus == "ktjd17":
+   431	                            xw, _ = world_of_ktjd(xn, base, ds.index[ix][0], strict_gt=True)
+   432	                        else:
+   433	                            mn = np.asarray(gt_it["anytop_mean"])[:Jn]
+   434	                            sd = np.asarray(gt_it["anytop_std"])[:Jn]
+   435	                            raw = (xn * (sd[None] + _STD_FLOOR) + mn[None]).astype(np.float64)
+   436	                            xw = _recover_world_positions(raw)   # WORLD, incl. root translation
+   437	                        return float(np.linalg.norm(np.diff(xw, axis=0), axis=-1).mean())
+   438	                    positions = [max(positions, key=_energy)]
+   439	                else:
+   440	                    positions = positions[:1]                 # legacy: first target
+   441	            jobs += [(bucket, r, ds, pp) for pp in positions]
+   442	    lines = []
+   486	            # fps follows the corpus: KTJD-17 is 30fps, the legacy 13ch corpora are 20fps
+   487	            # (codex 2026-08-28: a hard-coded 30 would mistune the filter for those renders)
+   488	            _fps = 30.0 if a.corpus == "ktjd17" else 20.0
+   489	            gen[a.demo_frames:] = one_euro(gen[a.demo_frames:], fps=_fps,
+   490	                                           min_cutoff=a.smooth_mincutoff, beta=a.smooth_beta)
+   491	        gt = b["x"][0].float().cpu().numpy()
+   492	
+   493	        t_item = base[ds.index[pos][1]]
+   494	        parents = [int(p) for p in t_item["parent_indices"][:J]]
+   495	        gseg = gen[a.demo_frames:a.demo_frames + t_real, :J]
+   496	        gtseg = gt[a.demo_frames:a.demo_frames + t_real, :J]
+   497	        if a.corpus == "ktjd17":
+   498	            demo_w, _ = world_of_ktjd(gt[:d_real, :J], base, rig, strict_gt=True)
+   499	            gen_ric, gen_fk = world_of_ktjd(gseg, base, rig, strict_gt=False)
+   500	            gt_w, _ = world_of_ktjd(gtseg, base, rig, strict_gt=True)
+   501	        else:
+   502	            mean = np.asarray(t_item["anytop_mean"])[:J]
+   503	            std = np.asarray(t_item["anytop_std"])[:J]
+   504	            offsets = np.asarray(t_item["rest_offsets"])[:J]
+   505	            demo_w = world_of(gt[:d_real, :J], mean, std)
+   506	            gen_ric = world_of(gseg, mean, std)
+   507	            gen_fk = world_of(gseg, mean, std, recover="fk", parents=parents, offsets=offsets)
+   508	            gt_w = world_of(gtseg, mean, std)
+   509	        jit_all, jit_root, gt_all, gt_root = jitter_ratio(gen_ric, gt_w)
+   510	        jfk_all, jfk_root, _, _ = jitter_ratio(gen_fk, gt_w)
+   511	        static_warn = "  [near-static GT, ratio inflated]" if gt_all < 1e-3 else ""
+   512	
+   513	        cap = str(t_item.get("caption", ""))
+   514	        name = f"{bucket}_{rig}__{item['motion_id'][:48]}"
+   515	        if a.dump_world:
+   516	            _jn = [str(x) for x in base._skeleton(rig)["joint_names"]][:J] if a.corpus == "ktjd17" else [f"j{i}" for i in range(J)]
+   517	            _gen_id = (json.loads((Path(a.ktjd_root) / "generation.json").read_text())["generation_id"]
+   518	                       if a.corpus == "ktjd17" else "")
+   519	            np.savez(out / f"{name}.world.npz", gen_ric=gen_ric, gen_fk=gen_fk, gt_w=gt_w, demo_w=demo_w,
+   520	                     joint_names=np.array(_jn), parents=np.array(parents, dtype=np.int64),
+   521	                     fps=np.array(30.0 if a.corpus == "ktjd17" else 20.0), rig=np.array(rig),
+   522	                     motion_id=np.array(str(item["motion_id"])), caption=np.array(cap),
+   523	                     # provenance (codex 2026-09-04): the consumer must be able to tell WHICH model, sampler and
+   524	                     # corpus produced a dump, and refuse to pool dumps that disagree
+   525	                     dump_format=np.array("world-dump-v3"), ckpt=np.array(str(a.ckpt)),
+   526	                     ckpt_sha256=np.array(dump_ckpt_sha), epoch=np.array(int(ep)), steps=np.array(int(a.steps)),
+   527	                     cfg_text=np.array(float(a.cfg_text)), seed=np.array(int(a.seed)),
+   528	                     smooth_mincutoff=np.array(float(a.smooth_mincutoff)), smooth_beta=np.array(float(a.smooth_beta)),
+   529	                     corpus=np.array(a.corpus), ktjd_root=np.array(str(a.ktjd_root) if a.corpus == "ktjd17" else ""),
+   530	                     generation_id=np.array(_gen_id),
+   531	                     percell_stats=np.array(str(eff_pc or "")),
+   532	                     percell_sha256=np.array(_sha256_file(eff_pc) if eff_pc else ""),
+   533	                     exclude_clips=np.array(str(eff_excl or "")),
+   534	                     exclude_sha256=np.array(_sha256_file(eff_excl) if eff_excl else ""),
+   535	                     units=np.array("source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"))
+   536	        render_gif(out / f"{name}.gif",
+   537	                   [("demo", f"DEMO {item['demo_id']}", demo_w),
+   538	                    ("gen_ric", f"GEN pos ep{ep} s{a.steps}", gen_ric),
+   539	                    ("gen_fk", f"GEN fk ep{ep} s{a.steps}", gen_fk),
+   540	                    ("gt", "TARGET GT", gt_w)],
+   541	                   parents, cap, f"[{bucket}] {rig}",
+   542	                   fps=30 if a.corpus == "ktjd17" else 20)
+   543	        print(f"[render] {name}.gif  (demo {d_real}f | target {t_real}f, J={J})  "
+   544	              f"jitter ric {jit_all:.2f}x fk {jfk_all:.2f}x (GT {gt_all:.4f}) "
+   545	              f"root ric {jit_root:.2f}x fk {jfk_root:.2f}x{static_warn}", flush=True)
+   546	        lines.append(f"{name}\tjitter_ric={jit_all:.3f}x jitter_fk={jfk_all:.3f}x(gt={gt_all:.5f}) "
+   547	                     f"root_ric={jit_root:.3f}x root_fk={jfk_root:.3f}x{static_warn}"
+   548	                     f"\tcaption: {cap}\tdemo={item['demo_id']} target={item['motion_id']}")
+   549	    (out / "summary.txt").write_text(
+   550	        f"ckpt={a.ckpt} epoch={ep} steps={a.steps} seed={a.seed} cfg_text={a.cfg_text} smooth_mincutoff={a.smooth_mincutoff} smooth_beta={a.smooth_beta} panels=demo|gen_ric|gen_fk|gt\n"
+   551	        + (f"{corpus_swap_note}\n" if a.corpus == "ktjd17" and corpus_swap_note else "")
+   552	        + "\n".join(lines) + "\n")
+   553	    print(f"[render] DONE -> {out}", flush=True)
+   554	
+   555	
+   454	showed the spatial attention saturating a few hundred steps before each collapse. With
+   455	query--key normalisation the same recipe trained for 290 epochs without a single rejected step.
+   456	
+   457	
+   458	\section{Additional qualitative results}\label{app:qual}
+   459	
+   460	Figure~\ref{fig:tb_filmstrips} shows the zero-training and LoRA arms of Table~\ref{tab:lora} on one
+   461	held-out clip per rig. Every panel overlays the two decodings of the same sample: the directly
+   462	predicted joint positions and the forward kinematics of the predicted rotations. The zero-training
+   463	arm produces two skeletons that disagree on every rig, most on the Dragon and the Spider, whose gap
+   464	exceeds a bone length; the adapter brings them into agreement, which is what the drop of the
+   465	FK--pose gap in Table~\ref{tab:lora} measures.
+   466	
+   467	\begin{figure}[p]
+   468	\centering
+   469	\includegraphics[width=\linewidth]{figures/tb_filmstrips.pdf}
+   470	\caption{Truebones arms of Table~\ref{tab:lora}: one held-out clip per rig, six frames spread evenly
+   471	over the clip, three-quarter view; the quoted sentence is the conditioning prompt. In every panel the
+   472	directly predicted joint positions (clay) are overlaid by the forward kinematics of the predicted
+   473	rotations (teal); a visible separation is the projected FK--pose discrepancy (a single view can hide
+   474	a disagreement in depth). Rows: the library model with the rig's statistics only (\emph{zero}, the
+   475	unadapted snapshot, whereas the zero column of Table~\ref{tab:lora} is read after at most 15
+   476	warm-up steps) and the per-rig adapter (\emph{LoRA}). Frames are anchored on the root horizontally
+   477	and keep their height above the floor; the grey line marks the floor height beneath the root. The
+   478	Dragon, a flying rig, is anchored on the root in all axes, which removes its dive trajectory. Both
+   479	rows of a rig are drawn at the same scale.}\label{fig:tb_filmstrips}
+   480	\end{figure}
+   481	
+   482	\section{A motion demonstration in place of the rest frame}\label{app:demo64}
+    92	\paragraph{Zero training and per-rig LoRA.} We take four Truebones rigs that differ from the
+    93	library in body plan and joint count -- Buffalo (30 joints), Gazelle (29), Dragon (95 joints, a
+    94	flying rig) and Spider (68) -- and compare three arms on the same held-out clips of each rig:
+    95	(a) the library model with the new rig's statistics only (\emph{zero training}); (b) a per-rig
+    96	low-rank adapter trained on the rig's 8--26 training clips (\emph{LoRA}, \S\ref{sec:method:lora});
+    97	(c) a \num{36}M model of the same recipe trained on all \num{802} captioned Truebones clips,
+    98	evaluation clips included, as a seen-clip reference rather than a competing method.
+    99	Table~\ref{tab:lora} gives the FK--pose gap on the held-out clips before and after adaptation next
+   100	to the articulation and jitter of the sampled output: ten to twenty-six clips bring the gap from
+   101	$0.25$--$1.2$ bone lengths to $0.08$--$0.15$, most on the two rigs farthest from the library, and
+   102	the seen-clip reference sits at $0.06$--$0.13$.
+   103	
+   104	\begin{table}[t]
+   105	\centering\footnotesize\setlength{\tabcolsep}{3.5pt}
+   106	\caption{Extending \method{} (\num{303}M) to four Truebones rigs. \emph{zero}: library model with
+   107	the rig's statistics only (gap read after at most 15 adapter warm-up steps); \emph{LoRA}: per-rig
+   108	adapter at its best validation loss; \emph{TB-only}: a \num{36}M model trained on all Truebones
+   109	clips including these (seen-clip reference; its gap is read the same way as the zero column). Gap in bone lengths; articulation and jitter of the
+   110	sampled FK output relative to all real clips of the rig (1 = real).}\label{tab:lora}
+   111	\begin{tabular}{@{}llccccccccc@{}}
+   112	\toprule
+   113	& & \multicolumn{3}{c}{FK--pose gap (bl)$\downarrow$} & \multicolumn{3}{c}{Articulation ratio} & \multicolumn{3}{c}{Jitter ratio} \\
+   114	\cmidrule(lr){3-5}\cmidrule(lr){6-8}\cmidrule(lr){9-11}
+   115	Rig & Train / val & zero & LoRA & TB-only & zero & LoRA & TB-only & zero & LoRA & TB-only \\
+   116	\midrule
+   117	Buffalo (30 j.) & 15 / 5 & \num{0.323} & \num{0.132} & \num{0.072} & \num{1.45} & \num{0.30} & \num{0.67} & \num{3.32} & \num{0.33} & \num{1.02} \\
+   118	Gazelle (29 j.) & 8 / 2  & \num{0.255} & \num{0.084} & \num{0.062} & \num{5.39} & \num{0.77} & \num{1.22} & \num{13.2} & \num{0.86} & \num{1.92} \\
+   119	Dragon (95 j.)  & 10 / 3 & \num{1.215} & \num{0.146} & \num{0.134} & \num{1.02} & \num{0.49} & \num{1.23} & \num{2.53} & \num{0.52} & \num{1.12} \\
+   120	Spider (68 j.)  & 26 / 6 & \num{1.029} & \num{0.130} & \num{0.088} & \num{2.87} & \num{0.24} & \num{0.35} & \num{6.49} & \num{0.20} & \num{0.37} \\
+   121	\bottomrule
+   122	\end{tabular}
+   123	\end{table}
+   124	
+   125	\paragraph{Further arms.} Repeating the study with the \num{36}M pilot as the backbone gives the
+   126	same picture, an adapter shared by eight flying rigs is worse than the species-specific one, and the
+   127	Truebones-only model that has trained on the evaluation clips reproduces their statistics; training an
+   128	adapter beyond about 150 epochs changes nothing. All four are reported in App.~\ref{app:extend_more}.
+   129	
+   130	\subsection{Relation to prior work}\label{sec:exp:compare}
+   131	
+   132	\paragraph{Capabilities.} Table~\ref{tab:capability} (App.~\ref{app:capability}) places \method{} among the methods that generate motion for more than one skeleton.
+   133	
+25:Split names come from the manifest's own `split` column (ktjd17_split_names), not from a
+26:splits-dir file format assumption.
+45:    """clip_ids removed from every split by an exclusion artifact (teleport cut, 2026-08-21).
+62:def ktjd17_split_names(root: str | Path, exclude: str | Path | None = None
+69:    for line in open(Path(root) / "manifests" / "clips.jsonl"):
+73:        out.setdefault(str(row["split"]), set()).add(str(row["clip_id"]))
+77:class Ktjd17Base:
+111:        # train-only provenance: the gains must come from the train split's own calibration --
+113:        if str(gz["split"]) != "train" or not str(gz["calibration_version"]).startswith(
+115:            raise RuntimeError(f"gains provenance is not train-only: split={gz['split']!r} "
+183:        # frozen generation.json but ships its own manifest. It must declare itself: derivation.json
+184:        # names the parent generation and the exact manifest bytes it serves, we verify both and
+185:        # pin them, so a manifest swapped under an unchanged generation cannot pass a launch, a
+189:        manifest_p = self.root / "manifests" / "clips.jsonl"
+190:        manifest_sha = hashlib.sha256(manifest_p.read_bytes()).hexdigest()
+197:            if str(self.derivation.get("derived_manifest_sha256")) != manifest_sha:
+198:                raise RuntimeError(f"derived manifest {manifest_p} hashes {manifest_sha[:16]}, derivation.json "
+199:                                   f"pins {str(self.derivation.get('derived_manifest_sha256'))[:16]} -- the "
+205:                "rig_table": (self.root / "splits" / "lora_v1" / "rig_table.json",
+206:                              (self.derivation.get("split") or {}).get("rig_table_sha256")),
+232:        rows = [json.loads(l) for l in open(manifest_p)]
+251:            raise RuntimeError(f"per-cell stats miss {len(missing_pc)} rigs the manifest serves, "
+379:            **({"manifest_sha256": manifest_sha, "derivation_sha256": self.derivation_sha256}
+599:        # manifest<->payload identity (codex round-S0): a renamed/moved npz must not silently
+600:        # serve another clip's frames under this row's caption and split membership.
+602:            raise RuntimeError(f"manifest/payload identity mismatch at {r['motion_relpath']}: "
+633:            "motion_id": clip,
+
+exec
+/usr/bin/bash -lc "python -B - <<'PY'
+import ast, json
+from pathlib import Path
+import numpy as np
+src = ast.parse(Path('paper/figures/compose_tb_filmstrips.py').read_text())
+rigs = next(ast.literal_eval(n.value) for n in src.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'RIGS' for t in n.targets))
+for name, rig, clip, anchor in rigs:
+    loaded = {}
+    for arm in ('zerotrain','lora'):
+        path = Path(f'renders/cmp_dump_{rig}_{arm}/{clip}.world.npz')
+        with np.load(path, allow_pickle=True) as z:
+            if not loaded:
+                print('FIELDS', rig, z.files)
+            a,b,p=z['gen_ric'],z['gen_fk'],z['parents']
+            roots=np.flatnonzero(p<0)
+            meta={k:z[k].tolist() for k in z.files if z[k].ndim==0}
+            loaded[arm] = {k:z[k].copy() for k in ['joint_names','parents','gt_w','demo_w','gen_ric','gen_fk']}
+            print(json.dumps({'rig':rig,'arm':arm,'shape':a.shape,'roots':roots.tolist(),'finite':bool(np.isfinite(a).all() and np.isfinite(b).all()),'root_diff_max':float(np.abs(a[:,roots]-b[:,roots]).max()),'frames':np.linspace(0,len(a)-1,6).round().astype(int).tolist(),'metadata':meta}))
+    print('CROSS_ARM', rig, json.dumps({k:bool(np.array_equal(loaded['zerotrain'][k], loaded['lora'][k])) for k in loaded['lora']}))
+PY" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 246ms:
+FIELDS buffalo ['gen_ric', 'gen_fk', 'gt_w', 'demo_w', 'joint_names', 'parents', 'fps', 'rig', 'motion_id', 'caption', 'dump_format', 'ckpt', 'ckpt_sha256', 'epoch', 'steps', 'cfg_text', 'seed', 'smooth_mincutoff', 'smooth_beta', 'corpus', 'ktjd_root', 'generation_id', 'percell_stats', 'percell_sha256', 'exclude_clips', 'exclude_sha256', 'units']
+{"rig": "buffalo", "arm": "zerotrain", "shape": [199, 30, 3], "roots": [0], "finite": true, "root_diff_max": 0.0, "frames": [0, 40, 79, 119, 158, 198], "metadata": {"fps": 30.0, "rig": "Buffalo", "motion_id": "Buffalo___SleepUp_140", "caption": "The buffalo folds its legs and lies down to sleep", "dump_format": "world-dump-v3", "ckpt": "runs/lora_tb_init_run12_best_snapshot.pt", "ckpt_sha256": "845b622fe45e1e084f6b87784d4b05ff99502cd0c989f8a0917eee4b4a5646e1", "epoch": 214, "steps": 20, "cfg_text": 2.0, "seed": 7, "smooth_mincutoff": 0.0, "smooth_beta": 0.3, "corpus": "ktjd17", "ktjd_root": "dataset/ktjd17_truebones_lora_v2_mainbody", "generation_id": "20260819T215405576671Z-2d04a8d85638", "percell_stats": "data/tb_norm_stats_v2_mainbody.npz", "percell_sha256": "321286f81b3afb68d6c3fba5af2d2bc8c11556afaa0a37d5963d377e18b0f56f", "exclude_clips": "configs/tb_lora_Buffalo_only_exclusions.json", "exclude_sha256": "d8caec8a87c261a8c892ebad56259c07d839bf5a57ac3a89ab7a9c525828a2ad", "units": "source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"}}
+{"rig": "buffalo", "arm": "lora", "shape": [199, 30, 3], "roots": [0], "finite": true, "root_diff_max": 0.0, "frames": [0, 40, 79, 119, 158, 198], "metadata": {"fps": 30.0, "rig": "Buffalo", "motion_id": "Buffalo___SleepUp_140", "caption": "The buffalo folds its legs and lies down to sleep", "dump_format": "world-dump-v3", "ckpt": "runs/lora_tb_Buffalo_r64_v2_mainbody/best_model.pt", "ckpt_sha256": "a04068ed0cb45f8cb4c4fe434c4b4e07e2275ccac9daec66dd6e55c894c426a3", "epoch": 184, "steps": 20, "cfg_text": 2.0, "seed": 7, "smooth_mincutoff": 0.0, "smooth_beta": 0.3, "corpus": "ktjd17", "ktjd_root": "dataset/ktjd17_truebones_lora_v2_mainbody", "generation_id": "20260819T215405576671Z-2d04a8d85638", "percell_stats": "data/tb_norm_stats_v2_mainbody.npz", "percell_sha256": "321286f81b3afb68d6c3fba5af2d2bc8c11556afaa0a37d5963d377e18b0f56f", "exclude_clips": "configs/tb_lora_Buffalo_only_exclusions.json", "exclude_sha256": "d8caec8a87c261a8c892ebad56259c07d839bf5a57ac3a89ab7a9c525828a2ad", "units": "source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"}}
+CROSS_ARM buffalo {"joint_names": true, "parents": true, "gt_w": true, "demo_w": true, "gen_ric": false, "gen_fk": false}
+FIELDS gazelle ['gen_ric', 'gen_fk', 'gt_w', 'demo_w', 'joint_names', 'parents', 'fps', 'rig', 'motion_id', 'caption', 'dump_format', 'ckpt', 'ckpt_sha256', 'epoch', 'steps', 'cfg_text', 'seed', 'smooth_mincutoff', 'smooth_beta', 'corpus', 'ktjd_root', 'generation_id', 'percell_stats', 'percell_sha256', 'exclude_clips', 'exclude_sha256', 'units']
+{"rig": "gazelle", "arm": "zerotrain", "shape": [119, 29, 3], "roots": [0], "finite": true, "root_diff_max": 0.0, "frames": [0, 24, 47, 71, 94, 118], "metadata": {"fps": 30.0, "rig": "Gazelle", "motion_id": "Gazelle___Attack1_381", "caption": "The gazelle prepares to attack by lowering its body, then leaps forward to strike with its horns", "dump_format": "world-dump-v3", "ckpt": "runs/lora_tb_init_run12_best_snapshot.pt", "ckpt_sha256": "845b622fe45e1e084f6b87784d4b05ff99502cd0c989f8a0917eee4b4a5646e1", "epoch": 214, "steps": 20, "cfg_text": 2.0, "seed": 7, "smooth_mincutoff": 0.0, "smooth_beta": 0.3, "corpus": "ktjd17", "ktjd_root": "dataset/ktjd17_truebones_lora_v2_mainbody", "generation_id": "20260819T215405576671Z-2d04a8d85638", "percell_stats": "data/tb_norm_stats_v2_mainbody.npz", "percell_sha256": "321286f81b3afb68d6c3fba5af2d2bc8c11556afaa0a37d5963d377e18b0f56f", "exclude_clips": "configs/tb_lora_Gazelle_only_exclusions.json", "exclude_sha256": "e368ce7c0295c63352878be42cd8da221dcdff28252501f354f987426314f8e3", "units": "source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"}}
+{"rig": "gazelle", "arm": "lora", "shape": [119, 29, 3], "roots": [0], "finite": true, "root_diff_max": 0.0, "frames": [0, 24, 47, 71, 94, 118], "metadata": {"fps": 30.0, "rig": "Gazelle", "motion_id": "Gazelle___Attack1_381", "caption": "The gazelle prepares to attack by lowering its body, then leaps forward to strike with its horns", "dump_format": "world-dump-v3", "ckpt": "runs/lora_tb_Gazelle_r64_v2_mainbody/best_model.pt", "ckpt_sha256": "e57591d0e2a0d3dafb198a48e4640b09458cba53832c25ec4bb5ef8b791e62d5", "epoch": 159, "steps": 20, "cfg_text": 2.0, "seed": 7, "smooth_mincutoff": 0.0, "smooth_beta": 0.3, "corpus": "ktjd17", "ktjd_root": "dataset/ktjd17_truebones_lora_v2_mainbody", "generation_id": "20260819T215405576671Z-2d04a8d85638", "percell_stats": "data/tb_norm_stats_v2_mainbody.npz", "percell_sha256": "321286f81b3afb68d6c3fba5af2d2bc8c11556afaa0a37d5963d377e18b0f56f", "exclude_clips": "configs/tb_lora_Gazelle_only_exclusions.json", "exclude_sha256": "e368ce7c0295c63352878be42cd8da221dcdff28252501f354f987426314f8e3", "units": "source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"}}
+CROSS_ARM gazelle {"joint_names": true, "parents": true, "gt_w": true, "demo_w": true, "gen_ric": false, "gen_fk": false}
+FIELDS dragon ['gen_ric', 'gen_fk', 'gt_w', 'demo_w', 'joint_names', 'parents', 'fps', 'rig', 'motion_id', 'caption', 'dump_format', 'ckpt', 'ckpt_sha256', 'epoch', 'steps', 'cfg_text', 'seed', 'smooth_mincutoff', 'smooth_beta', 'corpus', 'ktjd_root', 'generation_id', 'percell_stats', 'percell_sha256', 'exclude_clips', 'exclude_sha256', 'units']
+{"rig": "dragon", "arm": "zerotrain", "shape": [181, 95, 3], "roots": [0], "finite": true, "root_diff_max": 0.0, "frames": [0, 36, 72, 108, 144, 180], "metadata": {"fps": 30.0, "rig": "Dragon", "motion_id": "Dragon___Attack3_299", "caption": "The dragon attacks by diving down swiftly from the air", "dump_format": "world-dump-v3", "ckpt": "runs/lora_tb_init_run12_best_snapshot.pt", "ckpt_sha256": "845b622fe45e1e084f6b87784d4b05ff99502cd0c989f8a0917eee4b4a5646e1", "epoch": 214, "steps": 20, "cfg_text": 2.0, "seed": 7, "smooth_mincutoff": 0.0, "smooth_beta": 0.3, "corpus": "ktjd17", "ktjd_root": "dataset/ktjd17_truebones_lora_v2_mainbody", "generation_id": "20260819T215405576671Z-2d04a8d85638", "percell_stats": "data/tb_norm_stats_v2_mainbody.npz", "percell_sha256": "321286f81b3afb68d6c3fba5af2d2bc8c11556afaa0a37d5963d377e18b0f56f", "exclude_clips": "configs/tb_lora_Dragon_only_exclusions.json", "exclude_sha256": "35a162ed4fe2d6b733a121eac4bd052c9a3e250139f1ce7317b8adebe812a534", "units": "source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"}}
+{"rig": "dragon", "arm": "lora", "shape": [181, 95, 3], "roots": [0], "finite": true, "root_diff_max": 0.0, "frames": [0, 36, 72, 108, 144, 180], "metadata": {"fps": 30.0, "rig": "Dragon", "motion_id": "Dragon___Attack3_299", "caption": "The dragon attacks by diving down swiftly from the air", "dump_format": "world-dump-v3", "ckpt": "runs/lora_tb_Dragon_r128_e900_v2_mainbody/best_model.pt", "ckpt_sha256": "db7df8f8ae170d7a742cb0dad4c8c608faedd6bd93ca98cfb28de80416ba4f7b", "epoch": 604, "steps": 20, "cfg_text": 2.0, "seed": 7, "smooth_mincutoff": 0.0, "smooth_beta": 0.3, "corpus": "ktjd17", "ktjd_root": "dataset/ktjd17_truebones_lora_v2_mainbody", "generation_id": "20260819T215405576671Z-2d04a8d85638", "percell_stats": "data/tb_norm_stats_v2_mainbody.npz", "percell_sha256": "321286f81b3afb68d6c3fba5af2d2bc8c11556afaa0a37d5963d377e18b0f56f", "exclude_clips": "configs/tb_lora_Dragon_only_exclusions.json", "exclude_sha256": "35a162ed4fe2d6b733a121eac4bd052c9a3e250139f1ce7317b8adebe812a534", "units": "source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"}}
+CROSS_ARM dragon {"joint_names": true, "parents": true, "gt_w": true, "demo_w": true, "gen_ric": false, "gen_fk": false}
+FIELDS spider ['gen_ric', 'gen_fk', 'gt_w', 'demo_w', 'joint_names', 'parents', 'fps', 'rig', 'motion_id', 'caption', 'dump_format', 'ckpt', 'ckpt_sha256', 'epoch', 'steps', 'cfg_text', 'seed', 'smooth_mincutoff', 'smooth_beta', 'corpus', 'ktjd_root', 'generation_id', 'percell_stats', 'percell_sha256', 'exclude_clips', 'exclude_sha256', 'units']
+{"rig": "spider", "arm": "zerotrain", "shape": [90, 68, 3], "roots": [0], "finite": true, "root_diff_max": 0.0, "frames": [0, 18, 36, 53, 71, 89], "metadata": {"fps": 30.0, "rig": "Spider", "motion_id": "Spider___Scramble_916", "caption": "The confused spider scrambles with its legs moving erratically", "dump_format": "world-dump-v3", "ckpt": "runs/lora_tb_init_run12_best_snapshot.pt", "ckpt_sha256": "845b622fe45e1e084f6b87784d4b05ff99502cd0c989f8a0917eee4b4a5646e1", "epoch": 214, "steps": 20, "cfg_text": 2.0, "seed": 7, "smooth_mincutoff": 0.0, "smooth_beta": 0.3, "corpus": "ktjd17", "ktjd_root": "dataset/ktjd17_truebones_lora_v2_mainbody", "generation_id": "20260819T215405576671Z-2d04a8d85638", "percell_stats": "data/tb_norm_stats_v2_mainbody.npz", "percell_sha256": "321286f81b3afb68d6c3fba5af2d2bc8c11556afaa0a37d5963d377e18b0f56f", "exclude_clips": "configs/tb_lora_Spider_only_exclusions.json", "exclude_sha256": "99654174f96e3f25bab89238cb9c1fb127b32abed1ab1362f64de258bb1d1727", "units": "source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"}}
+{"rig": "spider", "arm": "lora", "shape": [90, 68, 3], "roots": [0], "finite": true, "root_diff_max": 0.0, "frames": [0, 18, 36, 53, 71, 89], "metadata": {"fps": 30.0, "rig": "Spider", "motion_id": "Spider___Scramble_916", "caption": "The confused spider scrambles with its legs moving erratically", "dump_format": "world-dump-v3", "ckpt": "runs/lora_tb_Spider_r64_v2_mainbody/best_model.pt", "ckpt_sha256": "dfa912f1fbbea7bdebb82f2fde84f3d3d11cd4e3f648c8a76c58f6903542efd2", "epoch": 224, "steps": 20, "cfg_text": 2.0, "seed": 7, "smooth_mincutoff": 0.0, "smooth_beta": 0.3, "corpus": "ktjd17", "ktjd_root": "dataset/ktjd17_truebones_lora_v2_mainbody", "generation_id": "20260819T215405576671Z-2d04a8d85638", "percell_stats": "data/tb_norm_stats_v2_mainbody.npz", "percell_sha256": "321286f81b3afb68d6c3fba5af2d2bc8c11556afaa0a37d5963d377e18b0f56f", "exclude_clips": "configs/tb_lora_Spider_only_exclusions.json", "exclude_sha256": "99654174f96e3f25bab89238cb9c1fb127b32abed1ab1362f64de258bb1d1727", "units": "source-rig units of the KTJD skeleton; decode_ktjd17 direct/fk, no temporal integration"}}
+CROSS_ARM spider {"joint_names": true, "parents": true, "gt_w": true, "demo_w": true, "gen_ric": false, "gen_fk": false}
+
+exec
+/usr/bin/bash -lc "python -B - <<'PY'
+import ast, io, json, sys
+from pathlib import Path
+import numpy as np
+from PIL import Image
+path=Path('paper/figures/compose_tb_filmstrips.py')
+tree=ast.parse(path.read_text(), filename=str(path))
+# Execute figure construction only; suppress the final on-disk saves and print.
+tree.body=[node for node in tree.body if node.lineno<101]
+sys.argv=[str(path),'read-only-review.pdf']
+ns={'__name__':'__readonly_review__','__file__':str(path.resolve())}
+exec(compile(tree,str(path),'exec'),ns)
+fig=ns['fig']; buf=io.BytesIO(); fig.savefig(buf,format='png',dpi=150)
+rendered=np.array(Image.open(buf)); saved=np.array(Image.open('paper/figures/tb_filmstrips.png'))
+print('IMAGE_CHECK',json.dumps({'rendered_shape':rendered.shape,'saved_shape':saved.shape,'exact_pixel_match':bool(np.array_equal(rendered,saved))}))
+fig.set_dpi(150); fig.canvas.draw()
+renderer=fig.canvas.get_renderer()
+axis_index=0
+for name,clip,anchor,caption,parents,rows in ns['blocks']:
+    scales=[]; margins=[]; counts=[]; sort_ok=True; all_inside=True
+    for tag,sp,dp,sf,df,lo,hi,lim,ph in rows:
+        for k in range(ns['NF']):
+            ax=fig.axes[axis_index]; axis_index+=1
+            M=ax.transData.get_affine().get_matrix()
+            scales.append([M[0,0],M[1,1]])
+            points=np.concatenate((sp[k],sf[k]))
+            px=ax.transData.transform(points)
+            bbox=ax.get_window_extent()
+            margins.append(float(min((px[:,0]-bbox.x0).min(),(bbox.x1-px[:,0]).min(),(px[:,1]-bbox.y0).min(),(bbox.y1-px[:,1]).min())))
+            counts.append(len(ax.lines))
+            all_inside &= bool(((points[:,0]>=lim[0]) & (points[:,0]<=lim[1]) & (points[:,1]>=lim[2]) & (points[:,1]<=lim[3])).all())
+            j=np.where(parents>=0)[0]; p=parents[j]
+            for d in (dp[k],df[k]):
+                mid=(d[j]+d[p])/2; order=np.argsort(-mid)
+                sort_ok &= bool((np.diff(mid[order])<=0).all())
+    print('GEOMETRY',json.dumps({'rig':name,'pixels_per_unit_minmax':[float(np.min(scales)),float(np.max(scales))],'row_panel_heights_in':[r[-1] for r in rows],'minimum_vertex_margin_px':min(margins),'stroke_radius_px_max':1.1/72*150/2,'all_points_inside':all_inside,'floor_in_both_row_bounds':all(r[-2][2]<=0<=r[-2][3] for r in rows) if anchor=='ground' else None,'all_panels_have_every_bone':all(n==2*int((parents>=0).sum())+(anchor=='ground') for n in counts),'far_to_near':sort_ok}))
+text_boxes=[(t.get_text(),t.get_window_extent(renderer)) for t in fig.texts]
+print('TEXT_BOUNDS',json.dumps({'all_text_inside':all(b.x0>=0 and b.y0>=0 and b.x1<=fig.bbox.x1 and b.y1<=fig.bbox.y1 for _,b in text_boxes),'overlapping_text_pairs':[(a,c) for i,(a,b) in enumerate(text_boxes) for c,d in text_boxes[i+1:] if b.overlaps(d)]}))
+PY" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+exec
+/usr/bin/bash -lc "python -B - <<'PY'
+import json
+from pathlib import Path
+import numpy as np
+root=Path('dataset/ktjd17_truebones_lora_v2_mainbody')
+ids={'Buffalo___SleepUp_140','Gazelle___Attack1_381','Dragon___Attack3_299','Spider___Scramble_916'}
+for line in (root/'manifests/clips.jsonl').open():
+    r=json.loads(line)
+    if r.get('clip_id') in ids:
+        print('MANIFEST',json.dumps(r))
+        ex=Path(f\"configs/tb_lora_{r['rig_id']}_only_exclusions.json\") if 'rig_id' in r else None
+        if ex and ex.exists():
+            obj=json.loads(ex.read_text());print('EXCLUSION_ENTRY',r['clip_id'],obj.get(r['clip_id'],'absent'))
+for rig,run in [('Buffalo','lora_tb_Buffalo_r64_v2_mainbody'),('Gazelle','lora_tb_Gazelle_r64_v2_mainbody'),('Dragon','lora_tb_Dragon_r128_e900_v2_mainbody'),('Spider','lora_tb_Spider_r64_v2_mainbody')]:
+    p=Path('runs')/run
+    print('RUN_FILES',rig,[q.name for q in p.iterdir()] if p.exists() else 'missing')
+PY" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 227ms:
+MANIFEST {"J_phys": 30, "T_src": 200, "T_target": 199, "audit_role": "full_source_safe_conversion", "calibration_eligible": false, "clip_id": "Buffalo___SleepUp_140", "family_role": "Buffalo", "fps_src": 30.000030000029998, "fps_target": 30.0, "legacy_btjd_motion_channels_used": false, "motion_relpath": "motions/Buffalo___SleepUp_140.npz", "motion_sha256": "ceaa6b233bcf12b6edfb74bc490a232b879769aad30fb9c8c5a60bb5b8e16ba0", "parent_inventory_status": "review", "reason_codes": [], "replaces_parent_clip_id": null, "resample_mode": "timestamp_linear_root_local_so3_slerp_then_fk", "rig_id": "Buffalo", "rotation_authority": "original_bvh_declared_rotation_channels_only", "selection_origin": "pinned_source_safe_manifest", "skeleton_relpath": "skeletons/Buffalo.npz", "skeleton_sha256": "f3c73f1c52dc8156c1267b3fb4f7725baf944373e4453501b22a9ae2ccb3345f", "source_family": "truebones", "source_frame_slice": [0, 200], "source_path": "/iridisfs/scratch/ts1v23/workspace/Anytop/AnyTop/dataset/truebones/zoo/Truebone_Z-OO/Buffalo/__SleepUp.bvh", "source_rest_path": "/iridisfs/scratch/ts1v23/workspace/Anytop/AnyTop/dataset/truebones/zoo/Truebone_Z-OO/Buffalo/__TPOSE.bvh", "source_rest_sha256": "7b19bfce346eb5c0eb5ddd37ad72bd55189eb55f14ed6df04820ce2db7738634", "source_sha256": "51d8ec13213e9f336e04be8149ffd6fced89962ed9958d0407684aee9c321e3b", "source_split_protocol": "holdout_splits_v1", "split": "val", "status": "accept", "topology_distance_bucket": "train_seen_topology", "topology_family": "quadruped", "split_holdout_v1": "train", "J_phys_parent": 42, "joint_pruning": "mainbody_v2"}
+EXCLUSION_ENTRY Buffalo___SleepUp_140 absent
+MANIFEST {"J_phys": 95, "T_src": 182, "T_target": 181, "audit_role": "full_source_safe_conversion", "calibration_eligible": false, "clip_id": "Dragon___Attack3_299", "family_role": "Dragon", "fps_src": 30.000030000029998, "fps_target": 30.0, "legacy_btjd_motion_channels_used": false, "motion_relpath": "motions/Dragon___Attack3_299.npz", "motion_sha256": "65177bc4e6d243ef95fe2439553437a4f4a560b04a97abbaa42e6d2cca03d332", "parent_inventory_status": "review", "reason_codes": [], "replaces_parent_clip_id": null, "resample_mode": "timestamp_linear_root_local_so3_slerp_then_fk", "rig_id": "Dragon", "rotation_authority": "original_bvh_declared_rotation_channels_only", "selection_origin": "pinned_source_safe_manifest", "skeleton_relpath": "skeletons/Dragon.npz", "skeleton_sha256": "7e5ace3513ff93f741c74648488834a59333d1dcf604b7a1dc14db1fe9178571", "source_family": "truebones", "source_frame_slice": [0, 182], "source_path": "/iridisfs/scratch/ts1v23/workspace/Anytop/AnyTop/dataset/truebones/zoo/Truebone_Z-OO/Dragon/__Attack3.bvh", "source_rest_path": "/iridisfs/scratch/ts1v23/workspace/Anytop/AnyTop/dataset/truebones/zoo/Truebone_Z-OO/Dragon/__Tpose.bvh", "source_rest_sha256": "d0ef6141ab72c2adeb28b6bee765c03081afaf5141e5e1adbf97ae4c8a3af7a3", "source_sha256": "bd462baef7fc7cc3743c9a3c63cc33ea122b79695eba827f2ad431b8e809434f", "source_split_protocol": "holdout_splits_v1", "split": "val", "status": "accept", "topology_distance_bucket": "held_stress_topology", "topology_family": "dragon_or_deep_topology", "split_holdout_v1": "held_stress", "J_phys_parent": 142, "joint_pruning": "mainbody_v2"}
+EXCLUSION_ENTRY Dragon___Attack3_299 absent
+MANIFEST {"J_phys": 29, "T_src": 120, "T_target": 119, "audit_role": "full_source_safe_conversion", "calibration_eligible": false, "clip_id": "Gazelle___Attack1_381", "family_role": "Gazelle", "fps_src": 30.000030000029998, "fps_target": 30.0, "legacy_btjd_motion_channels_used": false, "motion_relpath": "motions/Gazelle___Attack1_381.npz", "motion_sha256": "ee6116efcb003d6d787e6e020fb518231f26d4fb3ebbd75d7373d72ab276a6ef", "parent_inventory_status": "review", "reason_codes": [], "replaces_parent_clip_id": null, "resample_mode": "timestamp_linear_root_local_so3_slerp_then_fk", "rig_id": "Gazelle", "rotation_authority": "original_bvh_declared_rotation_channels_only", "selection_origin": "pinned_source_safe_manifest", "skeleton_relpath": "skeletons/Gazelle.npz", "skeleton_sha256": "7eb86e633ef181a167a3182456bf585469f32d2031c3a98cf79fdcc32eeb5a9e", "source_family": "truebones", "source_frame_slice": [0, 120], "source_path": "/iridisfs/scratch/ts1v23/workspace/Anytop/AnyTop/dataset/truebones/zoo/Truebone_Z-OO/Gazelle/__Attack1.bvh", "source_rest_path": "/iridisfs/scratch/ts1v23/workspace/Anytop/AnyTop/dataset/truebones/zoo/Truebone_Z-OO/Gazelle/__TPOSE.bvh", "source_rest_sha256": "e6074f6ee777d696f7f5dbe7b82ba719151a45641c2610d696a745c12b14a225", "source_sha256": "aec8f7cb9dc4c43277ba72ecd9d279f5e11c0db6d97d1ce12f763da982c9078a", "source_split_protocol": "holdout_splits_v1", "split": "val", "status": "accept", "topology_distance_bucket": "train_seen_topology", "topology_family": "quadruped", "split_holdout_v1": "train", "J_phys_parent": 41, "joint_pruning": "mainbody_v2"}
+EXCLUSION_ENTRY Gazelle___Attack1_381 absent
+MANIFEST {"J_phys": 68, "T_src": 91, "T_target": 90, "audit_role": "full_source_safe_conversion", "calibration_eligible": false, "clip_id": "Spider___Scramble_916", "family_role": "Spider", "fps_src": 30.000030000029998, "fps_target": 30.0, "legacy_btjd_motion_channels_used": false, "motion_relpath": "motions/Spider___Scramble_916.npz", "motion_sha256": "69689f0dfb8ca468921368df39fc50caa81ecf5e323d74c162e22c5d0a439158", "parent_inventory_status": "review", "reason_codes": [], "replaces_parent_clip_id": null, "resample_mode": "timestamp_linear_root_local_so3_slerp_then_fk", "rig_id": "Spider", "rotation_authority": "original_bvh_declared_rotation_channels_only", "selection_origin": "pinned_source_safe_manifest", "skeleton_relpath": "skeletons/Spider.npz", "skeleton_sha256": "f5aff1369bd498c77e4e259eef52e8834763c47407ebab124f49da6d9cf1adbe", "source_family": "truebones", "source_frame_slice": [0, 91], "source_path": "/iridisfs/scratch/ts1v23/workspace/Anytop/AnyTop/dataset/truebones/zoo/Truebone_Z-OO/Spider/__Scramble.bvh", "source_rest_path": "/iridisfs/scratch/ts1v23/workspace/Anytop/AnyTop/dataset/truebones/zoo/Truebone_Z-OO/Spider/__TPOSE.bvh", "source_rest_sha256": "f63b74ead3a1f1cb8f00f4bfce8ead5f5a9d08ebb7bb14ad129c2f9315f7dc81", "source_sha256": "2574d19c86f77b9b94402fc5f747aaaaa76209aa632d4ca253e984fb46620966", "source_split_protocol": "holdout_splits_v1", "split": "val", "status": "accept", "topology_distance_bucket": "held_stress_topology", "topology_family": "spider_crab", "split_holdout_v1": "held_stress", "J_phys_parent": 71, "joint_pruning": "mainbody_v2"}
+EXCLUSION_ENTRY Spider___Scramble_916 absent
+RUN_FILES Buffalo ['train.log', 'last_model.pt', 'best_model.pt', 'args.json']
+RUN_FILES Gazelle ['train.log', 'last_model.pt', 'best_model.pt', 'args.json']
+RUN_FILES Dragon ['train.log', 'last_model.pt', 'best_model.pt', 'args.json']
+RUN_FILES Spider ['train.log', 'last_model.pt', 'best_model.pt', 'args.json']
+
+ succeeded in 2640ms:
+IMAGE_CHECK {"rendered_shape": [1139, 825, 4], "saved_shape": [1139, 825, 4], "exact_pixel_match": true}
+GEOMETRY {"rig": "Buffalo (30 j.)", "pixels_per_unit_minmax": [58.69933956456005, 58.69933956456018], "row_panel_heights_in": [0.6090110714701314, 0.44731869301290944], "minimum_vertex_margin_px": 4.3333333333332575, "stroke_radius_px_max": 1.1458333333333335, "all_points_inside": true, "floor_in_both_row_bounds": true, "all_panels_have_every_bone": true, "far_to_near": true}
+GEOMETRY {"rig": "Gazelle (29 j.)", "pixels_per_unit_minmax": [72.57386262182551, 72.57386262182563], "row_panel_heights_in": [0.9671563719489245, 0.7357978901098227], "minimum_vertex_margin_px": 4.3333333333332575, "stroke_radius_px_max": 1.1458333333333335, "all_points_inside": true, "floor_in_both_row_bounds": true, "all_panels_have_every_bone": true, "far_to_near": true}
+GEOMETRY {"rig": "Dragon (95 j.)", "pixels_per_unit_minmax": [24.5583952158871, 24.558395215887135], "row_panel_heights_in": [1.4413046050196585, 0.46241542458216023], "minimum_vertex_margin_px": 4.333333333333371, "stroke_radius_px_max": 1.1458333333333335, "all_points_inside": true, "floor_in_both_row_bounds": null, "all_panels_have_every_bone": true, "far_to_near": true}
+GEOMETRY {"rig": "Spider (68 j.)", "pixels_per_unit_minmax": [49.89740018021448, 49.897400180214554], "row_panel_heights_in": [1.0585498782484108, 0.4346736049153061], "minimum_vertex_margin_px": 4.333333333333314, "stroke_radius_px_max": 1.1458333333333335, "all_points_inside": true, "floor_in_both_row_bounds": true, "all_panels_have_every_bone": true, "far_to_near": true}
+TEXT_BOUNDS {"all_text_inside": true, "overlapping_text_pairs": []}
+
+exec
+/usr/bin/bash -lc "nl -ba paper/sections/appendix.tex | sed -n '117,153p' && nl -ba src/data/ktjd17/decoder.py | sed -n '1,205p'" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 0ms:
+   117	\section{Adapter settings}\label{app:lora}
+   118	
+   119	\paragraph{Data view of a new rig.} The
+   120	data view of a new rig is built by the corpus script with three additions: joints are pruned to the
+   121	deformation-bone convention of the training library (end markers, cosmetic and helper joints
+   122	dropped by name or description, never the root, heading carrier, trunk or wing joints, and only
+   123	leaf-closed subtrees so no forward kinematics is re-run); captions are rewritten to the corpus style
+   124	``The $\langle$species$\rangle$ $\langle$action$\rangle$''; and the train/validation split is made
+   125	by source animation so that no clip straddles it. Training follows the backbone recipe with the
+   126	learning rate scaled linearly to the batch, one pass over every clip per epoch, 300--900 epochs and
+   127	a shortened forward-kinematics warm-up. A single adapter can also be shared by a group of rigs; we
+   128	report this as a negative result.
+   129	
+   130	\paragraph{Probing text generalisation.} To test whether an adapted rig still follows language it
+   131	was not adapted on, we render captions of related species that no checkpoint in the adapter's
+   132	initialisation lineage trained on, and authored out-of-distribution captions, on the adapted rig;
+   133	the probe walks the lineage by content hash and refuses any caption seen upstream.
+   134	
+   135	
+   136	
+   137	\paragraph{Hyper-parameters.} Table~\ref{tab:lora_hp} lists the per-rig settings. The learning rate
+   138	follows the linear-scaling rule from $10^{-4}$ at batch 8; the batch is the largest divisor of the
+   139	rig's training-clip count at or below 13, so that every clip is seen exactly once per epoch. Adapters
+   140	act on the query, key, value and output projections of both attention blocks, the feed-forward layers
+   141	and the conditioning MLPs (62 linear layers of the \num{36}M backbone, 104 of the \num{303}M one); a
+   142	100-step warm-up precedes a half-cosine decay over five sixths of the epochs to $1\%$ of the peak, and
+   143	the forward-kinematics term ramps over 100 steps. At rank 64 the adapter holds \num{7.06}M trainable
+   144	parameters on the \num{36}M backbone and \num{26.8}M on the \num{303}M one ($16\%$ and $8\%$ of the
+   145	respective totals); Dragon uses rank 128 (\num{53.6}M, $15\%$) and three times the epochs.
+   146	
+   147	\begin{table}[h]
+   148	\centering\small
+   149	\caption{Per-rig adapter settings. Clips are the usable Truebones clips after the source audit,
+   150	split by source animation.}\label{tab:lora_hp}
+   151	\begin{tabular}{lcccccc}
+   152	\toprule
+   153	Rig & Joints & Train / val clips & Batch & Learning rate & Rank & Epochs \\
+     1	"""Independent frame-local decode paths for KTJD-17 v1."""
+     2	
+     3	from __future__ import annotations
+     4	
+     5	import dataclasses
+     6	
+     7	import numpy as np
+     8	
+     9	from .codec import (
+    10	    Ktjd17CodecError,
+    11	    decode_column_cont6d,
+    12	    direct_decode_positions,
+    13	    fk_from_global_rotations,
+    14	    require_float64_finite,
+    15	    require_so3,
+    16	    validate_parent_tree,
+    17	)
+    18	
+    19	
+    20	@dataclasses.dataclass(frozen=True)
+    21	class DecodedMotion:
+    22	    positions_direct: np.ndarray
+    23	    positions_fk: np.ndarray
+    24	    positions_direct_minus_fk: np.ndarray
+    25	    global_rotations: np.ndarray
+    26	    local_rotations: np.ndarray
+    27	    fixed_dof_overridden: np.ndarray
+    28	    model_d6_degenerate: np.ndarray
+    29	
+    30	
+    31	def _decode_global_rotations(
+    32	    motion: np.ndarray,
+    33	    *,
+    34	    parents: np.ndarray,
+    35	    R_rest_global: np.ndarray,
+    36	    R_rest_local: np.ndarray,
+    37	    rotation_source_kind: np.ndarray,
+    38	    strict_gt: bool,
+    39	) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    40	    values = require_float64_finite("motion", np.asarray(motion))
+    41	    joint_count = values.shape[1]
+    42	    parent_array = validate_parent_tree(parents, joint_count)
+    43	    rest_global = require_so3("R_rest_global", np.asarray(R_rest_global))
+    44	    rest_local = require_so3("R_rest_local", np.asarray(R_rest_local))
+    45	    if rest_global.shape != (joint_count, 3, 3) or rest_local.shape != (
+    46	        joint_count,
+    47	        3,
+    48	        3,
+    49	    ):
+    50	        raise Ktjd17CodecError("rest rotation shape does not match motion J")
+    51	    kinds = np.asarray(rotation_source_kind).astype(str)
+    52	    if kinds.shape != (joint_count,) or not set(kinds).issubset(
+    53	        {"animated_dof", "fixed_dof"}
+    54	    ):
+    55	        raise Ktjd17CodecError("rotation_source_kind has invalid values or shape")
+    56	
+    57	    d6 = values[..., 3:9]
+    58	    a1 = d6[..., :3]
+    59	    a2 = d6[..., 3:]
+    60	    norm1 = np.linalg.norm(a1, axis=-1)
+    61	    b1 = a1 / np.maximum(norm1[..., None], 1e-8)
+    62	    u2 = a2 - np.sum(b1 * a2, axis=-1, keepdims=True) * b1
+    63	    norm2 = np.linalg.norm(u2, axis=-1)
+    64	    degenerate = (norm1 < 1e-6) | (norm2 < 1e-6)
+    65	    delta = decode_column_cont6d(
+    66	        d6,
+    67	        degeneracy_eps=1e-6 if strict_gt else 1e-8,
+    68	        strict=strict_gt,
+    69	    )
+    70	    proposed_global = np.matmul(delta, rest_global[None])
+    71	    global_rotations = np.empty_like(proposed_global)
+    72	    local_rotations = np.empty_like(proposed_global)
+    73	    overridden = np.zeros((values.shape[0], joint_count), dtype=bool)
+    74	    for joint in range(joint_count):
+    75	        parent = int(parent_array[joint])
+    76	        if kinds[joint] == "fixed_dof":
+    77	            overridden[:, joint] = True
+    78	            if joint == 0:
+    79	                local_rotations[:, joint] = rest_local[joint]
+    80	                global_rotations[:, joint] = rest_local[joint]
+    81	            else:
+    82	                local_rotations[:, joint] = rest_local[joint]
+    83	                global_rotations[:, joint] = np.matmul(
+    84	                    global_rotations[:, parent], rest_local[joint]
+    85	                )
+    86	        else:
+    87	            global_rotations[:, joint] = proposed_global[:, joint]
+    88	            if joint == 0:
+    89	                local_rotations[:, joint] = global_rotations[:, joint]
+    90	            else:
+    91	                local_rotations[:, joint] = np.matmul(
+    92	                    np.swapaxes(global_rotations[:, parent], -1, -2),
+    93	                    global_rotations[:, joint],
+    94	                )
+    95	    return (
+    96	        require_float64_finite("decoded_global_rotations", global_rotations),
+    97	        require_float64_finite("decoded_local_rotations", local_rotations),
+    98	        overridden,
+    99	        degenerate,
+   100	    )
+   101	
+   102	
+   103	def decode_ktjd17(
+   104	    motion: np.ndarray,
+   105	    *,
+   106	    parents: np.ndarray,
+   107	    R_rest_global: np.ndarray,
+   108	    R_rest_local: np.ndarray,
+   109	    offset_parent_local: np.ndarray,
+   110	    rotation_source_kind: np.ndarray,
+   111	    strict_gt: bool = True,
+   112	) -> DecodedMotion:
+   113	    """Decode direct and FK paths without temporal integration."""
+   114	    values = require_float64_finite("motion", np.asarray(motion))
+   115	    if values.ndim != 3 or values.shape[-1] != 17:
+   116	        raise Ktjd17CodecError(f"motion must be [T,J,17], got {values.shape}")
+   117	    direct = direct_decode_positions(values)
+   118	    global_rotations, local_rotations, overridden, degenerate = (
+   119	        _decode_global_rotations(
+   120	            values,
+   121	            parents=parents,
+   122	            R_rest_global=R_rest_global,
+   123	            R_rest_local=R_rest_local,
+   124	            rotation_source_kind=rotation_source_kind,
+   125	            strict_gt=strict_gt,
+   126	        )
+   127	    )
+   128	    fk = fk_from_global_rotations(
+   129	        parents,
+   130	        direct[:, 0],
+   131	        global_rotations,
+   132	        offset_parent_local,
+   133	    )
+   134	    return DecodedMotion(
+   135	        positions_direct=direct,
+   136	        positions_fk=fk,
+   137	        positions_direct_minus_fk=require_float64_finite(
+   138	            "positions_direct_minus_fk", direct - fk
+   139	        ),
+   140	        global_rotations=global_rotations,
+   141	        local_rotations=local_rotations,
+   142	        fixed_dof_overridden=overridden,
+   143	        model_d6_degenerate=degenerate,
+   144	    )
+
+exec
+/usr/bin/bash -lc "python -B - <<'PY'
+import json, re
+from pathlib import Path
+import numpy as np
+for rig,clip,run,ep in [('Buffalo','A_Buffalo__Buffalo___SleepUp_140','lora_tb_Buffalo_r64_v2_mainbody',184),('Gazelle','A_Gazelle__Gazelle___Attack1_381','lora_tb_Gazelle_r64_v2_mainbody',159),('Dragon','A_Dragon__Dragon___Attack3_299','lora_tb_Dragon_r128_e900_v2_mainbody',604),('Spider','A_Spider__Spider___Scramble_916','lora_tb_Spider_r64_v2_mainbody',224)]:
+    runp=Path('runs')/run
+    args=json.loads((runp/'args.json').read_text())
+    print('ARGS',rig,{k:v for k,v in args.items() if any(s in k for s in ['lora','init','dim','depth','heads','target_frames','demo_frames','demo_rest'])})
+    lines=(runp/'train.log').read_text().splitlines()
+    print('LOG_BEGIN',rig,lines[:2])
+    print('SELECTED_EPOCH',rig,[line for line in lines if re.search(rf'\\b(?:ep|epoch)[ =:]?0*{ep}\\b',line,re.I)])
+    val_lines=[line for line in lines if re.search(r'val',line,re.I)]
+    print('LOG_VAL_FORMAT',rig,val_lines[-2:])
+    with np.load(f'renders/cmp_dump_{rig.lower()}_lora/{clip}.world.npz',allow_pickle=True) as z:
+        with np.load(Path(str(z['ktjd_root']))/'skeletons'/f'{rig}.npz',allow_pickle=True) as sk:
+            print('SOURCE_SKELETON_MATCH',rig,{'parents':bool(np.array_equal(z['parents'],sk['parents'])),'joint_names':bool(np.array_equal(z['joint_names'],sk['joint_names']))})
+PY" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 168ms:
+ARGS Buffalo {'dim': 896, 'depth': 14, 'heads': 14, 'demo_frames': 1, 'target_frames': 240, 'demo_rest': True, 'root_dim': 192, 'init_from': 'runs/lora_tb_init_run12_best_snapshot.pt', 'lora_r': 64, 'lora_alpha': 64.0, 'lora_dropout': 0.0, 'lora_targets': 'attn,ffn,cond', 'lora_paths': ['ada_out.1', 'blocks.0.ada.1', 'blocks.0.mlp.0', 'blocks.0.mlp.2', 'blocks.0.s_attn.proj', 'blocks.0.s_attn.qkv', 'blocks.0.t_attn.proj', 'blocks.0.t_attn.qkv', 'blocks.1.ada.1', 'blocks.1.mlp.0', 'blocks.1.mlp.2', 'blocks.1.s_attn.proj', 'blocks.1.s_attn.qkv', 'blocks.1.t_attn.proj', 'blocks.1.t_attn.qkv', 'blocks.10.ada.1', 'blocks.10.mlp.0', 'blocks.10.mlp.2', 'blocks.10.s_attn.proj', 'blocks.10.s_attn.qkv', 'blocks.10.t_attn.proj', 'blocks.10.t_attn.qkv', 'blocks.11.ada.1', 'blocks.11.mlp.0', 'blocks.11.mlp.2', 'blocks.11.s_attn.proj', 'blocks.11.s_attn.qkv', 'blocks.11.t_attn.proj', 'blocks.11.t_attn.qkv', 'blocks.12.ada.1', 'blocks.12.mlp.0', 'blocks.12.mlp.2', 'blocks.12.s_attn.proj', 'blocks.12.s_attn.qkv', 'blocks.12.t_attn.proj', 'blocks.12.t_attn.qkv', 'blocks.13.ada.1', 'blocks.13.mlp.0', 'blocks.13.mlp.2', 'blocks.13.s_attn.proj', 'blocks.13.s_attn.qkv', 'blocks.13.t_attn.proj', 'blocks.13.t_attn.qkv', 'blocks.2.ada.1', 'blocks.2.mlp.0', 'blocks.2.mlp.2', 'blocks.2.s_attn.proj', 'blocks.2.s_attn.qkv', 'blocks.2.t_attn.proj', 'blocks.2.t_attn.qkv', 'blocks.3.ada.1', 'blocks.3.mlp.0', 'blocks.3.mlp.2', 'blocks.3.s_attn.proj', 'blocks.3.s_attn.qkv', 'blocks.3.t_attn.proj', 'blocks.3.t_attn.qkv', 'blocks.4.ada.1', 'blocks.4.mlp.0', 'blocks.4.mlp.2', 'blocks.4.s_attn.proj', 'blocks.4.s_attn.qkv', 'blocks.4.t_attn.proj', 'blocks.4.t_attn.qkv', 'blocks.5.ada.1', 'blocks.5.mlp.0', 'blocks.5.mlp.2', 'blocks.5.s_attn.proj', 'blocks.5.s_attn.qkv', 'blocks.5.t_attn.proj', 'blocks.5.t_attn.qkv', 'blocks.6.ada.1', 'blocks.6.mlp.0', 'blocks.6.mlp.2', 'blocks.6.s_attn.proj', 'blocks.6.s_attn.qkv', 'blocks.6.t_attn.proj', 'blocks.6.t_attn.qkv', 'blocks.7.ada.1', 'blocks.7.mlp.0', 'blocks.7.mlp.2', 'blocks.7.s_attn.proj', 'blocks.7.s_attn.qkv', 'blocks.7.t_attn.proj', 'blocks.7.t_attn.qkv', 'blocks.8.ada.1', 'blocks.8.mlp.0', 'blocks.8.mlp.2', 'blocks.8.s_attn.proj', 'blocks.8.s_attn.qkv', 'blocks.8.t_attn.proj', 'blocks.8.t_attn.qkv', 'blocks.9.ada.1', 'blocks.9.mlp.0', 'blocks.9.mlp.2', 'blocks.9.s_attn.proj', 'blocks.9.s_attn.qkv', 'blocks.9.t_attn.proj', 'blocks.9.t_attn.qkv', 'joint_sem', 'struct_mlp.0', 'struct_mlp.2', 'text_mlp.1', 'text_mlp.3'], 'init_from_sha256': '845b622fe45e1e084f6b87784d4b05ff99502cd0c989f8a0917eee4b4a5646e1', 'init_from_epoch': 214}
+LOG_BEGIN Buffalo ['[ktjd] exclusion list drops 966 of 986 accepted clips (tb_lora_Buffalo_only_exclusions.json)', '[ktjd] data-side release gate: KTJD17_TRUEBONES_RELEASE_GATE.json ready_for_training = False']
+SELECTED_EPOCH Buffalo ['=== epoch 184 done in 3.5s | train_flow=0.28624 | grad mean=0.951 max=1.412 ===']
+LOG_VAL_FORMAT Buffalo ['  [val] flow_loss=0.43688 | fk=0.1820 fkdist=0.130bl acc=0.0145 | artic=1.228xGT(5w) | g885 | P5 demo=2.13e-02 text=2.40e-03 sem=1.19e-02', '  [val] flow_loss=0.43785 | fk=0.1816 fkdist=0.130bl acc=0.0145 | artic=1.225xGT(5w) | g900 | P5 demo=2.14e-02 text=2.41e-03 sem=1.19e-02']
+SOURCE_SKELETON_MATCH Buffalo {'parents': True, 'joint_names': True}
+ARGS Gazelle {'dim': 896, 'depth': 14, 'heads': 14, 'demo_frames': 1, 'target_frames': 240, 'demo_rest': True, 'root_dim': 192, 'init_from': 'runs/lora_tb_init_run12_best_snapshot.pt', 'lora_r': 64, 'lora_alpha': 64.0, 'lora_dropout': 0.0, 'lora_targets': 'attn,ffn,cond', 'lora_paths': ['ada_out.1', 'blocks.0.ada.1', 'blocks.0.mlp.0', 'blocks.0.mlp.2', 'blocks.0.s_attn.proj', 'blocks.0.s_attn.qkv', 'blocks.0.t_attn.proj', 'blocks.0.t_attn.qkv', 'blocks.1.ada.1', 'blocks.1.mlp.0', 'blocks.1.mlp.2', 'blocks.1.s_attn.proj', 'blocks.1.s_attn.qkv', 'blocks.1.t_attn.proj', 'blocks.1.t_attn.qkv', 'blocks.10.ada.1', 'blocks.10.mlp.0', 'blocks.10.mlp.2', 'blocks.10.s_attn.proj', 'blocks.10.s_attn.qkv', 'blocks.10.t_attn.proj', 'blocks.10.t_attn.qkv', 'blocks.11.ada.1', 'blocks.11.mlp.0', 'blocks.11.mlp.2', 'blocks.11.s_attn.proj', 'blocks.11.s_attn.qkv', 'blocks.11.t_attn.proj', 'blocks.11.t_attn.qkv', 'blocks.12.ada.1', 'blocks.12.mlp.0', 'blocks.12.mlp.2', 'blocks.12.s_attn.proj', 'blocks.12.s_attn.qkv', 'blocks.12.t_attn.proj', 'blocks.12.t_attn.qkv', 'blocks.13.ada.1', 'blocks.13.mlp.0', 'blocks.13.mlp.2', 'blocks.13.s_attn.proj', 'blocks.13.s_attn.qkv', 'blocks.13.t_attn.proj', 'blocks.13.t_attn.qkv', 'blocks.2.ada.1', 'blocks.2.mlp.0', 'blocks.2.mlp.2', 'blocks.2.s_attn.proj', 'blocks.2.s_attn.qkv', 'blocks.2.t_attn.proj', 'blocks.2.t_attn.qkv', 'blocks.3.ada.1', 'blocks.3.mlp.0', 'blocks.3.mlp.2', 'blocks.3.s_attn.proj', 'blocks.3.s_attn.qkv', 'blocks.3.t_attn.proj', 'blocks.3.t_attn.qkv', 'blocks.4.ada.1', 'blocks.4.mlp.0', 'blocks.4.mlp.2', 'blocks.4.s_attn.proj', 'blocks.4.s_attn.qkv', 'blocks.4.t_attn.proj', 'blocks.4.t_attn.qkv', 'blocks.5.ada.1', 'blocks.5.mlp.0', 'blocks.5.mlp.2', 'blocks.5.s_attn.proj', 'blocks.5.s_attn.qkv', 'blocks.5.t_attn.proj', 'blocks.5.t_attn.qkv', 'blocks.6.ada.1', 'blocks.6.mlp.0', 'blocks.6.mlp.2', 'blocks.6.s_attn.proj', 'blocks.6.s_attn.qkv', 'blocks.6.t_attn.proj', 'blocks.6.t_attn.qkv', 'blocks.7.ada.1', 'blocks.7.mlp.0', 'blocks.7.mlp.2', 'blocks.7.s_attn.proj', 'blocks.7.s_attn.qkv', 'blocks.7.t_attn.proj', 'blocks.7.t_attn.qkv', 'blocks.8.ada.1', 'blocks.8.mlp.0', 'blocks.8.mlp.2', 'blocks.8.s_attn.proj', 'blocks.8.s_attn.qkv', 'blocks.8.t_attn.proj', 'blocks.8.t_attn.qkv', 'blocks.9.ada.1', 'blocks.9.mlp.0', 'blocks.9.mlp.2', 'blocks.9.s_attn.proj', 'blocks.9.s_attn.qkv', 'blocks.9.t_attn.proj', 'blocks.9.t_attn.qkv', 'joint_sem', 'struct_mlp.0', 'struct_mlp.2', 'text_mlp.1', 'text_mlp.3'], 'init_from_sha256': '845b622fe45e1e084f6b87784d4b05ff99502cd0c989f8a0917eee4b4a5646e1', 'init_from_epoch': 214}
+LOG_BEGIN Gazelle ['[ktjd] exclusion list drops 976 of 986 accepted clips (tb_lora_Gazelle_only_exclusions.json)', '[ktjd] data-side release gate: KTJD17_TRUEBONES_RELEASE_GATE.json ready_for_training = False']
+SELECTED_EPOCH Gazelle ['=== epoch 159 done in 1.9s | train_flow=0.43858 | grad mean=1.323 max=1.323 ===']
+LOG_VAL_FORMAT Gazelle ['  [val] flow_loss=1.98492 | fk=0.0760 fkdist=0.087bl acc=0.1632 | artic=0.722xGT(2w) | g295 | P5 demo=3.42e-02 text=8.79e-03 sem=2.26e-02', '  [val] flow_loss=1.98455 | fk=0.0753 fkdist=0.086bl acc=0.1635 | artic=0.724xGT(2w) | g300 | P5 demo=3.42e-02 text=8.79e-03 sem=2.26e-02']
+SOURCE_SKELETON_MATCH Gazelle {'parents': True, 'joint_names': True}
+ARGS Dragon {'dim': 896, 'depth': 14, 'heads': 14, 'demo_frames': 1, 'target_frames': 240, 'demo_rest': True, 'root_dim': 192, 'init_from': 'runs/lora_tb_init_run12_best_snapshot.pt', 'lora_r': 128, 'lora_alpha': 128.0, 'lora_dropout': 0.0, 'lora_targets': 'attn,ffn,cond', 'lora_paths': ['ada_out.1', 'blocks.0.ada.1', 'blocks.0.mlp.0', 'blocks.0.mlp.2', 'blocks.0.s_attn.proj', 'blocks.0.s_attn.qkv', 'blocks.0.t_attn.proj', 'blocks.0.t_attn.qkv', 'blocks.1.ada.1', 'blocks.1.mlp.0', 'blocks.1.mlp.2', 'blocks.1.s_attn.proj', 'blocks.1.s_attn.qkv', 'blocks.1.t_attn.proj', 'blocks.1.t_attn.qkv', 'blocks.10.ada.1', 'blocks.10.mlp.0', 'blocks.10.mlp.2', 'blocks.10.s_attn.proj', 'blocks.10.s_attn.qkv', 'blocks.10.t_attn.proj', 'blocks.10.t_attn.qkv', 'blocks.11.ada.1', 'blocks.11.mlp.0', 'blocks.11.mlp.2', 'blocks.11.s_attn.proj', 'blocks.11.s_attn.qkv', 'blocks.11.t_attn.proj', 'blocks.11.t_attn.qkv', 'blocks.12.ada.1', 'blocks.12.mlp.0', 'blocks.12.mlp.2', 'blocks.12.s_attn.proj', 'blocks.12.s_attn.qkv', 'blocks.12.t_attn.proj', 'blocks.12.t_attn.qkv', 'blocks.13.ada.1', 'blocks.13.mlp.0', 'blocks.13.mlp.2', 'blocks.13.s_attn.proj', 'blocks.13.s_attn.qkv', 'blocks.13.t_attn.proj', 'blocks.13.t_attn.qkv', 'blocks.2.ada.1', 'blocks.2.mlp.0', 'blocks.2.mlp.2', 'blocks.2.s_attn.proj', 'blocks.2.s_attn.qkv', 'blocks.2.t_attn.proj', 'blocks.2.t_attn.qkv', 'blocks.3.ada.1', 'blocks.3.mlp.0', 'blocks.3.mlp.2', 'blocks.3.s_attn.proj', 'blocks.3.s_attn.qkv', 'blocks.3.t_attn.proj', 'blocks.3.t_attn.qkv', 'blocks.4.ada.1', 'blocks.4.mlp.0', 'blocks.4.mlp.2', 'blocks.4.s_attn.proj', 'blocks.4.s_attn.qkv', 'blocks.4.t_attn.proj', 'blocks.4.t_attn.qkv', 'blocks.5.ada.1', 'blocks.5.mlp.0', 'blocks.5.mlp.2', 'blocks.5.s_attn.proj', 'blocks.5.s_attn.qkv', 'blocks.5.t_attn.proj', 'blocks.5.t_attn.qkv', 'blocks.6.ada.1', 'blocks.6.mlp.0', 'blocks.6.mlp.2', 'blocks.6.s_attn.proj', 'blocks.6.s_attn.qkv', 'blocks.6.t_attn.proj', 'blocks.6.t_attn.qkv', 'blocks.7.ada.1', 'blocks.7.mlp.0', 'blocks.7.mlp.2', 'blocks.7.s_attn.proj', 'blocks.7.s_attn.qkv', 'blocks.7.t_attn.proj', 'blocks.7.t_attn.qkv', 'blocks.8.ada.1', 'blocks.8.mlp.0', 'blocks.8.mlp.2', 'blocks.8.s_attn.proj', 'blocks.8.s_attn.qkv', 'blocks.8.t_attn.proj', 'blocks.8.t_attn.qkv', 'blocks.9.ada.1', 'blocks.9.mlp.0', 'blocks.9.mlp.2', 'blocks.9.s_attn.proj', 'blocks.9.s_attn.qkv', 'blocks.9.t_attn.proj', 'blocks.9.t_attn.qkv', 'joint_sem', 'struct_mlp.0', 'struct_mlp.2', 'text_mlp.1', 'text_mlp.3'], 'init_from_sha256': '845b622fe45e1e084f6b87784d4b05ff99502cd0c989f8a0917eee4b4a5646e1', 'init_from_epoch': 214}
+LOG_BEGIN Dragon ['[ktjd] exclusion list drops 973 of 986 accepted clips (tb_lora_Dragon_only_exclusions.json)', '[ktjd] data-side release gate: KTJD17_TRUEBONES_RELEASE_GATE.json ready_for_training = False']
+SELECTED_EPOCH Dragon ['=== epoch 604 done in 6.9s | train_flow=0.33069 | grad mean=0.784 max=1.196 ===']
+LOG_VAL_FORMAT Dragon ['  [val] flow_loss=0.50559 | fk=0.2087 fkdist=0.141bl acc=0.0328 | artic=0.944xGT(3w) | g1790 | P5 demo=1.72e-02 text=4.91e-03 sem=1.22e-02', '  [val] flow_loss=0.50474 | fk=0.2094 fkdist=0.142bl acc=0.0327 | artic=0.944xGT(3w) | g1800 | P5 demo=1.73e-02 text=4.84e-03 sem=1.22e-02']
+SOURCE_SKELETON_MATCH Dragon {'parents': True, 'joint_names': True}
+ARGS Spider {'dim': 896, 'depth': 14, 'heads': 14, 'demo_frames': 1, 'target_frames': 240, 'demo_rest': True, 'root_dim': 192, 'init_from': 'runs/lora_tb_init_run12_best_snapshot.pt', 'lora_r': 64, 'lora_alpha': 64.0, 'lora_dropout': 0.0, 'lora_targets': 'attn,ffn,cond', 'lora_paths': ['ada_out.1', 'blocks.0.ada.1', 'blocks.0.mlp.0', 'blocks.0.mlp.2', 'blocks.0.s_attn.proj', 'blocks.0.s_attn.qkv', 'blocks.0.t_attn.proj', 'blocks.0.t_attn.qkv', 'blocks.1.ada.1', 'blocks.1.mlp.0', 'blocks.1.mlp.2', 'blocks.1.s_attn.proj', 'blocks.1.s_attn.qkv', 'blocks.1.t_attn.proj', 'blocks.1.t_attn.qkv', 'blocks.10.ada.1', 'blocks.10.mlp.0', 'blocks.10.mlp.2', 'blocks.10.s_attn.proj', 'blocks.10.s_attn.qkv', 'blocks.10.t_attn.proj', 'blocks.10.t_attn.qkv', 'blocks.11.ada.1', 'blocks.11.mlp.0', 'blocks.11.mlp.2', 'blocks.11.s_attn.proj', 'blocks.11.s_attn.qkv', 'blocks.11.t_attn.proj', 'blocks.11.t_attn.qkv', 'blocks.12.ada.1', 'blocks.12.mlp.0', 'blocks.12.mlp.2', 'blocks.12.s_attn.proj', 'blocks.12.s_attn.qkv', 'blocks.12.t_attn.proj', 'blocks.12.t_attn.qkv', 'blocks.13.ada.1', 'blocks.13.mlp.0', 'blocks.13.mlp.2', 'blocks.13.s_attn.proj', 'blocks.13.s_attn.qkv', 'blocks.13.t_attn.proj', 'blocks.13.t_attn.qkv', 'blocks.2.ada.1', 'blocks.2.mlp.0', 'blocks.2.mlp.2', 'blocks.2.s_attn.proj', 'blocks.2.s_attn.qkv', 'blocks.2.t_attn.proj', 'blocks.2.t_attn.qkv', 'blocks.3.ada.1', 'blocks.3.mlp.0', 'blocks.3.mlp.2', 'blocks.3.s_attn.proj', 'blocks.3.s_attn.qkv', 'blocks.3.t_attn.proj', 'blocks.3.t_attn.qkv', 'blocks.4.ada.1', 'blocks.4.mlp.0', 'blocks.4.mlp.2', 'blocks.4.s_attn.proj', 'blocks.4.s_attn.qkv', 'blocks.4.t_attn.proj', 'blocks.4.t_attn.qkv', 'blocks.5.ada.1', 'blocks.5.mlp.0', 'blocks.5.mlp.2', 'blocks.5.s_attn.proj', 'blocks.5.s_attn.qkv', 'blocks.5.t_attn.proj', 'blocks.5.t_attn.qkv', 'blocks.6.ada.1', 'blocks.6.mlp.0', 'blocks.6.mlp.2', 'blocks.6.s_attn.proj', 'blocks.6.s_attn.qkv', 'blocks.6.t_attn.proj', 'blocks.6.t_attn.qkv', 'blocks.7.ada.1', 'blocks.7.mlp.0', 'blocks.7.mlp.2', 'blocks.7.s_attn.proj', 'blocks.7.s_attn.qkv', 'blocks.7.t_attn.proj', 'blocks.7.t_attn.qkv', 'blocks.8.ada.1', 'blocks.8.mlp.0', 'blocks.8.mlp.2', 'blocks.8.s_attn.proj', 'blocks.8.s_attn.qkv', 'blocks.8.t_attn.proj', 'blocks.8.t_attn.qkv', 'blocks.9.ada.1', 'blocks.9.mlp.0', 'blocks.9.mlp.2', 'blocks.9.s_attn.proj', 'blocks.9.s_attn.qkv', 'blocks.9.t_attn.proj', 'blocks.9.t_attn.qkv', 'joint_sem', 'struct_mlp.0', 'struct_mlp.2', 'text_mlp.1', 'text_mlp.3'], 'init_from_sha256': '845b622fe45e1e084f6b87784d4b05ff99502cd0c989f8a0917eee4b4a5646e1', 'init_from_epoch': 214}
+LOG_BEGIN Spider ['[ktjd] exclusion list drops 954 of 986 accepted clips (tb_lora_Spider_only_exclusions.json)', '[ktjd] data-side release gate: KTJD17_TRUEBONES_RELEASE_GATE.json ready_for_training = False']
+SELECTED_EPOCH Spider ['=== epoch 224 done in 12.4s | train_flow=0.46792 | grad mean=0.508 max=0.761 ===']
+LOG_VAL_FORMAT Spider ['  [val] flow_loss=0.29339 | fk=0.1786 fkdist=0.128bl acc=0.0128 | artic=2.898xGT(6w) | g590 | P5 demo=1.84e-02 text=3.13e-03 sem=1.18e-02', '  [val] flow_loss=0.29327 | fk=0.1787 fkdist=0.128bl acc=0.0128 | artic=2.912xGT(6w) | g600 | P5 demo=1.84e-02 text=3.10e-03 sem=1.18e-02']
+SOURCE_SKELETON_MATCH Spider {'parents': True, 'joint_names': True}
+
+codex
+The in-memory render matches the attached PNG pixel for pixel. All 48 panels contain every expected bone with room for the full line width, and the paired dumps match on clip, timing, skeleton, prompt, and sampling settings. Their metadata also identifies the intended unadapted and per-rig LoRA checkpoints.
+exec
+/usr/bin/bash -lc "python -B - <<'PY'
+import json,re
+from pathlib import Path
+runs=[('Buffalo','lora_tb_Buffalo_r64_v2_mainbody',184),('Gazelle','lora_tb_Gazelle_r64_v2_mainbody',159),('Dragon','lora_tb_Dragon_r128_e900_v2_mainbody',604),('Spider','lora_tb_Spider_r64_v2_mainbody',224)]
+for rig,run,wanted in runs:
+    ep=None;vals=[]
+    lines=(Path('runs')/run/'train.log').read_text().splitlines()
+    for line in lines:
+        m=re.search(r'=== epoch (\\d+) done',line)
+        if m:ep=int(m.group(1))
+        v=re.search(r'\\[val\\] flow_loss=([\\d.eE+-]+)',line)
+        if v:vals.append((float(v.group(1)),ep))
+    best=min(vals)
+    print(json.dumps({'rig':rig,'dump_epoch':wanted,'logged_minimum_val':best,'dump_epoch_is_minimum':best[1]==wanted,'val_at_dump_epoch':[v for v,e in vals if e==wanted]}))
+PY" in /iridisfs/scratch/ts1v23/workspace/noKslot_clean
+ succeeded in 0ms:
+{"rig": "Buffalo", "dump_epoch": 184, "logged_minimum_val": [0.43247, 184], "dump_epoch_is_minimum": true, "val_at_dump_epoch": [0.43247]}
+{"rig": "Gazelle", "dump_epoch": 159, "logged_minimum_val": [1.95126, 159], "dump_epoch_is_minimum": true, "val_at_dump_epoch": [1.95126]}
+{"rig": "Dragon", "dump_epoch": 604, "logged_minimum_val": [0.48503, 604], "dump_epoch_is_minimum": true, "val_at_dump_epoch": [0.48503]}
+{"rig": "Spider", "dump_epoch": 224, "logged_minimum_val": [0.28769, 224], "dump_epoch_is_minimum": true, "val_at_dump_epoch": [0.28769]}
+
+codex
+1. **Info — Floor fix is correct.** [Anchoring](/iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/compose_tb_filmstrips.py:41) preserves world Y for ground rigs; bounds include Y=0. The grey line represents the projected floor datum beneath the root, consistent with the caption.
+
+2. **Info — Clip, arm and frame pairing are correct.** Both arms are loaded before sampling, with matching T, J, parents and captions asserted. One index array serves both rows. All four clips are validation clips. Dump metadata identifies epoch 214 for zero and the logged best-validation LoRA epochs: Buffalo 184, Gazelle 159, Dragon 604, Spider 224. Only `gen_ric` and `gen_fk` are drawn.
+
+3. **Info — Depth ordering is correct.** [Descending midpoint depth](/iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/compose_tb_filmstrips.py:49) draws farther bones first. Every expected bone is submitted. Teal deliberately overlays clay across skeletons, matching the caption; this is a diagnostic overlay, not physical occlusion between two bodies.
+
+4. **Info — No scale mismatch or clipping found.** Both rows have identical pixels per world unit despite different panel heights. Across all 48 panels, the minimum endpoint clearance is 4.33 pixels, exceeding the maximum stroke radius of 1.15 pixels. Labels and prompts fit. An in-memory redraw matches the supplied PNG pixel for pixel.
+
+5. **Info — Caption accurately describes the figure’s limits.** Colours, prompts, sampling, horizontal anchoring, Dragon’s removal of root translation, and the distinction from the table’s warmed-up zero column all match. Projected overlap cannot establish full 3D agreement, and six frames cannot establish temporal smoothness or prompt fidelity; the caption makes no such claims.
+
+Required fixes: none. No files modified.
+
+VERDICT: PASS
+
+tokens used
+87,970
+1. **Info — Floor fix is correct.** [Anchoring](/iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/compose_tb_filmstrips.py:41) preserves world Y for ground rigs; bounds include Y=0. The grey line represents the projected floor datum beneath the root, consistent with the caption.
+
+2. **Info — Clip, arm and frame pairing are correct.** Both arms are loaded before sampling, with matching T, J, parents and captions asserted. One index array serves both rows. All four clips are validation clips. Dump metadata identifies epoch 214 for zero and the logged best-validation LoRA epochs: Buffalo 184, Gazelle 159, Dragon 604, Spider 224. Only `gen_ric` and `gen_fk` are drawn.
+
+3. **Info — Depth ordering is correct.** [Descending midpoint depth](/iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/compose_tb_filmstrips.py:49) draws farther bones first. Every expected bone is submitted. Teal deliberately overlays clay across skeletons, matching the caption; this is a diagnostic overlay, not physical occlusion between two bodies.
+
+4. **Info — No scale mismatch or clipping found.** Both rows have identical pixels per world unit despite different panel heights. Across all 48 panels, the minimum endpoint clearance is 4.33 pixels, exceeding the maximum stroke radius of 1.15 pixels. Labels and prompts fit. An in-memory redraw matches the supplied PNG pixel for pixel.
+
+5. **Info — Caption accurately describes the figure’s limits.** Colours, prompts, sampling, horizontal anchoring, Dragon’s removal of root translation, and the distinction from the table’s warmed-up zero column all match. Projected overlap cannot establish full 3D agreement, and six frames cannot establish temporal smoothness or prompt fidelity; the caption makes no such claims.
+
+Required fixes: none. No files modified.
+
+VERDICT: PASS
+
+codex rc=0

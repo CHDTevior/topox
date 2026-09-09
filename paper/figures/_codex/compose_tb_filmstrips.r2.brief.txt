@@ -1,0 +1,28 @@
+Second-round review (fresh, independent) of a small matplotlib figure script for an ICLR appendix figure
+(repo: /iridisfs/scratch/ts1v23/workspace/noKslot_clean). Script: paper/figures/compose_tb_filmstrips.py (read it in full).
+Rendered result attached (paper/figures/tb_filmstrips.png).
+
+A previous reviewer asked for three fixes, now applied: (a) the floor reference is the world datum Y=0 (KTJD frame: +Y up, +Z forward,
+X lateral; the dump renderer's floor), included in the row bounds for ground-anchored rigs; (b) both arms of a rig are loaded first,
+asserted to have the same T, J, parents and caption, and one shared frame-index array is used; (c) bones are drawn farthest first,
+per skeleton, by bone mid-point depth (depth = B @ fwd, larger = farther).
+
+Context you can verify in the repo:
+- Inputs: renders/cmp_dump_<rig>_<arm>/<clip>.world.npz from scripts/v2_render_incontext.py --dump_world (dump_format world-dump-v3):
+  gen_ric (T,J,3) directly predicted joint positions in world space, gen_fk (T,J,3) forward kinematics of the predicted rotations,
+  gt_w, demo_w, parents, joint_names, caption, motion_id, ckpt, epoch. Root position identical in gen_ric and gen_fk.
+- Arms: zerotrain = the 303M library model with the new rig's statistics only (ckpt runs/lora_tb_init_run12_best_snapshot.pt, epoch
+  214, unadapted); lora = per-rig LoRA at best val loss. Only our generations may be drawn (never gt_w / demo_w).
+- Camera copied from paper/figures/skeleton_art.py (azimuth 40, elevation 18, body coords (Z,X,Y)).
+- LaTeX caption now: "Truebones arms of Table lora: one held-out clip per rig, six frames spread evenly over the clip, three-quarter
+  view; the quoted sentence is the conditioning prompt. In every panel the directly predicted joint positions (clay) are overlaid by the
+  forward kinematics of the predicted rotations (teal); a visible separation is the projected FK-pose discrepancy (a single view can
+  hide a disagreement in depth). Rows: the library model with the rig's statistics only (zero, the unadapted snapshot, whereas the zero
+  column of Table lora is read after at most 15 warm-up steps) and the per-rig adapter (LoRA). Frames are anchored on the root
+  horizontally and keep their height above the floor; the grey line marks the floor height beneath the root. The Dragon, a flying rig,
+  is anchored on the root in all axes, which removes its dive trajectory. Both rows of a rig are drawn at the same scale."
+
+Check by reading the code and looking at the image: correctness of the three fixes; any remaining way the figure could mislead a
+reader (wrong clip/arm, hidden bones, wrong floor, scale mismatch between rows, clipping); caption accuracy against what is drawn.
+Output: numbered findings with severity and, at the very end, one line 'VERDICT: PASS' or 'VERDICT: NEEDS-FIX' with concrete fixes.
+Do not modify any files.

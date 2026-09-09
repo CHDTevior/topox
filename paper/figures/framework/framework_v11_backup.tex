@@ -1,0 +1,111 @@
+\documentclass[tikz,border=1pt]{standalone}
+\usepackage{times}
+\usepackage{amsmath}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usetikzlibrary{positioning,fit,calc,arrows.meta,backgrounds,shapes.misc,decorations.pathreplacing}
+\definecolor{skel}{HTML}{1F6F8B}\definecolor{skelbg}{HTML}{E4F0F4}
+\definecolor{txt}{HTML}{B5552F}\definecolor{txtbg}{HTML}{F8E9E1}
+\definecolor{ink}{HTML}{2B2B2B}\definecolor{grey}{HTML}{8A8A8A}\definecolor{lgrey}{HTML}{D9D9D9}
+\definecolor{databg}{HTML}{F4F4F4}
+\newcommand{\sub}[1]{{\fontsize{5.8}{6.6}\selectfont\color{grey}#1}}
+\newcommand{\g}[2]{\includegraphics[width=#1]{glyphs/#2}}
+\tikzset{
+  every node/.style={font=\fontsize{6.5}{7.4}\selectfont, text=ink, inner sep=1.5pt, align=center},
+  head/.style={font=\fontsize{7.5}{8.5}\selectfont\bfseries, anchor=west, inner sep=1pt},
+  box/.style={draw=ink, fill=white, rounded corners=2pt, line width=0.5pt},
+  sbox/.style={box, draw=skel, fill=skelbg}, tbox/.style={box, draw=txt, fill=txtbg},
+  frozen/.style={draw=grey, dashed, fill=white, rounded corners=2pt, line width=0.4pt},
+  flow/.style={-{Stealth[length=3pt,width=2.5pt]}, line width=0.5pt, draw=ink},
+  sflow/.style={flow, draw=skel}, tflow/.style={flow, draw=txt},
+  img/.style={inner sep=0pt},
+  dial/.style={circle, draw=txt, fill=txtbg, line width=0.5pt, minimum size=6pt, inner sep=0pt},
+}
+\begin{document}
+\begin{tikzpicture}[x=1in,y=1in]
+%% ===== headers =====
+\node[head] at (0.00,3.3) {\textcolor{skel}{1}\; Any rig};
+\node[head] at (1.32,3.3) {\textcolor{skel}{2}\; Skeleton as context};
+\node[head] at (2.78,3.3) {\textcolor{skel}{3}\; One transformer, $\times$14 blocks};
+\node[head] at (4.22,3.3) {\textcolor{skel}{4}\; Predict, integrate, decode};
+
+%% ===== 1. rig (top left) =====
+\node[img, anchor=north west] (rig) at (0.02,3.18) {\g{1.22in}{rest_tags.pdf}};
+\node[anchor=north west, text width=1.24in, inner sep=1pt] (rigtxt) at (0.0,2.2) {kinematic tree $\cdot$ rest pose $\cdot$ one description per joint\\ \sub{34--102 joints; no template, no retargeting}};
+
+%% ===== 2. tokens =====
+\node[img, anchor=south west] (rg) at (1.36,2.62) {\g{0.3in}{rest.pdf}};
+\foreach \k/\x in {0/1.78,1/2.04,2/2.3,3/2.56} {\node[img, anchor=south west] at (\x,2.62) {\g{0.24in}{noisy_\k.pdf}};}
+\node[anchor=south, text=skel, inner sep=1pt] at (1.51,2.96) {\sub{rest pose, clean}};
+\node[anchor=south, inner sep=1pt] at (2.3,2.96) {\sub{target frames, noise-mixed $\mathbf x_t$}};
+\begin{scope}[shift={(1.4,1.95)}]
+  \foreach \col/\x in {skel!75/0.0, lgrey/0.38, lgrey/0.64, lgrey/0.9, lgrey/1.16} {
+    \foreach \r in {0,...,7} {\fill[\col] (\x,\r*0.075) rectangle ++(0.2,0.062);}
+  }
+  \foreach \r in {0,...,7} {\fill[skel!40] (-0.05,\r*0.075) rectangle ++(0.03,0.062);}   % per-joint semantics bars
+  \draw[decorate,decoration={brace,amplitude=2pt,mirror},grey] (0.38,-0.03) -- (1.36,-0.03) node[pos=0.42,below=0.5pt,inner sep=1pt] {\sub{$T{=}240$ frames $\times$ $J$ joints $\times$ 17 ch.}};
+
+  \node[anchor=south, rotate=90, text=grey, inner sep=0pt] at (-0.12,0.3) {\sub{$J$ joints}};
+\end{scope}
+\draw[sflow] (rig.east |- 0,2.75) -- (1.34,2.75);
+
+
+%% ===== 3. block =====
+\node[box, anchor=north west, minimum width=1.34in, minimum height=1.3in, fill=databg, draw=lgrey] at (2.94,3.1) {};
+\node[box, anchor=north west, minimum width=1.34in, minimum height=1.3in, fill=databg, draw=lgrey] at (2.88,3.04) {};
+\node[box, anchor=north west, minimum width=1.34in, minimum height=1.3in] (blk) at (2.82,2.98) {};
+% temporal attention: label on top, icon below
+\node[box, anchor=north west, minimum width=1.18in, minimum height=0.36in] (tat) at ($(blk.north west)+(0.09,-0.05)$) {};
+\node[anchor=north west, inner sep=1.5pt] at (tat.north west) {temporal attention \sub{-- a joint over frames}};
+\begin{scope}[shift={($(tat.south west)+(0.06,0.04)$)}]
+  \foreach \i in {0,...,6} {\fill[lgrey] (\i*0.085,0) rectangle ++(0.065,0.06);} \fill[skel!75] (0.255,0) rectangle ++(0.065,0.06);
+  \foreach \i in {0,1,2,4,5,6} {\draw[skel, line width=0.4pt] (0.2875,0.06) .. controls (0.2875,0.12) and (\i*0.085+0.0325,0.12) .. (\i*0.085+0.0325,0.06);}
+\end{scope}
+% spatial attention: label on top, joints icon + bias heat map below
+\node[sbox, anchor=north west, minimum width=1.18in, minimum height=0.5in] (sat) at ($(tat.south west)+(0,-0.04)$) {};
+\node[anchor=north west, inner sep=1.5pt] at (sat.north west) {spatial attention \sub{-- a frame over joints}};
+\begin{scope}[shift={($(sat.south west)+(0.06,0.04)$)}]
+  \foreach \i in {0,...,6} {\fill[lgrey] (\i*0.085,0) rectangle ++(0.065,0.06);} \fill[skel!75] (0.255,0) rectangle ++(0.065,0.06);
+  \foreach \i in {0,1,2,4,5,6} {\draw[skel, line width=0.4pt] (0.2875,0.06) .. controls (0.2875,0.12) and (\i*0.085+0.0325,0.12) .. (\i*0.085+0.0325,0.06);}
+  \node[img, anchor=south west] at (0.62,-0.005) {\g{0.26in}{bias.pdf}}; \node[anchor=south west, inner sep=0pt, text width=0.26in, align=left] at (0.9,0.0) {\sub{tree-distance bias}};
+\end{scope}
+\node[box, anchor=north west, minimum width=1.18in, minimum height=0.18in] (mlp) at ($(sat.south west)+(0,-0.04)$) {MLP};
+\foreach \n in {tat,sat,mlp} {\node[dial] (d\n) at ($(\n.west)+(-0.045,0)$) {};}
+\node[anchor=south west, text=txt, inner sep=1pt] at ($(blk.south west)+(0.02,0.005)$) {\sub{AdaLN: scale, shift, gate}};
+
+\draw[flow] (2.62,2.42) -- (blk.west |- 0,2.42);
+
+%% ===== 4. predict -> integrate -> decode =====
+\node[img, anchor=north west] (pred) at (4.26,3.14) {\g{0.26in}{clean_0.pdf}\,\g{0.26in}{clean_1.pdf}\,\g{0.26in}{clean_2.pdf}\,\g{0.26in}{clean_3.pdf}};
+\node[anchor=north west, text width=1.1in, inner sep=1pt] (predtxt) at (4.24,2.8) {$\hat{\mathbf x}_1$: clean motion predicted for the target frames\\ \sub{calibrated grouped Huber loss, 9 channel groups}};
+\draw[flow] (blk.east |- 0,2.9) -- (4.24,2.9);
+\draw[flow, rounded corners=2pt] (5.3,2.82) -- (5.44,2.82) -- (5.44,1.56) -- (2.72,1.56) -- (2.72,1.9);
+\node[anchor=north, fill=white, inner sep=1pt] at (3.85,1.55) {\sub{$\times$20 Euler steps: $\mathbf x_t\leftarrow\mathbf x_t+(\hat{\mathbf x}_1-\mathbf x_t)/(S-i)$; caption guidance $s{=}2$}};
+\node[img, anchor=north west] (strip) at (4.22,1.4) {\g{1.3in}{motion_strip.pdf}};
+\node[anchor=north west, inner sep=1pt] at (4.22,0.94) {\sub{decoded motion of \emph{this} rig}};
+\node[img, anchor=north west] (skin) at (4.22,0.82) {\g{0.58in}{skinned_moose.png}};
+\node[anchor=north west, text width=0.62in, inner sep=1pt] at (4.82,0.84) {\sub{FK on the rig $\to$ skinned character}};
+\node[anchor=north west, text width=0.56in, draw=skel, rounded corners=2pt, fill=white, line width=0.4pt, inner sep=2pt] at (4.84,0.56) {\textbf{rig never seen}: same pass; $\sim$10 clips $\to$ LoRA};
+
+%% ===== conditioning band (bottom left) =====
+\node[tbox, anchor=north west, text width=1.14in] (cap) at (0.02,1.6) {\emph{``the moose runs and then slows to a walk''}};
+\node[frozen, anchor=north west, text width=0.46in] (llm2) at (1.4,1.58) {LLM2Vec\\ \sub{frozen}};
+\draw[tflow] (cap.east |- 0,1.44) -- (llm2.west |- 0,1.44);
+\draw[sflow] (rigtxt.south) -- ++(0,-0.08) -| ($(llm2.north)+(0.1,0)$);
+\begin{scope}[shift={(2.02,1.42)}]
+  \foreach \i/\c in {0/txt!90,1/txt!60,2/txt!75,3/txt!40,4/txt!85,5/txt!55} {\fill[\c] (\i*0.045,0) rectangle ++(0.04,0.06);}
+  \node[anchor=north, text=txt, inner sep=1pt] at (0.135,-0.005) {\sub{caption vector}};
+\end{scope}
+\draw[tflow] (llm2.east |- 0,1.45) -- (2.01,1.45);
+\node[dial, minimum size=7pt] (tdial) at (2.62,0.92) {}; \node[anchor=east, inner sep=1pt] at (2.58,0.92) {flow time $t$};
+\draw[tflow] (2.3,1.45) -- (2.74,1.45) -- (2.74,0.92) -- (tdial);
+\draw[tflow] (2.74,1.45) |- (dmlp.south |- 0,1.45) -- (dmlp.south);
+\draw[tflow] (dmlp) -- (dsat); \draw[tflow] (dsat) -- (dtat);
+\node[img, anchor=north west] (jv) at (2.02,1.24) {\g{0.13in}{jointvec.pdf}};
+\node[anchor=north west, text width=0.42in, inner sep=1pt, text=skel] at (2.16,1.24) {\sub{one vector per joint}};
+\draw[sflow] (llm2.south) |- (jv.west);
+\draw[sflow, rounded corners=2pt] (jv.north) -- (2.08,1.7) -- (1.3,1.7) -- (1.3,2.25) -- (1.34,2.25);
+\node[anchor=west, text=skel, inner sep=1pt] at (1.32,1.74) {\sub{added to every token of joint $j$}};
+\node[anchor=south west, text width=4.0in, inner sep=1pt] at (0.02,0.02) {\textbf{The skeleton is an input, not part of the network.} It enters as a rest-pose token, as language about each joint and as a bias from the kinematic tree; the caption enters only through AdaLN. One set of weights serves every rig.};
+\end{tikzpicture}
+\end{document}

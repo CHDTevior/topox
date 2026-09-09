@@ -1,0 +1,102 @@
+Reading additional input from stdin...
+OpenAI Codex v0.153.3
+--------
+workdir: /iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/fig1_align
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: max
+reasoning summaries: none
+session id: 01a07528-a000-7641-8a28-25f116377c65
+--------
+user
+Blind figure review, round 4, part 1 (reading of the redesigned figure). Judge only from the attached image; do not read source or any text file.
+- The attached image is the whole figure (1800 × 1000 canvas at 2×), read at 5.5 inches wide in a paper (32 px canvas = 7 pt).
+The work is a method-overview figure: a Figure 1 drawn by a paper's authors in the paper's own idiom (Times; teal = skeleton-derived,
+clay = caption/time conditioning, grey data tokens, ink flow, white page), built in the order stage bands and panels → token grid →
+illustrations and callouts → connections → labels. You have not read the paper. Explain only what the figure shows.
+1. Explain the method in the order the figure reads: who acts, what passes between steps, what each decision changes, what persists
+   through a loop, what ends it. Put "unclear:" in front of any sentence where the figure leaves you unsure. Do not fill gaps from
+   what such methods usually do. Then state the counts, limits and trajectories the figure claims.
+9. One 0–10 for "a reader explains the method correctly from this figure alone", and the three most valuable remaining changes.
+=== SCOPE LIMITS === 1. Not a security product; cooperating operator on their own machine; no over-defense. 2. No hashes/checksums.
+3. No defensive scaffolding. 4. No corner-case obsession. 5. Judge where judgement is needed. 6. Propose the direct visual change.
+7. No caveat sprinkling. Report anything actually wrong. Say plainly when something is right. Be concrete and blunt. No preamble.
+warning: Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+hook: SessionStart
+hook: SessionStart Completed
+codex
+**Any rig → skeleton as context.** A rig supplies a rest pose, joint descriptions, and a skeleton tree. Joint descriptions pass through a locked LLM2Vec block; the tree passes through an MLP. Their outputs are added and routed into a highlighted joint row. The rest pose supplies the clean teal column; noisy motion occupies the adjacent columns. Rows represent joints, and columns represent frames.
+
+unclear: The highlighted row does not establish whether every joint receives its own description/tree conditioning.
+
+**Transformer.** The token grid enters a block marked ×14. Temporal attention connects frames for one joint; spatial attention connects joints within one frame and includes a “tree bias”; an MLP follows. Those two attention directions are communicated clearly by the horizontal and vertical highlights.
+
+The caption passes through another locked LLM2Vec and an MLP. Time \(t\) passes through its own MLP. Their outputs are added, and the clay AdaLN path feeds all three Transformer components.
+
+unclear: The figure does not connect the skeleton tree to the tree-bias matrix or explain their relationship.
+
+**Sample & decode.** The Transformer feeds a sequence of skeleton poses. A purple return arrow leads back into the noisy-frame region, indicating repeated processing. The stated endpoint is a clean prediction after 20 Euler steps. The subsequent path is explicitly “rotations → FK → skinned,” ending with a rendered animal.
+
+unclear: The Transformer’s output quantity, the actual Euler update, and the quantity returned to the grid are unnamed.
+
+unclear: The return arrow targets the noisy-frame region, but the figure does not explicitly establish which inputs remain fixed through the loop or how \(t\) advances.
+
+**Unseen rigs.** The callout claims the same pass works for an unseen rig, with optional LoRA using approximately 10 clips.
+
+unclear: The figure does not show when that option is chosen, which component LoRA changes, or where adaptation happens relative to sampling.
+
+The explicit counts, limits, and trajectories are:
+
+- **311 rigs**, with **34–102 joints**; the grid’s height is \(J\).
+- **240 target frames**, alongside a separate clean rest-pose column.
+- **14 repetitions** of the shown Transformer block and **20 Euler sampling steps**.
+- Approximately **10 clips** for optional LoRA.
+- The caption requests **a moose running, then slowing to a walk**. The visual progression is noisy skeletons → clean pose sequence → skinned animal.
+
+**7/10** for “a reader explains the method correctly from this figure alone.” The architecture and conditioning paths are readable. The sampling loop and adaptation option prevent a precise explanation.
+
+The three most valuable changes:
+
+1. **Put an explicit Euler-update box in the loop.** Label the Transformer output and returned state, show the \(t\) update, and mark whichever inputs stay fixed.
+2. **Move the unseen-rig option before sampling and draw its branch.** Show “same pass” and “LoRA: ~10 clips → same pass,” attaching LoRA to the component it modifies.
+3. **Widen the Transformer’s inner panels and enlarge their labels.** Attention text visibly overruns its boxes; “tree bias” and “AdaLN” are especially small at paper width. Bring operative labels to the stated 32-canvas-pixel minimum.
+tokens used
+26,086
+**Any rig → skeleton as context.** A rig supplies a rest pose, joint descriptions, and a skeleton tree. Joint descriptions pass through a locked LLM2Vec block; the tree passes through an MLP. Their outputs are added and routed into a highlighted joint row. The rest pose supplies the clean teal column; noisy motion occupies the adjacent columns. Rows represent joints, and columns represent frames.
+
+unclear: The highlighted row does not establish whether every joint receives its own description/tree conditioning.
+
+**Transformer.** The token grid enters a block marked ×14. Temporal attention connects frames for one joint; spatial attention connects joints within one frame and includes a “tree bias”; an MLP follows. Those two attention directions are communicated clearly by the horizontal and vertical highlights.
+
+The caption passes through another locked LLM2Vec and an MLP. Time \(t\) passes through its own MLP. Their outputs are added, and the clay AdaLN path feeds all three Transformer components.
+
+unclear: The figure does not connect the skeleton tree to the tree-bias matrix or explain their relationship.
+
+**Sample & decode.** The Transformer feeds a sequence of skeleton poses. A purple return arrow leads back into the noisy-frame region, indicating repeated processing. The stated endpoint is a clean prediction after 20 Euler steps. The subsequent path is explicitly “rotations → FK → skinned,” ending with a rendered animal.
+
+unclear: The Transformer’s output quantity, the actual Euler update, and the quantity returned to the grid are unnamed.
+
+unclear: The return arrow targets the noisy-frame region, but the figure does not explicitly establish which inputs remain fixed through the loop or how \(t\) advances.
+
+**Unseen rigs.** The callout claims the same pass works for an unseen rig, with optional LoRA using approximately 10 clips.
+
+unclear: The figure does not show when that option is chosen, which component LoRA changes, or where adaptation happens relative to sampling.
+
+The explicit counts, limits, and trajectories are:
+
+- **311 rigs**, with **34–102 joints**; the grid’s height is \(J\).
+- **240 target frames**, alongside a separate clean rest-pose column.
+- **14 repetitions** of the shown Transformer block and **20 Euler sampling steps**.
+- Approximately **10 clips** for optional LoRA.
+- The caption requests **a moose running, then slowing to a walk**. The visual progression is noisy skeletons → clean pose sequence → skinned animal.
+
+**7/10** for “a reader explains the method correctly from this figure alone.” The architecture and conditioning paths are readable. The sampling loop and adaptation option prevent a precise explanation.
+
+The three most valuable changes:
+
+1. **Put an explicit Euler-update box in the loop.** Label the Transformer output and returned state, show the \(t\) update, and mark whichever inputs stay fixed.
+2. **Move the unseen-rig option before sampling and draw its branch.** Show “same pass” and “LoRA: ~10 clips → same pass,” attaching LoRA to the component it modifies.
+3. **Widen the Transformer’s inner panels and enlarge their labels.** Attention text visibly overruns its boxes; “tree bias” and “AdaLN” are especially small at paper width. Bring operative labels to the stated 32-canvas-pixel minimum.
+codex rc=0

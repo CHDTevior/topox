@@ -1,0 +1,155 @@
+Reading additional input from stdin...
+OpenAI Codex v0.153.3
+--------
+workdir: /iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/fig1_align
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: max
+reasoning summaries: none
+session id: 01a074ef-c3c1-74f2-a462-839cffc7ffee
+--------
+user
+Blind figure review, round 2, part 1. Judge only from the attached image; do not read source or any text file.
+- The attached image is the whole figure (1800 × 1100 canvas rendered at 2×), read at 5.5 inches wide in a paper — every
+  judgement about size is at that width (a 32 px canvas label = 7 pt on the page).
+The work is a method-overview figure: a Figure 1 drawn by a paper's authors in the paper's own idiom (Times labels; teal for
+everything derived from the skeleton, clay for the caption and time conditioning path, grey data tokens, ink flow, white page),
+read at 5.5 in, built in the order: regions and panels → token grid → illustrations and callouts → connections → labels. You have
+not read the paper. Explain only what the figure shows.
+1. Explain the method in the order the figure reads: who acts, what passes between steps, what each decision changes, what
+   persists through a loop, what ends it. Put "unclear:" in front of any sentence where the figure leaves you unsure. Do not fill
+   gaps from what such methods usually do. Then state the counts, limits and trajectories the figure claims. Take the space this needs.
+=== SCOPE LIMITS (these bound what you PROPOSE, never what you look for) ===
+1. Not a security product. Cooperating operator on their own machine. No over-defense. 2. No hashes, checksums or fingerprints.
+3. No defensive scaffolding. 4. No corner-case obsession. 5. Where judgement is needed, judge; no scoring tables or checklists.
+6. Propose the direct visual or craft change, not helper programs. 7. No caveat sprinkling.
+Report anything actually wrong. Say plainly when something is right. Be concrete and blunt. No preamble.
+warning: Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+hook: SessionStart
+hook: SessionStart Completed
+codex
+The figure starts with **“Any rig.”** A rig supplies a skeleton with joints and a tree structure. The joint callouts—“the head,” “the first tail vertebra,” and “the left front foot”—show that joints also have language descriptions. The examples establish that skeleton shapes can differ. The library is labelled **311 rigs, 34–102 joints**.
+
+Choosing a rig determines the skeleton, the joint count \(J\), and the skeleton context supplied downstream. The figure later claims that an unseen rig follows the “same pass.”
+
+**“Skeleton as context”** arranges the motion representation into a grid. Rows represent joints; columns represent frames. The first column is teal and receives a rest frame explicitly labelled **“stays clean.”** The remaining columns are grey and sit beneath “noise-mixed frames.” The grid is labelled **240 frames × \(J\) joints × 17 channels**.
+
+Two additional branches provide joint context:
+
+- Joint descriptions pass through **LLM2Vec**, labelled **frozen**, and then a **linear** layer.
+- **Tree structure (8-d)** passes through an **MLP**.
+
+These branches meet at the teal plus. Its output connects to the outlined row, with the instruction **“added to every token of joint j.”** This shows the same joint-specific context being added across that joint’s frames, including its clean rest-frame token. The highlighted row makes that operation understandable.
+
+unclear: The figure does not establish whether the 240 frames include the clean rest frame or count only the target frames.
+
+unclear: The 17 channels are not identified, so their relationship to the rotations used during decoding is unspecified.
+
+**“Transformer”** contains a vertical sequence of temporal attention, spatial attention, and an MLP, with the enclosing stack marked **×14**.
+
+Temporal attention is described as **“a joint over frames.”** Its highlighted horizontal row matches the central grid’s organization. Spatial attention is described as **“a frame over joints.”** Its highlighted vertical column also matches. This row/column correspondence is right and communicates the distinction directly. The spatial block additionally contains a small matrix labelled **“tree-distance bias.”**
+
+unclear: The incoming grid arrow reaches the stack beside spatial attention, while the internal arrows start with temporal attention, so the entry into the stated sequence is not clearly connected.
+
+Caption and time form a separate clay-colored conditioning path. The example caption is **“the moose runs and then slows to a walk.”** It passes through another LLM2Vec box labelled **frozen**, followed by an MLP. Time \(t\) passes through its own MLP. A plus and the label **“c = caption + time: modulation only”** state the intended combination. A clay spine labelled **AdaLN** has connections beside temporal attention, spatial attention, and the final MLP.
+
+unclear: The AdaLN spine appears to join the caption branch above the bottom plus, and I cannot follow an output from that plus back to the spine, so the drawing does not establish that time reaches AdaLN.
+
+That connection needs a direct fix: draw the AdaLN supply wire leaving the **output of the caption-plus-time sum**. The written intention is clear; the wire does not express it clearly.
+
+**“Sample & decode”** receives the transformer output through the black path rising along the stack’s right side. The panel contains a row of black skeleton poses, the label **“predicted clean motion,”** a clay sequence of displaced and overlapping skeleton poses, and a skinned animal.
+
+The sampling annotation states **“×20 Euler steps (s = 2)”** and **“update the target frames.”** A long black return line runs from the sampling area across the top and back into the grey-token side of the grid. Together, the line and annotation describe repeated target-frame updates through the transformer.
+
+The clean rest frame explicitly persists through this loop. Target frames are the objects explicitly named as changing. The skeleton context and conditioning branches remain drawn alongside the recurring computation, with no changes to their inputs depicted. **Twenty steps** is the only stated stopping condition; there is no drawn decision about stopping early.
+
+unclear: The sampling end of the return line does not visibly attach to a particular result, so the figure does not identify exactly which represented quantity returns to the grid.
+
+unclear: The two skeletal displays are not connected or individually distinguished well enough to determine which shows the clean prediction, the updated target state, or the final sampled motion.
+
+unclear: The meaning of **s = 2** is not given.
+
+The decoding text states **“rotations → FK → skinned.”** It claims a route from rotations through FK to the rendered animal, which is labelled as the motion of this rig.
+
+unclear: There is no connecting arrow establishing which sampling result supplies those rotations or when that result leaves the loop for decoding.
+
+Connect the returned target state to the loop and connect the final result to the decoding sequence. Those two connections would make the update and exit readable without reconstructing them from nearby labels.
+
+The final note says **“unseen rig: same pass; optional LoRA, ~10 clips.”** This is the only explicit optional choice in the figure. The stated default route is the same pass; the optional addition is LoRA using approximately ten clips.
+
+unclear: The note does not show where LoRA acts or when it is chosen, so its effect on the pictured computation remains unspecified.
+
+The figure’s numerical claims are therefore **311 library rigs**, **34–102 joints per library rig**, a representation of **240 frames × \(J\) joints × 17 channels**, **8-dimensional tree structure**, **14 repetitions of the transformer block**, **20 Euler sampling steps**, **s = 2**, and **approximately 10 clips for optional LoRA**. The joint-count range describes the library; the figure does not label 102 as an architectural maximum. The 14 block repetitions and 20 sampling steps are separate counts. Both displayed LLM2Vec boxes are labelled frozen.
+
+unclear: No frame rate is given, so 240 frames does not specify a duration in seconds.
+
+The requested motion trajectory is **running followed by slowing to a walk**. The clay pose sequence advances toward the right and becomes more tightly spaced near its end, providing a visual suggestion of slowing.
+
+unclear: Without time markers, and with the poses this small at **5.5 inches wide**, the sequence does not let me verify the speed change or distinguish a running gait from a walking gait.
+
+At that reading width, the four-stage organization, large token grid, and temporal/spatial highlights work. The joint callouts, “frozen” tags, and individual skeleton poses are too small for comfortable inspection. Enlarge those elements if they are expected to carry the explanation. The central conceptual read is clear; the caption/time merge and sampling return/exit are the parts where the connections fail to carry the stated method.
+tokens used
+7,781
+The figure starts with **“Any rig.”** A rig supplies a skeleton with joints and a tree structure. The joint callouts—“the head,” “the first tail vertebra,” and “the left front foot”—show that joints also have language descriptions. The examples establish that skeleton shapes can differ. The library is labelled **311 rigs, 34–102 joints**.
+
+Choosing a rig determines the skeleton, the joint count \(J\), and the skeleton context supplied downstream. The figure later claims that an unseen rig follows the “same pass.”
+
+**“Skeleton as context”** arranges the motion representation into a grid. Rows represent joints; columns represent frames. The first column is teal and receives a rest frame explicitly labelled **“stays clean.”** The remaining columns are grey and sit beneath “noise-mixed frames.” The grid is labelled **240 frames × \(J\) joints × 17 channels**.
+
+Two additional branches provide joint context:
+
+- Joint descriptions pass through **LLM2Vec**, labelled **frozen**, and then a **linear** layer.
+- **Tree structure (8-d)** passes through an **MLP**.
+
+These branches meet at the teal plus. Its output connects to the outlined row, with the instruction **“added to every token of joint j.”** This shows the same joint-specific context being added across that joint’s frames, including its clean rest-frame token. The highlighted row makes that operation understandable.
+
+unclear: The figure does not establish whether the 240 frames include the clean rest frame or count only the target frames.
+
+unclear: The 17 channels are not identified, so their relationship to the rotations used during decoding is unspecified.
+
+**“Transformer”** contains a vertical sequence of temporal attention, spatial attention, and an MLP, with the enclosing stack marked **×14**.
+
+Temporal attention is described as **“a joint over frames.”** Its highlighted horizontal row matches the central grid’s organization. Spatial attention is described as **“a frame over joints.”** Its highlighted vertical column also matches. This row/column correspondence is right and communicates the distinction directly. The spatial block additionally contains a small matrix labelled **“tree-distance bias.”**
+
+unclear: The incoming grid arrow reaches the stack beside spatial attention, while the internal arrows start with temporal attention, so the entry into the stated sequence is not clearly connected.
+
+Caption and time form a separate clay-colored conditioning path. The example caption is **“the moose runs and then slows to a walk.”** It passes through another LLM2Vec box labelled **frozen**, followed by an MLP. Time \(t\) passes through its own MLP. A plus and the label **“c = caption + time: modulation only”** state the intended combination. A clay spine labelled **AdaLN** has connections beside temporal attention, spatial attention, and the final MLP.
+
+unclear: The AdaLN spine appears to join the caption branch above the bottom plus, and I cannot follow an output from that plus back to the spine, so the drawing does not establish that time reaches AdaLN.
+
+That connection needs a direct fix: draw the AdaLN supply wire leaving the **output of the caption-plus-time sum**. The written intention is clear; the wire does not express it clearly.
+
+**“Sample & decode”** receives the transformer output through the black path rising along the stack’s right side. The panel contains a row of black skeleton poses, the label **“predicted clean motion,”** a clay sequence of displaced and overlapping skeleton poses, and a skinned animal.
+
+The sampling annotation states **“×20 Euler steps (s = 2)”** and **“update the target frames.”** A long black return line runs from the sampling area across the top and back into the grey-token side of the grid. Together, the line and annotation describe repeated target-frame updates through the transformer.
+
+The clean rest frame explicitly persists through this loop. Target frames are the objects explicitly named as changing. The skeleton context and conditioning branches remain drawn alongside the recurring computation, with no changes to their inputs depicted. **Twenty steps** is the only stated stopping condition; there is no drawn decision about stopping early.
+
+unclear: The sampling end of the return line does not visibly attach to a particular result, so the figure does not identify exactly which represented quantity returns to the grid.
+
+unclear: The two skeletal displays are not connected or individually distinguished well enough to determine which shows the clean prediction, the updated target state, or the final sampled motion.
+
+unclear: The meaning of **s = 2** is not given.
+
+The decoding text states **“rotations → FK → skinned.”** It claims a route from rotations through FK to the rendered animal, which is labelled as the motion of this rig.
+
+unclear: There is no connecting arrow establishing which sampling result supplies those rotations or when that result leaves the loop for decoding.
+
+Connect the returned target state to the loop and connect the final result to the decoding sequence. Those two connections would make the update and exit readable without reconstructing them from nearby labels.
+
+The final note says **“unseen rig: same pass; optional LoRA, ~10 clips.”** This is the only explicit optional choice in the figure. The stated default route is the same pass; the optional addition is LoRA using approximately ten clips.
+
+unclear: The note does not show where LoRA acts or when it is chosen, so its effect on the pictured computation remains unspecified.
+
+The figure’s numerical claims are therefore **311 library rigs**, **34–102 joints per library rig**, a representation of **240 frames × \(J\) joints × 17 channels**, **8-dimensional tree structure**, **14 repetitions of the transformer block**, **20 Euler sampling steps**, **s = 2**, and **approximately 10 clips for optional LoRA**. The joint-count range describes the library; the figure does not label 102 as an architectural maximum. The 14 block repetitions and 20 sampling steps are separate counts. Both displayed LLM2Vec boxes are labelled frozen.
+
+unclear: No frame rate is given, so 240 frames does not specify a duration in seconds.
+
+The requested motion trajectory is **running followed by slowing to a walk**. The clay pose sequence advances toward the right and becomes more tightly spaced near its end, providing a visual suggestion of slowing.
+
+unclear: Without time markers, and with the poses this small at **5.5 inches wide**, the sequence does not let me verify the speed change or distinguish a running gait from a walking gait.
+
+At that reading width, the four-stage organization, large token grid, and temporal/spatial highlights work. The joint callouts, “frozen” tags, and individual skeleton poses are too small for comfortable inspection. Enlarge those elements if they are expected to carry the explanation. The central conceptual read is clear; the caption/time merge and sampling return/exit are the parts where the connections fail to carry the stated method.
+codex rc=0

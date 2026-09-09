@@ -1,0 +1,96 @@
+Reading additional input from stdin...
+OpenAI Codex v0.153.3
+--------
+workdir: /iridisfs/scratch/ts1v23/workspace/noKslot_clean/paper/figures/fig1_align
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: max
+reasoning summaries: none
+session id: 01a074ff-a2b9-74e3-a8c7-258161aeeced
+--------
+user
+Blind figure review, round 3, part 1 (final reading). Judge only from the attached image; do not read source or any text file.
+- The attached image is the whole figure (1800 × 1000 canvas at 2×), read at 5.5 inches wide in a paper (32 px canvas = 7 pt).
+The work is a method-overview figure: a Figure 1 drawn by a paper's authors in the paper's own idiom (Times; teal = skeleton-derived,
+clay = caption/time conditioning, grey data tokens, ink flow, white page), built in the order regions and panels → token grid →
+illustrations and callouts → connections → labels. You have not read the paper. Explain only what the figure shows.
+1. Explain the method in the order the figure reads: who acts, what passes between steps, what each decision changes, what persists
+   through a loop, what ends it. Put "unclear:" in front of any sentence where the figure leaves you unsure. Do not fill gaps from
+   what such methods usually do. Then state the counts, limits and trajectories the figure claims.
+9. One 0–10 for "a reader explains the method correctly from this figure alone", and the three most valuable remaining changes.
+=== SCOPE LIMITS === 1. Not a security product; cooperating operator on their own machine; no over-defense. 2. No hashes/checksums.
+3. No defensive scaffolding. 4. No corner-case obsession. 5. Judge where judgement is needed. 6. Propose the direct visual change.
+7. No caveat sprinkling. Report anything actually wrong. Say plainly when something is right. Be concrete and blunt. No preamble.
+warning: Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+hook: SessionStart
+hook: SessionStart Completed
+codex
+1. A rig supplies a skeleton and descriptions of individual joints, such as “the head” and “the left front foot.” The examples establish that different skeletal layouts can enter the method.
+
+2. Motion is arranged as a grid: joints run vertically, frames horizontally. The teal column contains the rest frame and stays clean; the grey columns contain noisy target frames. Two skeleton-derived inputs are added to every token belonging to joint \(j\): its description passes through frozen LLM2Vec and a linear layer; its tree-structure features pass through an MLP. Thus, each joint’s information is repeated across its frame tokens.
+
+3. The grid enters a transformer stack. Temporal attention operates across frames for one joint; spatial attention operates across joints within one frame and receives a tree-distance bias. An MLP follows. This block repeats 14 times.
+
+   The caption passes through frozen LLM2Vec and an MLP. Time \(t\) passes through another MLP. Their outputs are added to form \(c\), which conditions the transformer through AdaLN. The label explicitly restricts this branch to modulation. The illustrated caption requests “the moose runs and then slows to a walk.”
+
+4. The transformer produces a predicted clean motion. The return path indicates that this prediction is used to update the target frames through Euler steps, then process them again. The rest-frame column remains clean. The loop ends after 20 steps. The resulting motion is decoded through “rotations → FK → skinned,” producing motion on the rig.
+
+   unclear: The return line does not explicitly show the operation between the clean prediction and the updated target frames, and \(s=2\) is undefined.
+
+   For an unseen rig, the figure promises the same pass, with optional LoRA using approximately 10 clips.
+
+   unclear: The figure does not show where LoRA is applied or when those clips enter the process.
+
+The stated counts and limits are:
+
+- **Rig library:** 311 rigs, with 34–102 joints.
+- **Representation:** one clean rest frame plus 240 target frames; 17 channels per token; 8-dimensional tree-structure features.
+- **Computation:** 14 transformer blocks and 20 Euler steps, with \(s=2\).
+- **Optional adaptation:** approximately 10 clips.
+
+The depicted computational trajectory is noisy target frames → repeated clean-motion predictions and target updates → rotations → FK → skinned motion. The requested motion trajectory is running → slowing → walking. The output poses show movement, but the transition between those phases is not visually readable.
+
+**8/10** for a reader explaining the method correctly from this figure alone. The attention axes, persistent clean rest frame, and separate skeleton versus caption/time pathways are clear.
+
+The three most valuable remaining changes:
+
+1. **Make the update explicit.** Connect “predicted clean motion → Euler update → target frames” through one labelled update box. Define \(s\) beside its value. This resolves the main remaining ambiguity in the loop.
+2. **Make the output match the motion claim visibly.** Put a time arrow and “run → slowing → walk” labels beneath corresponding output poses, and show those same moments on the same identifiable skinned rig. The current single rendered pose cannot communicate the transition.
+3. **Increase the smallest text for the stated print width.** Bring joint callouts, “frozen,” “AdaLN,” and “×14” to at least 32 canvas px / 7 pt. Move the bottom conditioning equation away from the page edge.
+tokens used
+14,910
+1. A rig supplies a skeleton and descriptions of individual joints, such as “the head” and “the left front foot.” The examples establish that different skeletal layouts can enter the method.
+
+2. Motion is arranged as a grid: joints run vertically, frames horizontally. The teal column contains the rest frame and stays clean; the grey columns contain noisy target frames. Two skeleton-derived inputs are added to every token belonging to joint \(j\): its description passes through frozen LLM2Vec and a linear layer; its tree-structure features pass through an MLP. Thus, each joint’s information is repeated across its frame tokens.
+
+3. The grid enters a transformer stack. Temporal attention operates across frames for one joint; spatial attention operates across joints within one frame and receives a tree-distance bias. An MLP follows. This block repeats 14 times.
+
+   The caption passes through frozen LLM2Vec and an MLP. Time \(t\) passes through another MLP. Their outputs are added to form \(c\), which conditions the transformer through AdaLN. The label explicitly restricts this branch to modulation. The illustrated caption requests “the moose runs and then slows to a walk.”
+
+4. The transformer produces a predicted clean motion. The return path indicates that this prediction is used to update the target frames through Euler steps, then process them again. The rest-frame column remains clean. The loop ends after 20 steps. The resulting motion is decoded through “rotations → FK → skinned,” producing motion on the rig.
+
+   unclear: The return line does not explicitly show the operation between the clean prediction and the updated target frames, and \(s=2\) is undefined.
+
+   For an unseen rig, the figure promises the same pass, with optional LoRA using approximately 10 clips.
+
+   unclear: The figure does not show where LoRA is applied or when those clips enter the process.
+
+The stated counts and limits are:
+
+- **Rig library:** 311 rigs, with 34–102 joints.
+- **Representation:** one clean rest frame plus 240 target frames; 17 channels per token; 8-dimensional tree-structure features.
+- **Computation:** 14 transformer blocks and 20 Euler steps, with \(s=2\).
+- **Optional adaptation:** approximately 10 clips.
+
+The depicted computational trajectory is noisy target frames → repeated clean-motion predictions and target updates → rotations → FK → skinned motion. The requested motion trajectory is running → slowing → walking. The output poses show movement, but the transition between those phases is not visually readable.
+
+**8/10** for a reader explaining the method correctly from this figure alone. The attention axes, persistent clean rest frame, and separate skeleton versus caption/time pathways are clear.
+
+The three most valuable remaining changes:
+
+1. **Make the update explicit.** Connect “predicted clean motion → Euler update → target frames” through one labelled update box. Define \(s\) beside its value. This resolves the main remaining ambiguity in the loop.
+2. **Make the output match the motion claim visibly.** Put a time arrow and “run → slowing → walk” labels beneath corresponding output poses, and show those same moments on the same identifiable skinned rig. The current single rendered pose cannot communicate the transition.
+3. **Increase the smallest text for the stated print width.** Bring joint callouts, “frozen,” “AdaLN,” and “×14” to at least 32 canvas px / 7 pt. Move the bottom conditioning equation away from the page edge.
+codex rc=0

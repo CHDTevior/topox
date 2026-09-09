@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TopX — Figure 1 (ALIGN method-figure-loop)</title>
+<style>
+  body { margin: 0; background: #f2f2f2; font: 14px/1.4 "Nimbus Roman", "Times New Roman", Times, serif; color: #222; }
+  #host canvas { width: 900px; height: 500px; display: block; margin: 16px auto 8px; background: #fff; box-shadow: 0 0 0 1px #ccc; }
+  #controls { width: 900px; margin: 0 auto 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #controls button { font: inherit; padding: 2px 8px; } #controls button.on { background: #1F6F8B; color: #fff; }
+  #scrub { flex: 1; } #svg-host, #svg-out { display: none; } body.svgonly > * { display: none; } body.svgonly #svg-out { display: block; }
+  #err { color: #b00; white-space: pre-wrap; width: 900px; margin: 0 auto; }
+</style>
+<script src="vendor/p5.min.js"></script>
+<script src="vendor/p5.svg.js"></script>
+<script src="thumbs.js"></script>
+<script>
+// p5.js-svg 1.5.1 with p5 1.9.4 wrapper (from ALIGN's example page): p5's transpiled Renderer2D constructor returns a NEW object
+// which p5.svg discards; return the object p5 actually built, and give svgcanvas an ellipse() (p5 1.9 draws circle/arc through it).
+(function () {
+  const OrigSVG = p5.RendererSVG;
+  p5.RendererSVG = function (elt, pInst, isMain) {
+    const R2D = p5.Renderer2D; let made = null;
+    const Tmp = function () { made = R2D.apply(this, arguments); return made; };
+    Tmp.prototype = R2D.prototype; p5.Renderer2D = Tmp;
+    let shell; try { shell = new OrigSVG(elt, pInst, isMain); } finally { p5.Renderer2D = R2D; }
+    Object.setPrototypeOf(made, OrigSVG.prototype);
+    made.isSVG = shell.isSVG; made.svg = shell.svg;
+    const ctxProto = Object.getPrototypeOf(made.drawingContext);
+    if (!ctxProto.ellipse) ctxProto.ellipse = function (x, y, rx, ry, rot, a0, a1, ccw) {
+      rot = rot || 0; if (a0 === undefined) { a0 = 0; a1 = Math.PI * 2; }
+      const TAU = Math.PI * 2; let span = a1 - a0;
+      if (!ccw) { if (span < 0) span += TAU * Math.ceil(-span / TAU); if (span > TAU) span = TAU; }
+      else { if (span > 0) span -= TAU * Math.ceil(span / TAU); if (span < -TAU) span = -TAU; }
+      const n = Math.max(8, Math.ceil(Math.abs(span) / TAU * 72));
+      for (let i = 0; i <= n; i++) { const a = a0 + span * i / n, px = rx * Math.cos(a), py = ry * Math.sin(a);
+        const X = x + px * Math.cos(rot) - py * Math.sin(rot), Y = y + px * Math.sin(rot) + py * Math.cos(rot);
+        if (i === 0) this.moveTo(X, Y); else this.lineTo(X, Y); }
+    };
+    return made;
+  };
+  p5.RendererSVG.prototype = OrigSVG.prototype;
+})();
+</script>
+</head>
+<body>
+<div id="host"></div>
+<div id="controls">
+  <button data-stage="1">regions</button><button data-stage="2">token grid</button><button data-stage="3">illustrations &amp; callouts</button>
+  <button data-stage="4">connections</button><button data-stage="5">labels</button>
+  <input type="range" id="scrub" min="0" max="1000" value="1000"><span id="pval">p = 1.000</span><button id="export">export SVG</button>
+</div>
+<div id="svg-host"></div><div id="svg-out"></div><pre id="err"></pre>
+<script>
+window.addEventListener('error', e => { document.getElementById('err').textContent += e.message + ' @' + (e.filename||'').split('/').pop() + ':' + e.lineno + '\n'; });
+// TopX Figure 1 as a p5 program (ALIGN trial, v1). Every mark is {stage, draw(g)}; every position, route and label is decided
+// at build time; draw() only replays. Canvas 1800 x 1000, displayed at 5.5 in (ICLR text width): type floor 32 px = 7 pt.
+const W = 1800, H = 1000, NSTAGE = 5;
+const FACE = 'Nimbus Roman';   // Times clone present on the render host; the SVG's font-family is rewritten to a Times stack on export
+const S_HEAD = 40, S_LAB = 34, S_SUB = 32;
+const TEAL = '#1F6F8B', TEAL_BG = '#E4F0F4', TEAL_CELL = '#5F9BB0', CLAY = '#B5552F', CLAY_BG = '#F8E9E1', INK = '#2B2B2B', GREY = '#6E6E6E', CELL = '#D4D4D4', PANEL_BG = '#F4F4F4';
+const T = {}; let MARKS = null, P = 1, main = null, svgInst = null;
+
+// ---------- primitives (all pure: they draw from their arguments only) ----------
+function txt(g, s, x, y, size, opts) {
+  opts = opts || {}; g.push(); g.noStroke(); g.fill(opts.col || INK); g.textFont(FACE); g.textSize(size);
+  g.textStyle(opts.bold ? g.BOLD : (opts.italic ? g.ITALIC : g.NORMAL)); g.textAlign(opts.align || g.LEFT, opts.valign || g.BASELINE);
+  if (opts.rot) { g.translate(x, y); g.rotate(opts.rot); g.text(s, 0, 0); } else g.text(s, x, y); g.pop();
+}
+function panel(g, x, y, w, h, opts) {
+  opts = opts || {}; g.push(); g.stroke(opts.stroke || INK); g.strokeWeight(opts.sw || 3); g.fill(opts.fill || '#fff'); g.rect(x, y, w, h, opts.r === undefined ? 10 : opts.r);
+  if (opts.double) { g.noFill(); g.strokeWeight(1.5); g.rect(x + 7, y + 7, w - 14, h - 14, 6); } g.pop();
+}
+function cell(g, x, y, w, h, col) { g.push(); g.noStroke(); g.fill(col); g.rect(x, y, w, h, 2); g.pop(); }
+function line(g, pts, col, sw, head) {
+  g.push(); g.stroke(col); g.strokeWeight(sw); g.noFill(); g.strokeJoin(g.ROUND); g.strokeCap(g.ROUND);
+  g.beginShape(); for (const p of pts) g.vertex(p[0], p[1]); g.endShape(); g.pop();
+  if (head) { const a = pts[pts.length - 2], b = pts[pts.length - 1], ang = Math.atan2(b[1] - a[1], b[0] - a[0]), L = head;
+    g.push(); g.noStroke(); g.fill(col); g.translate(b[0], b[1]); g.rotate(ang); g.triangle(0, 0, -L, -L * 0.42, -L, L * 0.42); g.pop(); }
+}
+function img(g, name, x, y, w) { const im = T[name]; if (!im) return; const h = w * im.height / im.width; g.image(im, x, y, w, h); return h; }
+function imgH(name, w) { const im = T[name]; return im ? w * im.height / im.width : 0; }
+function plus(g, x, y, col) { g.push(); g.stroke(col); g.strokeWeight(3); g.fill('#fff'); g.circle(x, y, 40); g.strokeWeight(3.5); g.line(x - 11, y, x + 11, y); g.line(x, y - 11, x, y + 11); g.pop(); }
+function port(g, x, y) { g.push(); g.stroke(CLAY); g.strokeWeight(3); g.fill(CLAY_BG); g.rect(x - 11, y - 11, 22, 22, 3); g.pop(); }
+function miniGrid(g, x, y, mode) {
+  const cw = 22, ch = 18, gap = 5;
+  for (let c = 0; c < 6; c++) for (let r = 0; r < 4; r++) { const hi = mode === 'row' ? r === 2 : c === 2; cell(g, x + c * (cw + gap), y + r * (ch + gap), cw, ch, hi ? TEAL_CELL : CELL); }
+  g.push(); g.stroke(TEAL); g.strokeWeight(3);
+  if (mode === 'row') g.line(x, y + 2 * (ch + gap) + ch / 2, x + 6 * (cw + gap) - gap, y + 2 * (ch + gap) + ch / 2);
+  else g.line(x + 2 * (cw + gap) + cw / 2, y, x + 2 * (cw + gap) + cw / 2, y + 4 * (ch + gap) - gap);
+  g.pop();
+}
+
+// ---------- layout (build time) ----------  v5 (rebalanced: joint-language lane under its source, larger grid; D-12)
+const L = {
+  heads: [[40, 70, '1', 'Any rig'], [560, 70, '2', 'Skeleton as context'], [1060, 70, '3', 'Transformer'], [1420, 70, '4', 'Sample & decode']],
+  restTags: { x: 60, y: 108, w: 360 }, rig2: { x: 40, y: 420, w: 200 }, rig3: { x: 262, y: 420, w: 200 },
+  grid: { x0: 570, y0: 300, colW: 60, gap: 10, rowH: 32, rowGap: 6, rows: 10, cols: 6 },
+  restGlyph: { x: 552, y: 150, w: 100 }, noisy: [{ x: 680, y: 158, w: 80 }, { x: 766, y: 158, w: 80 }, { x: 852, y: 158, w: 80 }],
+  loopX: 950,
+  blk: { x: 1060, y: 110, w: 320, h: 520 },
+  sub: [{ y: 140, h: 190, name: 'temporal attention', sub: 'a joint over frames', icon: 'row' }, { y: 346, h: 200, name: 'spatial attention', sub: 'a frame over joints', icon: 'col' }, { y: 562, h: 52, name: 'MLP', sub: '', icon: null }],
+  rail: { x: 1365 },
+  clean: [{ x: 1440, y: 210, w: 80 }, { x: 1526, y: 210, w: 80 }, { x: 1612, y: 210, w: 80 }, { x: 1698, y: 210, w: 80 }],
+  strip: { x: 1420, y: 336, w: 360 }, skin: { x: 1450, y: 552, w: 200 }, unseen: { x: 1420, y: 830, w: 360, h: 100 },
+  // joint-language lane UNDER the rigs (its source): tree -> MLP (row A), descriptions -> LLM2Vec -> linear (row B), sum -> the joint row
+  smlp: { x: 392, y: 698, w: 100, h: 56 }, desc: { x: 40, y: 782, w: 200, h: 86 }, llmA: { x: 256, y: 790, w: 120, h: 70 }, lin: { x: 392, y: 796, w: 100, h: 56 },
+  plusJ: [528, 772], treeX: 442,
+  cap: { x: 1060, y: 646, w: 280, h: 146 }, llmB: { x: 1060, y: 812, w: 130, h: 100 }, cmlp: { x: 1220, y: 812, w: 100, h: 56 }, tmlp: { x: 1220, y: 906, w: 100, h: 56 },
+  tdial: [1090, 934], plusC: [1365, 934],
+};
+const G = L.grid; const gridRight = G.x0 + G.cols * G.colW + (G.cols - 1) * G.gap, gridBottom = G.y0 + G.rows * G.rowH + (G.rows - 1) * G.rowGap;
+const rowY = r => G.y0 + r * (G.rowH + G.rowGap); const HIGHLIGHT_ROW = 6; const tgtLeft = G.x0 + G.colW + G.gap;
+
+function miniGrid3(g, x, y, mode) {
+  const cw = 22, ch = 18, gap = 5;
+  for (let c = 0; c < 6; c++) for (let r = 0; r < 3; r++) { const hi = mode === 'row' ? r === 1 : c === 2; cell(g, x + c * (cw + gap), y + r * (ch + gap), cw, ch, hi ? TEAL_CELL : CELL); }
+  g.push(); g.stroke(TEAL); g.strokeWeight(3);
+  if (mode === 'row') g.line(x, y + (ch + gap) + ch / 2, x + 6 * (cw + gap) - gap, y + (ch + gap) + ch / 2);
+  else g.line(x + 2 * (cw + gap) + cw / 2, y, x + 2 * (cw + gap) + cw / 2, y + 3 * (ch + gap) - gap);
+  g.pop();
+}
+
+function buildMarks() {
+  const M = []; const add = (stage, draw) => M.push({ stage, draw });
+  // ---- stage 1: regions and panels ----
+  for (const [x, y, n, s] of L.heads) add(1, g => { g.push(); g.noStroke(); g.fill(TEAL); g.circle(x + 17, y - 14, 34); g.pop(); txt(g, n, x + 17, y - 3, 26, { col: '#fff', bold: true, align: g.CENTER }); txt(g, s, x + 44, y, S_HEAD, { bold: true }); });
+  add(1, g => { panel(g, L.blk.x + 12, L.blk.y + 12, L.blk.w, L.blk.h, { fill: PANEL_BG, stroke: '#CFCFCF', sw: 2 }); panel(g, L.blk.x, L.blk.y, L.blk.w, L.blk.h, {}); });
+  for (const s of L.sub) add(1, g => panel(g, L.blk.x + 26, s.y, L.blk.w - 52, s.h, { fill: s.icon === 'col' ? TEAL_BG : '#fff', stroke: s.icon === 'col' ? TEAL : INK, sw: 2.5, r: 8 }));
+  add(1, g => panel(g, L.desc.x, L.desc.y, L.desc.w, L.desc.h, { fill: TEAL_BG, stroke: TEAL, sw: 2.5 }));
+  add(1, g => panel(g, L.cap.x, L.cap.y, L.cap.w, L.cap.h, { fill: CLAY_BG, stroke: CLAY, sw: 2.5 }));
+  for (const b of [L.llmA, L.llmB]) add(1, g => panel(g, b.x, b.y, b.w, b.h, { stroke: GREY, sw: 2, double: true }));
+  for (const b of [L.lin, L.smlp, L.cmlp, L.tmlp]) add(1, g => panel(g, b.x, b.y, b.w, b.h, { sw: 2.5, r: 8 }));
+  add(1, g => panel(g, L.unseen.x, L.unseen.y, L.unseen.w, L.unseen.h, { stroke: TEAL, sw: 2.5 }));
+  // ---- stage 2: the token grid ----
+  for (let c = 0; c < G.cols; c++) for (let r = 0; r < G.rows; r++) add(2, g => cell(g, G.x0 + c * (G.colW + G.gap), rowY(r), G.colW, G.rowH, c === 0 ? TEAL_CELL : CELL));
+  add(2, g => { g.push(); g.noFill(); g.stroke(TEAL); g.strokeWeight(3.5); g.rect(G.x0 - 8, rowY(HIGHLIGHT_ROW) - 5, gridRight - G.x0 + 16, G.rowH + 10, 4); g.pop(); });
+  add(2, g => { g.push(); g.stroke(GREY); g.strokeWeight(2); g.noFill(); const y = gridBottom + 14; g.line(tgtLeft, y, gridRight, y); g.line(tgtLeft, y - 8, tgtLeft, y); g.line(gridRight, y - 8, gridRight, y); g.pop(); });
+  // ---- stage 3: illustrations and their callouts (real crops) ----
+  add(3, g => img(g, 'rest_tags', L.restTags.x, L.restTags.y, L.restTags.w));
+  add(3, g => img(g, 'rest_gharial', L.rig2.x, L.rig2.y, L.rig2.w)); add(3, g => img(g, 'rest_lemur', L.rig3.x, L.rig3.y, L.rig3.w));
+  add(3, g => img(g, 'rest', L.restGlyph.x, L.restGlyph.y, L.restGlyph.w));
+  L.noisy.forEach((n, k) => add(3, g => img(g, 'noisy_' + k, n.x, n.y, n.w)));
+  L.sub.forEach(s => { if (s.icon) add(3, g => miniGrid3(g, L.blk.x + 42, s.y + 96, s.icon)); });
+  add(3, g => img(g, 'bias', L.blk.x + 222, L.sub[1].y + 92, 60));
+  L.clean.forEach((c, k) => add(3, g => img(g, 'clean_' + k, c.x, c.y, c.w)));
+  add(3, g => img(g, 'motion_strip', L.strip.x, L.strip.y, L.strip.w));
+  add(3, g => img(g, 'skinned_moose', L.skin.x, L.skin.y, L.skin.w));
+  // ---- stage 4: connections ----
+  add(4, g => line(g, [[L.restTags.x + L.restTags.w + 12, 330], [G.x0 - 6, 330]], TEAL, 3.5, 14));                              // rest pose -> rest column
+  add(4, g => line(g, [[L.rig2.x + L.rig2.w + 4, 500], [510, 500], [510, 400], [G.x0 - 6, 400]], TEAL, 3.5, 14));
+  add(4, g => line(g, [[L.rig3.x + L.rig3.w + 4, 500], [510, 500]], TEAL, 3.5, 0));
+  add(4, g => line(g, [[L.restGlyph.x + 50, L.restGlyph.y + imgH('rest', L.restGlyph.w) + 4], [G.x0 + G.colW / 2, G.y0 - 8]], TEAL, 3.5, 12));
+  add(4, g => line(g, [[L.treeX, L.rig3.y + imgH('rest_lemur', L.rig3.w) + 6], [L.treeX, L.smlp.y - 6]], TEAL, 3.5, 14));      // the tree (of every rig) -> structure MLP
+  add(4, g => line(g, [[L.desc.x + L.desc.w + 4, 825], [L.llmA.x - 6, 825]], TEAL, 3.5, 14));
+  add(4, g => line(g, [[L.llmA.x + L.llmA.w + 4, 824], [L.lin.x - 6, 824]], TEAL, 3.5, 14));
+  add(4, g => line(g, [[L.smlp.x + L.smlp.w + 4, 726], [L.plusJ[0], 726], [L.plusJ[0], L.plusJ[1] - 24]], TEAL, 3.5, 14));
+  add(4, g => line(g, [[L.lin.x + L.lin.w + 4, 824], [L.plusJ[0], 824], [L.plusJ[0], L.plusJ[1] + 24]], TEAL, 3.5, 14));
+  add(4, g => line(g, [[L.plusJ[0] + 22, L.plusJ[1]], [548, L.plusJ[1]], [548, rowY(HIGHLIGHT_ROW) + G.rowH / 2], [G.x0 - 12, rowY(HIGHLIGHT_ROW) + G.rowH / 2]], TEAL, 3.5, 14));   // -> the joint's row, from the left
+  add(4, g => line(g, [[gridRight + 8, 300], [L.blk.x + 20, 300]], INK, 5, 18));                                                // tokens -> temporal attention
+  add(4, g => { for (let i = 0; i < 2; i++) { const a = L.sub[i], b = L.sub[i + 1]; line(g, [[L.blk.x + L.blk.w / 2, a.y + a.h + 2], [L.blk.x + L.blk.w / 2, b.y - 2]], INK, 3, 10); } });
+  add(4, g => line(g, [[L.blk.x + L.blk.w + 8, 604], [1400, 604], [1400, 250], [L.clean[0].x - 6, 250]], INK, 5, 18));
+  add(4, g => line(g, [[1424, 296], [1424, 330]], INK, 4, 14));
+  add(4, g => line(g, [[1424, 506], [1424, 546]], INK, 4, 14));
+  add(4, g => line(g, [[1782, 204], [1782, 96], [L.loopX, 96], [L.loopX, G.y0 - 8]], INK, 3, 14));
+  add(4, g => { line(g, [[L.rail.x, L.blk.y + L.blk.h + 6], [L.rail.x, L.blk.y + 40]], CLAY, 3.5, 0); for (const s of L.sub) { port(g, L.rail.x, s.y + s.h / 2); line(g, [[L.rail.x - 11, s.y + s.h / 2], [L.blk.x + L.blk.w - 22, s.y + s.h / 2]], CLAY, 3, 10); } });
+  add(4, g => line(g, [[L.cap.x + 60, L.cap.y + L.cap.h + 4], [L.cap.x + 60, L.llmB.y - 6]], CLAY, 3.5, 14));
+  add(4, g => line(g, [[L.llmB.x + L.llmB.w + 4, 840], [L.cmlp.x - 6, 840]], CLAY, 3.5, 14));
+  add(4, g => { g.push(); g.stroke(CLAY); g.strokeWeight(3); g.fill(CLAY_BG); g.circle(L.tdial[0], L.tdial[1], 30); g.pop(); line(g, [[L.tdial[0] + 17, L.tdial[1]], [L.tmlp.x - 6, L.tdial[1]]], CLAY, 3.5, 14); });
+  add(4, g => line(g, [[L.cmlp.x + L.cmlp.w + 4, 840], [1398, 840], [1398, L.plusC[1]], [L.plusC[0] + 24, L.plusC[1]]], CLAY, 3.5, 14));
+  add(4, g => line(g, [[L.tmlp.x + L.tmlp.w + 4, L.plusC[1]], [L.plusC[0] - 24, L.plusC[1]]], CLAY, 3.5, 14));
+  add(4, g => line(g, [[L.plusC[0], L.plusC[1] - 22], [L.rail.x, L.blk.y + L.blk.h + 6]], CLAY, 3.5, 0));
+  add(4, g => { plus(g, L.plusJ[0], L.plusJ[1], TEAL); plus(g, L.plusC[0], L.plusC[1], CLAY); });
+  // ---- stage 5: labels ----
+  add(5, g => { txt(g, 'library: 311 rigs', 40, 600, S_SUB, { col: GREY }); txt(g, '34–102 joints', 40, 634, S_SUB, { col: GREY }); });
+  add(5, g => { txt(g, 'rest frame', L.restGlyph.x + 50, 138, S_SUB, { col: TEAL, align: g.CENTER }); txt(g, 'noisy frames', 806, 138, S_SUB, { col: GREY, align: g.CENTER }); });
+  add(5, g => { txt(g, 'J joints', gridRight + 26, (G.y0 + gridBottom) / 2, S_SUB, { col: GREY, align: g.CENTER, rot: -Math.PI / 2 }); txt(g, 'clean', G.x0 + G.colW / 2, gridBottom + 46, S_SUB, { col: TEAL, align: g.CENTER }); txt(g, '240 target frames', (tgtLeft + gridRight) / 2, gridBottom + 46, S_SUB, { col: GREY, align: g.CENTER }); txt(g, '17 channels per token:', (G.x0 + gridRight) / 2, gridBottom + 96, S_SUB, { col: GREY, align: g.CENTER }); txt(g, 'position, rotation, velocity, contact', (G.x0 + gridRight) / 2, gridBottom + 130, S_SUB, { col: GREY, align: g.CENTER }); });
+  for (const s of L.sub) add(5, g => { txt(g, s.name, L.blk.x + 40, s.y + 40, S_LAB); if (s.sub) txt(g, s.sub, L.blk.x + 40, s.y + 74, S_SUB, { col: GREY }); });
+  add(5, g => { txt(g, 'tree-distance bias', L.blk.x + 42, L.sub[1].y + 96 + 69 + 26, 26, { col: TEAL }); txt(g, '×14', L.blk.x + 30, L.blk.y + 30, 30, { col: GREY }); });
+  add(5, g => txt(g, 'AdaLN', L.rail.x, L.blk.y + 32, 26, { col: CLAY, align: g.CENTER }));
+  add(5, g => { txt(g, 'predicted clean motion', 1440, 200, S_LAB); txt(g, '×20 Euler steps (s = 2)', 1440, 128, S_SUB, { col: GREY }); txt(g, 'update the target frames', 1440, 162, S_SUB, { col: GREY }); });
+  add(5, g => { txt(g, 'after 20 steps', 1440, 322, S_SUB, { col: GREY }); txt(g, 'motion of this rig', 1440, 500, S_SUB, { col: GREY }); txt(g, 'rotations → FK → skinned', 1440, 538, S_SUB, { col: GREY }); });
+  add(5, g => { txt(g, 'unseen rig: same pass;', L.unseen.x + 16, L.unseen.y + 40, S_SUB); txt(g, 'optional LoRA, ~10 clips', L.unseen.x + 16, L.unseen.y + 78, S_SUB); });
+  add(5, g => { txt(g, 'joint', L.desc.x + L.desc.w / 2, L.desc.y + 36, S_SUB, { col: TEAL, align: g.CENTER }); txt(g, 'descriptions', L.desc.x + L.desc.w / 2, L.desc.y + 70, S_SUB, { col: TEAL, align: g.CENTER }); txt(g, 'tree structure (8-d)', L.treeX - 14, 686, S_SUB, { col: TEAL, align: g.RIGHT }); txt(g, 'added to every token of joint j', 40, 920, S_SUB, { col: TEAL }); });
+  add(5, g => { txt(g, 'caption:', L.cap.x + 16, L.cap.y + 36, S_SUB, { col: CLAY }); txt(g, '“the moose runs', L.cap.x + 16, L.cap.y + 70, S_SUB, { col: CLAY }); txt(g, 'and then slows', L.cap.x + 16, L.cap.y + 104, S_SUB, { col: CLAY }); txt(g, 'to a walk”', L.cap.x + 16, L.cap.y + 138, S_SUB, { col: CLAY }); });
+  add(5, g => { for (const b of [L.llmA, L.llmB]) { txt(g, 'LLM2Vec', b.x + b.w / 2, b.y + (b.h > 80 ? 44 : 32), b.h > 80 ? 30 : 26, { align: g.CENTER }); txt(g, 'frozen', b.x + b.w / 2, b.y + (b.h > 80 ? 80 : 60), 26, { col: GREY, align: g.CENTER }); } });
+  add(5, g => { txt(g, 'linear', L.lin.x + L.lin.w / 2, L.lin.y + 39, S_SUB, { align: g.CENTER }); txt(g, 'MLP', L.smlp.x + L.smlp.w / 2, L.smlp.y + 39, S_SUB, { align: g.CENTER }); txt(g, 'MLP', L.cmlp.x + L.cmlp.w / 2, L.cmlp.y + 39, S_SUB, { align: g.CENTER }); txt(g, 'MLP', L.tmlp.x + L.tmlp.w / 2, L.tmlp.y + 39, S_SUB, { align: g.CENTER }); txt(g, 't', L.tdial[0], L.tdial[1] + 11, S_SUB, { align: g.CENTER, italic: true }); });
+  add(5, g => txt(g, 'c = caption + time: modulation only', L.plusC[0] + 24, 978, S_SUB, { col: CLAY, align: g.RIGHT }));
+  return M;
+}
+function paint(g, p) {
+  g.push(); g.background(255); g.pop();
+  const eps = 1e-6;
+  for (let k = 1; k <= NSTAGE; k++) {
+    let f = p * NSTAGE - (k - 1); f = f > 1 - eps ? 1 : f < eps ? 0 : f;
+    if (f <= 0) break;
+    const ms = MARKS.filter(m => m.stage === k); const n = Math.floor(f * ms.length + eps);
+    for (let i = 0; i < n; i++) ms[i].draw(g);
+  }
+}
+function parseHash() { const out = {}; for (const kv of location.hash.replace(/^#/, '').split('&')) { if (!kv) continue; const [k, v] = kv.split('='); out[k] = v === undefined ? true : decodeURIComponent(v); } return out; }
+function setP(p, fromSlider) {
+  P = Math.min(1, Math.max(0, p)); if (!fromSlider) document.getElementById('scrub').value = Math.round(P * 1000);
+  document.getElementById('pval').textContent = 'p = ' + P.toFixed(3);
+  document.querySelectorAll('#controls [data-stage]').forEach(b => b.classList.toggle('on', Math.abs(P - (+b.dataset.stage) / NSTAGE) < 1e-6));
+  if (main) main.redraw();
+}
+function applyHash() { const q = parseHash(); if (q.stage) setP((+q.stage) / NSTAGE); else if (q.p !== undefined && q.p !== true) setP(+q.p); if (q.svg !== undefined) { document.body.classList.add('svgonly'); buildSVGSafe(false); } }
+function buildSVG(download) {
+  const host = document.getElementById('svg-host'); host.innerHTML = '';
+  svgInst = new p5(s => {
+    s.preload = () => { for (const k in (window.THUMBS || {})) T[k] = s.loadImage(THUMBS[k]); };
+    s.setup = () => { s.createCanvas(W, H, s.SVG).parent(host); s.noLoop(); s.pixelDensity(1); paint(s, 1);
+      const el = host.querySelector('svg');
+      if (el) { el.setAttribute('viewBox', '0 0 ' + W + ' ' + H); el.setAttribute('width', W); el.setAttribute('height', H);
+        const out = document.getElementById('svg-out'); out.innerHTML = ''; out.appendChild(el.cloneNode(true)); }
+      if (download) s.save('topx-figure1.svg'); };
+    s.draw = () => {};
+  });
+}
+function buildSVGSafe(download) { try { buildSVG(download); } catch (e) { document.getElementById('err').textContent += 'svg: ' + (e.stack || e) + '\n'; } }
+const SAMPLE = 'A rig is an input Skeleton as context Shared transformer ×14 Predict, integrate, decode 311 rigs · 34–102 joints rest frame, clean target frames, noise-mixed xₜ J joints 240 × 17 channels temporal attention spatial attention MLP tree-distance bias AdaLN x̂₁ clean motion Euler steps caption guidance s = 2 motion of this rig rotations → forward kinematics skinned character rig never seen LoRA joint descriptions caption “the moose runs” LLM2Vec frozen linear structure MLP flow time t added to every token of joint j c: modulation only';
+Promise.all([['bold 44px ' + FACE, SAMPLE], ['34px ' + FACE, SAMPLE], ['32px ' + FACE, SAMPLE]].map(([f, s]) => document.fonts.load(f, s).catch(() => null))).then(() => document.fonts.ready).then(() => {
+  main = new p5(s => {
+    s.preload = () => { for (const k in (window.THUMBS || {})) T[k] = s.loadImage(THUMBS[k]); };
+    s.setup = () => { s.pixelDensity(1); s.createCanvas(W, H).parent('host'); s.noLoop(); MARKS = buildMarks();
+      document.getElementById('scrub').addEventListener('input', e => setP((+e.target.value) / 1000, true));
+      document.querySelectorAll('#controls [data-stage]').forEach(b => b.addEventListener('click', () => setP((+b.dataset.stage) / NSTAGE)));
+      document.getElementById('export').addEventListener('click', () => buildSVGSafe(true));
+      window.addEventListener('hashchange', applyHash); applyHash(); setP(P); document.body.dataset.ready = '1'; };
+    s.draw = () => paint(s, P);
+  });
+});
+</script>
+</body>
+</html>

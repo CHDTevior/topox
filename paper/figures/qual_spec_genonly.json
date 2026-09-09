@@ -1,0 +1,43 @@
+{
+ "cols": 2,
+ "frames": 5,
+ "rigs": [
+  {
+   "label": "Plains zebra (juvenile), 38 joints",
+   "caption": "The juvenile plains zebra fights with its herd",
+   "gen": "renders/skin_fig_clean/PZ_Plains_Zebra_Juvenile/gen_targets_f646303736260e63266d/stills_paper",
+   "view": "threequarter"
+  },
+  {
+   "label": "Alaskan moose, 55 joints",
+   "caption": "The female Alaskan moose fights and then chases off the intruder",
+   "gen": "renders/skin_fig_clean/PZ_Alaskan_Moose_Female/gen_targets_f2d76b31c5b91611f152/stills_paper",
+   "view": "threequarter"
+  },
+  {
+   "label": "African buffalo, 38 joints",
+   "caption": "The male African buffalo fights taunts and then reacts swiftly",
+   "gen": "renders/skin_fig_clean/PZ_African_Buffalo_Male/gen_targets_eb173c15b673c5678102/stills_paper",
+   "view": "threequarter"
+  },
+  {
+   "label": "African wild dog, 64 joints",
+   "caption": "The female wild dog stands still to rest",
+   "gen": "renders/skin_fig_clean/PZ_African_Wild_Dog_Female/gen_targets_8c858b9b353f4575a49e/stills_paper",
+   "view": "threequarter"
+  },
+  {
+   "label": "Indian elephant, 63 joints",
+   "caption": "The female Indian elephant swims and then turns right",
+   "gen": "renders/skin_fig_clean/PZ_Indian_Elephant_Female/gen_targets_c32ca83392277e36508c/stills_paper",
+   "view": "threequarter"
+  },
+  {
+   "label": "Gharial, 75 joints",
+   "caption": "The male gharial swims to a point treads water and then turns right",
+   "gen": "renders/skin_fig_clean/PZ_Gharial_Male/gen_targets_3f9b9c593e7c226b876c/stills_paper",
+   "view": "threequarter"
+  }
+ ],
+ "cell_h": 0.95
+}

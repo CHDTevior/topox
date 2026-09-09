@@ -1,0 +1,55 @@
+{
+ "cols": 2,
+ "frames": 6,
+ "cell_h": 0.98,
+ "rigs": [
+  {
+   "label": "Alaskan moose, 55 joints",
+   "caption": "The female Alaskan moose runs and then gradually transitions to walking",
+   "gen": "renders/skin_fig2_a/PZ_Alaskan_Moose_Female/gen_targets_d34d76e2c0a3e5b0d5e3/stills_clay2",
+   "view": "threequarter"
+  },
+  {
+   "label": "Cheetah, 90 joints",
+   "caption": "The female cheetah jumps out from her spot",
+   "gen": "renders/skin_fig2_a/PZ_Cheetah_Female/gen_targets_e80c143bdf155d607187/stills_clay2",
+   "view": "threequarter"
+  },
+  {
+   "label": "Alaskan moose, 55 joints",
+   "caption": "The female Alaskan moose fights and then chases off the intruder",
+   "gen": "renders/skin_fig_clean/PZ_Alaskan_Moose_Female/gen_targets_f2d76b31c5b91611f152/stills_clay2",
+   "view": "threequarter"
+  },
+  {
+   "label": "African elephant (juvenile), 60 joints",
+   "caption": "The juvenile African elephant stands still begins to walk and then turns left",
+   "gen": "renders/skin_fig2_a/PZ_African_Elephant_Juvenile/gen_targets_b3714bfdfb418c87c26a/stills_clay2",
+   "view": "threequarter"
+  },
+  {
+   "label": "African wild dog, 64 joints",
+   "caption": "The female wild dog walks and then stands still",
+   "gen": "renders/skin_fig2_a/PZ_African_Wild_Dog_Female/gen_targets_248651e084c4760448be/stills_clay2",
+   "view": "threequarter"
+  },
+  {
+   "label": "African buffalo, 38 joints",
+   "caption": "The male African buffalo swims transitions to walking and then turns right",
+   "gen": "renders/skin_fig2_a/PZ_African_Buffalo_Male/gen_targets_3380cdd73c9f948affdf/stills_clay2",
+   "view": "threequarter"
+  },
+  {
+   "label": "African buffalo, 38 joints",
+   "caption": "The male African buffalo stands still and then turns to the right",
+   "gen": "renders/skin_fig2_b/PZ_African_Buffalo_Male/gen_targets_900153a2524d0cf6be49/stills_clay2",
+   "view": "threequarter"
+  },
+  {
+   "label": "Gharial, 75 joints",
+   "caption": "The male gharial swims and then turns left",
+   "gen": "renders/skin_fig2_a/PZ_Gharial_Male/gen_targets_cb6cfe73503d961c1bb7/stills_clay2",
+   "view": "threequarter"
+  }
+ ]
+}
