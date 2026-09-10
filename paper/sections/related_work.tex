@@ -24,12 +24,11 @@ captions our corpus carries, on user-defined human skeletons by OmniSkel~\citep{
 on re-captioned Truebones data by G-MDM~\citep{lee2025dragon},
 which generates Euler joint rotations without root translation, and, concurrently with this work, by
 SAMoR~\citep{samor2026}, which pools any skeleton into eight part tokens over joint positions and
-velocities and recovers rotations by inverse kinematics, and by UniMate~\citep{mou2026unimate}. We build on
-AnyTop's skeleton prompt and differ in what is generated: the model is text-conditioned, it denoises a per-joint
-representation any rig is converted to without a template, retargeting or inverse kinematics, it embeds
-natural-language \emph{descriptions} of the joints with LLM2Vec where AnyTop embeds cleaned joint names with T5,
-and every (rig, joint, channel) cell is normalised with its own statistics so that hundreds of rigs of very
-different proportions share one network.
+velocities and recovers rotations by inverse kinematics, and by UniMate~\citep{mou2026unimate}. \method{} is text-conditioned; it
+denoises a per-joint representation any rig is converted to without a template, retargeting or inverse
+kinematics; it embeds natural-language \emph{descriptions} of the joints with LLM2Vec where AnyTop embeds
+cleaned joint names with T5; and it normalises every (rig, joint, channel) cell with its own statistics, so that
+hundreds of rigs of very different proportions share one network.
 
 \paragraph{Objective, encoders, adaptation and evaluation.} \method{} is a DiT-style
 denoiser~\citep{peebles2023dit} trained with flow matching~\citep{lipman2023flow,liu2023rectified},

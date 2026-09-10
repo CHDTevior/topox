@@ -50,7 +50,7 @@ rigs, 986 clips) is never trained on by the backbone; App.~\ref{app:rep} gives t
 never noised, followed by the $T{=}240$ target frames that carry the flow interpolant and are the
 only frames denoised and scored. Under the rest-delta parameterisation the rest frame's rotation
 channels are the identity on every rig, so it conveys proportions, joint count and graph rather
-than motion (after per-cell normalisation the prompt also carries the rig's statistics); this is AnyTop's rest-pose first frame~\citep{gat2025anytop}, which we keep.
+than motion; after per-cell normalisation it also carries the rig's statistics.
 
 \paragraph{Joint semantics.} Each joint description $d_j$ is embedded once with
 LLM2Vec~\citep{behnamghader2024llm2vec} (4096-d), projected and \emph{added} to every token of joint
@@ -102,7 +102,7 @@ contact; root track; heading) and use
   \label{eq:grouped}
 \end{equation}
 where $\bar{\ell}_g$ is the masked mean of Eq.~\eqref{eq:elem} over the $N_g$ valid cells of group
-$g$ and $N=\sum_g N_g$; the grouping by channel family follows Kimodo~\citep{rempe2026kimodo}.
+$g$ and $N=\sum_g N_g$; the groups are the nine channel families of Table~\ref{tab:channels}, weighted to a target share profile~\citep{rempe2026kimodo}.
 Under this weighting the explicit $N_g$ dependence of the output-gradient energy of group $g$
 cancels: it is proportional to $\gamma_g^{2}Q_g$, where $Q_g$ is the group's mean weighted squared
 residual, so a group's weight in $\partial\mathcal{L}/\partial\hat{\mathbf{x}}_1$ no longer grows
