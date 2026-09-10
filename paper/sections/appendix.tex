@@ -43,7 +43,10 @@ the corpus used here: at every matched epoch the standardised representation is 
 R@1 ahead, with the FID \num{22}--\num{30}\% lower. 
 
 \paragraph{Conversion.} A clip enters as a kinematic tree, a rest pose and per-frame local
-rotations and root translation. It is first resampled to 30\,fps (linear interpolation of the root
+rotations and root translation, and those rotations are the source's own: a clip whose rotations cannot be traced
+to the rotation channels of its own file does not enter the corpus, a joint that carries a rotation channel keeps
+it whatever its depth, and a joint the source fixes is written from the source hierarchy and rebuilt from its
+parent at decode rather than left to the model. It is first resampled to 30\,fps (linear interpolation of the root
 translation, spherical interpolation of the local rotations, then forward kinematics) and expressed
 in a right-handed canonical basis. Global joint rotations follow from forward kinematics; the
 \emph{heading} is the ground-plane direction between a designated pair of joints of the rig,

@@ -21,9 +21,11 @@ that the body's pose and its travel are separated the way animators separate the
 continuous 6D~\citep{zhou2019continuity} \emph{deltas} from the joint's rest orientation in the global
 frame: ``no motion'' is the identity rotation, $[1,0,0,0,1,0]$ before normalisation, on every rig,
 which gives the rest frame one meaning across rigs when it serves as the skeleton prompt
-(Section~\ref{sec:method:model}). Velocities are supervision only and
-never integrated at decode time; the root is recovered directly from the trajectory channels and the
-per-clip origin. Everything is expressed in one canonical frame ($+Y$ up, rest forward $+Z$) obtained
+(Section~\ref{sec:method:model}). Velocities are supervision only and never
+integrated at decode time and the root comes from the trajectory channels, so every frame decodes on its own,
+without accumulated drift, by either of two routes that do not read each other: the position channels, or forward
+kinematics from the rotation channels. Their disagreement is the FK--pose gap this paper reports --- a property
+the representation exposes, not a metric imposed on it. Everything is expressed in one canonical frame ($+Y$ up, rest forward $+Z$) obtained
 by a rigid per-rig recanonicalisation to the foot support plane, after which forward kinematics is
 unchanged to numerical precision (App.~\ref{app:rep}). Building \rep{} for a new rig needs only its
 kinematic tree, rest pose and animation: there is no template skeleton, no retargeting and no
