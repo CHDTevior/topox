@@ -52,7 +52,7 @@ per-joint rotations and a world-space root trajectory, with no inverse-kinematic
   delta from the rest pose, velocity, contact, plus a root-only world trajectory and heading---and
   every (rig, joint, channel) cell is standardised by its own statistics. Any rigged animation
   converts to it from its kinematic tree, rest pose and motion, with no template, retargeting,
-  tokenizer or inverse kinematics. Standardising per cell instead of per rig raises R@1 by 2.0--2.1
+  tokenizer or inverse kinematics. Standardising per cell, rather than per rig, raises R@1 by 2.0--2.1
   points and lowers the FID by 22--30\% at each of three matched epochs; against the 13-channel AnyTop
   layout derived from the same clips, the layout with its world-coordinate loss terms keeps leaf-joint
   articulation, foot contact and root travel at equal retrieval (\S\ref{sec:exp:ablation}).

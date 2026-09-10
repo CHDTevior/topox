@@ -322,22 +322,19 @@ released arbitrary-topology generator; it is unconditional and was trained on th
 zoo, including the four rigs above, so on them it is an in-distribution model. Of our own arms only
 the unadapted library model has never seen these rigs: the adapters train on the rig's own support
 clips, and the Truebones-only model trains on all of its captioned clips, evaluation clips included.
-AnyTop is unconditional, so a text-conditioned comparison under our retrieval protocol is not
-defined; we do not retrain it, and no rig is unseen by both models, so the numbers in
-Table~\ref{tab:anytop} describe what a model that trained on these rigs produces, next to our own
-zero-training and adapted arms on the same rigs, and are not a ranking. We sample the released weights eight times per rig
+AnyTop generates from a rig alone, so Table~\ref{tab:anytop} answers one question: what does a model
+that trained on these rigs produce, and where do our zero-training and adapted arms sit beside it on the same
+rigs and the same statistics? We sample the released weights eight times per rig
 (6\,s each) and report, for its direct output positions and for the BVH it exports after an
-inverse-kinematics fit, the same per-rig statistics as for our arms. These are distribution-level
-descriptions of how much and how smoothly the outputs move relative to the rig's real clips; they
-are not a fidelity or text-alignment measure, and a lower jitter or root speed can mean less
-motion rather than better motion. AnyTop's IK export raises its jitter by $1.0$--$1.7{\times}$
+inverse-kinematics fit, the same per-rig statistics as for our arms. These say how much and how smoothly the outputs move
+relative to the rig's real clips, so a ratio of 1 is the target from either side. AnyTop's IK export raises its jitter by $1.0$--$1.7{\times}$
 over its direct positions, whereas the pose and FK rows of our adapters have similar jitter
 ($0.33$ vs.\ $0.32$ on Buffalo); the un-adapted library model is $1.3$--$1.8{\times}$
 jerkier through its rotations than through its positions, which the adapter removes.
 
 \begin{table}[t]
 \centering\small
-\caption{Per-rig descriptive kinematics on the Truebones zoo, on the deployable output, relative
+\caption{Per-rig kinematics on the Truebones zoo, on the deployable output, relative
 to all real clips of the rig (1 = real). AnyTop: released weights, 8 samples per rig,
 unconditional, \emph{trained on these rigs} (an in-distribution reference, not a competitor).
 Ours: \num{303}M model, held-out clips, caption-conditioned;
@@ -512,7 +509,7 @@ acceleration term optimises a different objective, so its validation loss is not
 Variant & Val.\ loss$\downarrow$ & FK--pose gap (bl)$\downarrow$ & R@1$\uparrow$ & FID$\downarrow$ \\
 \midrule
 Full recipe (rest demo, calibrated, $\mathbf{x}$-pred, qk-norm) & \num{0.247} & \num{0.171} & \num{0.878} & \num{0.011} \\
-Motion demonstration instead of the rest frame (App.~\ref{app:demo64}) & \num{0.270} & \num{0.202} & \num{0.878} & \num{0.010} \\
+Motion demonstration in place of the rest frame (App.~\ref{app:demo64}) & \num{0.270} & \num{0.202} & \num{0.878} & \num{0.010} \\
 Without the acceleration-matching term & -- & \num{0.171} & \num{0.877} & \num{0.011} \\
 \bottomrule
 \end{tabular}

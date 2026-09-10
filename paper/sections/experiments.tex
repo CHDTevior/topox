@@ -103,7 +103,7 @@ flying rig) and Spider (68) -- and compare three arms on the same held-out clips
 the evaluation clips, as its only rig-specific input (\emph{zero training}); (b) a per-rig
 low-rank adapter trained on the rig's 8--26 training clips (\emph{LoRA}, \S\ref{sec:method:lora});
 (c) a \num{36}M model of the same recipe trained on all \num{802} captioned Truebones clips,
-evaluation clips included, as a seen-clip reference rather than a competing method.
+evaluation clips included, as a seen-clip reference.
 Table~\ref{tab:lora} gives the FK--pose gap on the held-out clips before and after adaptation next
 to the articulation and jitter of the sampled output: eight to twenty-six clips bring the gap from
 $0.25$--$1.2$ bone lengths to $0.08$--$0.15$, most on the two rigs farthest from the library, and
@@ -171,8 +171,7 @@ Truebones zoo, including the four rigs of Table~\ref{tab:lora}, so its per-rig g
 The ablations share the pilot's recipe and checkpoint epoch; App.~\ref{app:ablation_notes} collects them
 with the notes. Stripping the skeleton conditioning and the calibration together costs
 \num{0.067}--\num{0.072} of R@1 and roughly doubles the FID (Table~\ref{tab:simple}); the acceleration-matching
-term changes nothing (Table~\ref{tab:ablation}). Normalising \rep{} by a per-rig scale alone instead of per-cell
-mean and standard deviation costs about two points of R@1 and \num{22}--\num{30}\% of the FID at every matched
+term changes nothing (Table~\ref{tab:ablation}). Per-cell mean and standard deviation are worth about two points of R@1 over a per-rig scale alone and \num{22}--\num{30}\% of the FID at every matched
 epoch (Table~\ref{tab:rep}). Its channel layout is worth under a point of R@1 against the 13-channel AnyTop
 layout derived from the same clips (Table~\ref{tab:repcontent}), and \num{0.007} once that arm's own objective
 and partition are matched, so retrieval is measuring the objective rather than the layout; what the layout does
