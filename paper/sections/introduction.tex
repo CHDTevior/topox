@@ -72,7 +72,8 @@ per-joint rotations and a world-space root trajectory, with no inverse-kinematic
   the library is served by the same forward pass given its rest pose, joint descriptions and per-cell
   statistics, and a per-rig low-rank adapter trained on eight to twenty-six clips brings its rotation
   and position channels into agreement on bodies far from the training distribution (a winged
-  dragon, an eight-legged spider); an adapter shared across species is a negative result.
+  dragon, an eight-legged spider); one adapter shared across eight flying rigs recovers most of that on rigs
+  with no adapter of their own.
 \end{enumerate}
 
 \paragraph{Results.} One \num{303}M-parameter \method{} trained on all \num{311} rigs is scored by a

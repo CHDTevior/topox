@@ -114,10 +114,11 @@ gone within 50--100 epochs and the gap plateaus by 150--200, after which longer 
 \begin{table}[t]
 \centering\footnotesize\setlength{\tabcolsep}{3.5pt}
 \caption{Extending \method{} (\num{303}M) to four Truebones rigs, each arriving with its own per-cell
-statistics and masks. \emph{zero}: the library model served with those statistics and nothing else;
-\emph{LoRA}: the per-rig adapter; \emph{TB-only}: a \num{36}M model trained on all Truebones clips including
-these, a seen-clip reference. Gap in bone lengths; articulation and jitter of the sampled FK output relative to
-all real clips of the rig (1 = real). App.~\ref{app:lora} and App.~\ref{app:extend_more} give the settings, the
+statistics and masks. \emph{zero}: the library model served with those statistics and nothing
+else --- articulation and jitter from that model, the gap from the adapter run's first validation, 10 to 15
+steps in; \emph{LoRA}: the per-rig adapter; \emph{TB-only}: a \num{36}M model trained on all Truebones clips
+including these. Gap in bone lengths; articulation and jitter of the sampled FK output relative to all real
+clips of the rig (1 = real). App.~\ref{app:lora} and App.~\ref{app:extend_more} give the settings, the
 \num{36}M study and a shared adapter for eight flying rigs.}\label{tab:lora}
 \begin{tabular}{@{}llccccccccc@{}}
 \toprule

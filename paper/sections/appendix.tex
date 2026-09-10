@@ -155,8 +155,8 @@ leaf-closed subtrees so no forward kinematics is re-run); captions are rewritten
 ``The $\langle$species$\rangle$ $\langle$action$\rangle$''; and the train/validation split is made
 by source animation so that no clip straddles it. Training follows the backbone recipe with the
 learning rate scaled linearly to the batch, one pass over every clip per epoch, 300--900 epochs and
-a shortened forward-kinematics warm-up. A single adapter can also be shared by a group of rigs; we
-report this as a negative result.
+a shortened forward-kinematics warm-up. A single adapter can also be shared by a group of rigs,
+which recovers most of a per-rig adapter's effect (App.~\ref{app:extend_more}).
 
 \paragraph{Hyper-parameters.} Table~\ref{tab:lora_hp} lists the per-rig settings. The learning rate
 follows the linear-scaling rule from $10^{-4}$ at batch 8; the batch divides the rig's training-clip
@@ -203,15 +203,15 @@ matched targets it is the one arm whose jitter sits at the real value; the LoRA 
 ratios \num{0.2}--\num{0.9}), and the Truebones-only model does so on Spider alone (\num{0.37}).
 
 
-\paragraph{Sharing an adapter across species does not help.} One rank-128 adapter trained on the pooled clips of eight flying
+\paragraph{An adapter shared across species helps, and does not replace a per-rig one.} One rank-128 adapter trained on the pooled clips of eight flying
 Truebones rigs (Bat, Bird, Buzzard, Dragon, Eagle, Giant bee, Parrot, Pteranodon; \num{78} training clips) is scored on the
 validation clips of each rig with the geometric protocol of \S\ref{sec:exp:setup} (all real clips of the rig as the reference; at the
 rigs' native 30\,Hz, as no external source is involved). Table~\ref{tab:flyers} compares it with the zero-training arm on seven
 rigs. The shared adapter removes the zero-training arm's jitter excess (median \num{5.5} to \num{0.99} times real) and settles
 articulation at \num{0.46}--\num{0.83} of the real clips. On Dragon, the one rig that also has an adapter of its own, the two are
 close: articulation \num{0.52} shared against \num{0.49} species-specific and jitter \num{0.95} against \num{0.70}, both
-nearer the real motion's \num{1} for the shared adapter, while the species-specific one is nearer on root jitter. Pooling eight bodies therefore buys smoothness on the rigs that have no adapter of their
-own, and does not replace one where it exists.
+nearer the real motion's \num{1} for the shared adapter, while the species-specific one is nearer on root jitter. Pooling eight bodies therefore buys most of what a per-rig adapter buys on rigs that have
+none of their own, and does not replace one where it exists.
 
 \begin{table}[h]
 \centering\footnotesize\setlength{\tabcolsep}{5pt}
@@ -714,8 +714,8 @@ over the clip, three-quarter view; the quoted sentence is the conditioning promp
 directly predicted joint positions (clay) are overlaid by the forward kinematics of the predicted
 rotations (teal); a visible separation is the projected FK--pose discrepancy (a single view can hide
 a disagreement in depth). Rows: the library model with the rig's statistics only (\emph{zero}, the
-unadapted snapshot, whereas the zero column of Table~\ref{tab:lora} is read after at most 15
-warm-up steps) and the per-rig adapter (\emph{LoRA}). Frames are anchored on the root horizontally
+unadapted snapshot, which is also where the articulation and jitter of that table's zero
+column come from; its gap column is read 10 to 15 optimiser steps in) and the per-rig adapter (\emph{LoRA}). Frames are anchored on the root horizontally
 and keep their height above the floor; the grey line marks the floor height beneath the root. The
 Dragon, a flying rig, is anchored on the root in all axes, which removes its dive trajectory. Both
 rows of a rig are drawn at the same scale.}\label{fig:tb_filmstrips}
