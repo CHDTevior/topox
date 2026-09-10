@@ -250,7 +250,8 @@ amplitude of motion. Gazelle, with two validation clips, is the noisiest row.
 \centering\footnotesize\setlength{\tabcolsep}{4pt}
 \caption{Adapter training length. Snapshots of the per-rig LoRA (\num{303}M backbone, same clips, learning rate and
 batch as Table~\ref{tab:lora}); FK--pose gap in bone lengths on the validation clips, articulation and jitter of the
-sampled FK output relative to all real clips of the rig (1 = real). Epoch 0 is the zero-training arm. Dragon's
+sampled FK output relative to all real clips of the rig (1 = real). Epoch 0 is the library model with the
+rig's statistics; its gap is the run's first validation, 10 to 15 steps in. Dragon's
 snapshots are at 150 / 300 / 450 / 600 / 900 epochs.}\label{tab:lora_len}
 \begin{tabular}{@{}llcccccc@{}}
 \toprule
@@ -447,8 +448,8 @@ real clips & \num{0.964} & \multicolumn{5}{c}{chance \num{0.018}} \\
 
 \paragraph{Diversity.} On the same samples, the mean distance between the embeddings of two lists of
 300 clips drawn without replacement is \num{1.4035} for the \num{303}M model and \num{1.3986} for the
-\num{36}M one, against \num{1.4035} for the real clips of the same set: neither model has collapsed
-onto a smaller set of motions than the data holds. The statistic is bounded by 2 here because the
+\num{36}M one, against \num{1.4035} for the real clips of the same set: both match the marginal spread of
+the data's own embeddings. The statistic is bounded by 2 here because the
 evaluator normalises its embeddings, and both real and generated clips sit near $\sqrt{2}$, the value
 of mutually orthogonal directions; it therefore separates a collapsed generator from a healthy one and
 says little between two healthy ones, and it is not comparable with values published for other
@@ -504,6 +505,7 @@ Epoch & R@1$\uparrow$ & FID$\downarrow$ & R@1$\uparrow$ & FID$\downarrow$ \\
 \caption{Ablations on the \num{36}M pilot at matched optimiser steps (epoch-200 checkpoints;
 validation loss, FK--pose gap, R@1 and FID on the validation set). The variant without the
 acceleration term optimises a different objective, so its validation loss is not listed.}\label{tab:ablation}
+\setlength{\tabcolsep}{4pt}
 \begin{tabular}{@{}lcccc@{}}
 \toprule
 Variant & Val.\ loss$\downarrow$ & FK--pose gap (bl)$\downarrow$ & R@1$\uparrow$ & FID$\downarrow$ \\
@@ -562,8 +564,10 @@ joint positions, the root's height and planar velocity, per-parent local 6D rota
 and contacts; no root-track or heading channels) was derived analytically from the same clips, splits
 and exclusion cut, and the \num{36}M recipe was trained on it with the same per-cell normalisation and
 the same schedule. The two world-coordinate terms of the training loss (forward-kinematic position and
-foot lock) are defined on \rep{}'s world coordinates and have no counterpart in the 13-channel layout,
-so that run had them off; the velocity and acceleration terms were kept. Its samples are converted back
+foot lock) read \rep{}'s channels directly, and the 13-channel layout carries neither the root track nor the
+heading they are written against, so that run had them off; the velocity and acceleration terms were kept.
+The geometry of Table~\ref{tab:physical} is therefore the representation and those two terms together, which is
+the combination this paper trains. Its samples are converted back
 to \rep{} before scoring, so the frozen protocol and the reference numbers are unchanged.
 Table~\ref{tab:repcontent} shows the two layouts within a point of R@1 of each other at every matched
 epoch (\num{0.861}, \num{0.864} and \num{0.871} against \num{0.852}, \num{0.860} and \num{0.864}),
