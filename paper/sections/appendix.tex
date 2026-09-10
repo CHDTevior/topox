@@ -23,6 +23,16 @@ slice & content & frame & supervised on \\
 \end{table}
 
 
+\paragraph{Where the global state lives.} Four of the seventeen channels --- the root track and the heading ---
+describe the body as a whole rather than a joint, and \rep{} puts them on the physical root's row, where they are
+structurally invalid on every other row and excluded by the mask. The alternative is a virtual world node: an
+extra row that owns the global state and leaves the remaining thirteen channels uniform. We do not use one,
+because it redefines $J$ from the number of physical joints to the number of rows, and everything the topology is
+described by --- adjacency, geodesic distance, the parent tree the forward kinematics walks, the canonical form
+that decides when two rigs share a topology --- would then be computed over a node the skeleton does not have.
+The root's own row costs one declared exception instead, and the first thirteen channels keep one meaning on
+every row of every rig.
+
 \paragraph{Validity.} Not every cell exists on every rig or frame. Frame and joint masks handle
 padding; rotation is supervised only on joints with free degrees of freedom, contact only on joints
 that can touch the ground, heading only on frames where it is defined. The per-rig cell mask
