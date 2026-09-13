@@ -2,42 +2,40 @@
 
 \paragraph{Text-to-motion generation.} Human text-to-motion has moved from VAEs on
 HumanML3D~\citep{guo2022generating} to diffusion in pose space~\citep{tevet2023mdm,zhang2024motiondiffuse}
-or a latent~\citep{chen2023mld}, distilled for real time~\citep{dai2024motionlcm}, and to token
-models over a VQ-VAE~\citep{zhang2023t2mgpt,guo2024momask}, scaled by larger
-corpora~\citep{lin2023motionx,fan2025motionmillion} and skeleton-aware latent
+or in a latent~\citep{chen2023mld}, later distilled for real time~\citep{dai2024motionlcm}. Token
+models over a VQ-VAE followed~\citep{zhang2023t2mgpt,guo2024momask}, scaled by larger
+corpora~\citep{lin2023motionx,fan2025motionmillion} and refined by skeleton-aware latent
 attention~\citep{hong2025salad}. All fix one kinematic tree; \method{} keeps the pose-space
 diffusion and text conditioning and removes the fixed skeleton.
 
 \paragraph{Motion across skeleton topologies.} Cross-skeleton motion has mostly meant
 \emph{retargeting} between two known rigs~\citep{villegas2018nkn,aberman2020skeleton} or
-skeleton-agnostic embeddings such as SAME~\citep{lee2023same} and SATA~\citep{zhang2026sata}, whose
+skeleton-agnostic embeddings such as SAME~\citep{lee2023same} and SATA~\citep{zhang2026sata}; SATA's
 text-conditioned generation is a downstream demonstration on HumanML3D. For generation on arbitrary
 topologies, SinMDM~\citep{raab2024sinmdm} fits one motion at a time; AnyTop~\citep{gat2025anytop}
-prepends the rest pose as a first frame, adds T5 embeddings of the joint names to every joint token
-and biases attention by graph distance to generate, without text, for the Truebones
-zoo~\citep{truebones}; UniMoGen~\citep{khani2025unimogen} is skeleton-agnostic and controlled by
-style and trajectory. Text-conditioned animal motion has been approached from a fixed 35-joint
-SMAL template by OmniMotionGPT~\citep{yang2024omnimotiongpt}, from a shared human--animal topology
-by X-MoGen~\citep{wang2025xmogen} (115 species), across topologies by OmniZoo~\citep{chen2025omnizoo}
-(a topology-aware skeleton embedding and 140 species), on a unified 30-joint skeleton by AniMo~\citep{wang2025animo}, whose AniMo4D
-captions our corpus carries, on user-defined human skeletons by OmniSkel~\citep{liu2025omniskel},
-on re-captioned Truebones data by G-MDM~\citep{lee2025dragon},
-which generates Euler joint rotations without root translation, and, concurrently with this work, by
-SAMoR~\citep{samor2026}, which pools any skeleton into eight part tokens over joint positions and
-velocities and recovers rotations by inverse kinematics, and by UniMate~\citep{mou2026unimate}. \method{} is text-conditioned; it
-denoises a per-joint representation any rig is converted to without a template, retargeting or inverse
-kinematics; it embeds natural-language \emph{descriptions} of the joints with LLM2Vec where AnyTop embeds
-cleaned joint names with T5; and it normalises every (rig, joint, channel) cell with its own statistics, so that
-hundreds of rigs of very different proportions share one network.
+generates, without text, across the skeletons of the Truebones zoo~\citep{truebones}; UniMoGen~\citep{khani2025unimogen}
+is skeleton-agnostic and controlled by style and trajectory. Text-conditioned generation for one body plan
+has been shown on a fixed 35-joint SMAL template (OmniMotionGPT~\citep{yang2024omnimotiongpt}), a shared
+human--animal topology (X-MoGen~\citep{wang2025xmogen}, 115 species), a unified 30-joint skeleton
+(AniMo~\citep{wang2025animo}, whose AniMo4D captions our corpus carries) and user-defined human skeletons
+(OmniSkel~\citep{liu2025omniskel}). Across topologies it has been shown by OmniZoo~\citep{chen2025omnizoo}
+(140 species), by G-MDM~\citep{lee2025dragon} on re-captioned Truebones data with Euler joint rotations and
+no root translation, and, concurrently with this work, by UniMate~\citep{mou2026unimate}. \method{} is
+text-conditioned; it denoises a per-joint representation to which any rig is converted without a template,
+retargeting or inverse kinematics; it embeds natural-language \emph{descriptions} of the joints with LLM2Vec; and it normalises
+every (rig, joint, channel) cell with its own statistics, so that
+hundreds of rigs of very different proportions share one network. Among earlier systems, none reports the
+combination of text conditioning, an arbitrary kinematic tree at inference and an output the rig plays as
+generated; UniMate, concurrent with this work, does (App.~\ref{app:capability}).
 
-\paragraph{Objective, encoders, adaptation and evaluation.} \method{} is a DiT-style
+\paragraph{Building blocks.} \method{} is a DiT-style
 denoiser~\citep{peebles2023dit} trained with flow matching~\citep{lipman2023flow,liu2023rectified},
-classifier-free guidance on the text stream~\citep{ho2022cfg} and query--key
+classifier-free guidance on the caption~\citep{ho2022cfg} and query--key
 normalisation~\citep{dehghani2023vit22b}; its grouped per-channel-family objective follows
 Kimodo~\citep{rempe2026kimodo}. Captions and joint descriptions are embedded with
 LLM2Vec~\citep{behnamghader2024llm2vec} rather than CLIP~\citep{radford2021clip} or
 T5~\citep{raffel2020t5}. New rigs are handled zero-shot through the skeleton prompt, in the spirit of
 in-context conditioning for image diffusion~\citep{wang2023promptdiffusion}, and with a per-rig
-LoRA~\citep{hu2022lora} when they lie far from the library. Retrieval metrics follow the contrastive text--motion evaluators
+LoRA~\citep{hu2022lora} when they are far from the library's distribution. Retrieval metrics follow the contrastive text--motion evaluators
 of~\citet{guo2022generating} and TMR~\citep{petrovich2023tmr}, which are tied to one skeleton; ours
-is skeleton-aware (\S\ref{sec:method:eval}).
+is skeleton-aware (\S\ref{sec:exp:setup}).

@@ -3,80 +3,85 @@
 A rig $\mathcal{R}=(\mathcal{T},\mathbf{p}^{\mathrm{rest}},\mathcal{D})$ is a kinematic tree
 $\mathcal{T}$ over $J$ joints, a rest pose $\mathbf{p}^{\mathrm{rest}}\in\mathbb{R}^{J\times3}$ and
 a natural-language description $\mathcal{D}=\{d_j\}_{j=1}^{J}$ of its joints. A motion is a tensor
-$\mathbf{x}\in\mathbb{R}^{T\times J\times 17}$ in the \rep{} representation of
-Section~\ref{sec:method:rep}. Given $\mathcal{R}$ and a caption $c$, \method{} samples
+$\mathbf{x}\in\mathbb{R}^{L\times J\times 17}$ in the \rep{} representation of
+\S\ref{sec:method:rep}. Given $\mathcal{R}$ and a caption $c$, \method{} samples
 $\mathbf{x}\sim p_\theta(\mathbf{x}\mid\mathcal{R},c)$ with one transformer shared by every rig
-(Section~\ref{sec:method:model}), trained by a calibrated grouped flow-matching objective
-(Section~\ref{sec:method:objective}) and sampled in 20 Euler steps
-(Section~\ref{sec:method:sampling}). A rig outside the training library is served by the same
-forward pass and, when a few clips are available, by a per-rig LoRA
-(Section~\ref{sec:method:lora}); all retrieval metrics come from a skeleton-aware evaluator
-(Section~\ref{sec:method:eval}).
+(\S\ref{sec:method:model}), trained by a calibrated grouped flow-matching objective
+(\S\ref{sec:method:objective}) and sampled in 20 Euler steps
+(\S\ref{sec:method:sampling}). A rig outside the training library is served by the same
+forward pass and, when a few clips are available, by a per-rig adapter (\S\ref{sec:exp:extend}); retrieval
+metrics come from a skeleton-aware evaluator (\S\ref{sec:exp:setup}).
 
-\subsection{\rep{}: a per-joint representation any rig can be converted to}\label{sec:method:rep}
+\subsection{\rep{}: a per-joint representation for any rig}\label{sec:method:rep}
 
 \paragraph{Channels.} Every joint carries the same 17 channels (Table~\ref{tab:channels} in App.~\ref{app:rep}). Positions
 are expressed relative to the root's own ground-plane track, with height absolute, so
 that the body's pose and its travel are separated the way animators separate them. Rotations are
 continuous 6D~\citep{zhou2019continuity} \emph{deltas} from the joint's rest orientation in the global
 frame: ``no motion'' is the identity rotation, $[1,0,0,0,1,0]$ before normalisation, on every rig,
-which gives the rest frame one meaning across rigs when it serves as the skeleton prompt
-(Section~\ref{sec:method:model}). Velocities are supervision only and never
-integrated at decode time and the root comes from the trajectory channels, so every frame decodes on its own,
-without accumulated drift, by either of two routes that do not read each other: the position channels, or forward
-kinematics from the rotation channels. Their disagreement is the FK--pose gap this paper reports --- a property
+so that the rest frame means the same thing on every rig when it serves as the skeleton prompt
+(\S\ref{sec:method:model}). Velocities are supervision only and are never
+integrated at decode time, and the root comes from the trajectory channels. Every frame therefore decodes on its
+own, without accumulated drift, by either of two routes that do not read each other: the position channels, or
+forward kinematics from the rotation channels. Their disagreement is the FK--pose gap this paper reports --- a property
 the representation exposes, not a metric imposed on it. Everything is expressed in one canonical frame ($+Y$ up, rest forward $+Z$) obtained
-by a rigid per-rig recanonicalisation to the foot support plane, after which forward kinematics is
+by a rigid per-rig re-alignment to the foot support plane, after which forward kinematics is
 unchanged to numerical precision (App.~\ref{app:rep}). Building \rep{} for a new rig needs only its
 kinematic tree, rest pose and animation: there is no template skeleton, no retargeting and no
-inverse-kinematics fitting, and the same channel definition and codec convert every
-Truebones rig used in Section~\ref{sec:method:lora}.
+inverse-kinematics fitting, and the same channel definition converts every
+Truebones rig used in \S\ref{sec:exp:extend}.
 
 \paragraph{Per-cell normalisation.} Rigs differ in size, proportion and convention by orders of
 magnitude, so every (rig, joint, channel) cell is standardised with its own mean and standard
-deviation ($\sigma$ floored at 0.05), and cells that are constant across a rig's library
-(\num{9{,}123} never-firing contact flags, for instance) are removed from supervision. The
-statistics are a property of the rig, computed from its motion library and supplied with it at
-deployment, the footing on which motion-transfer tools require example motions of the target
-character~\citep{chen2025motion2motion}.
-
-\paragraph{Corpus.} The library holds \num{311} rigs, \num{77{,}894} captioned clips and
-\num{6.18}M frames at 30\,fps (train \num{73{,}995} / validation \num{3{,}899}), deformation bones only, 34--102 joints per rig (median 64; \num{108} distinct kinematic trees, \num{123} distinct
-ordered parent arrays). The Truebones zoo (66
-rigs, 986 clips) is never trained on by the backbone; App.~\ref{app:rep} gives the corpus statistics and the conversion.
+deviation, the latter floored at $\epsilon_\sigma$ (Table~\ref{tab:hparams}, App.~\ref{app:training}), and cells that are constant across
+a rig's library, such as never-firing contact flags, are removed from supervision (App.~\ref{app:rep}). The
+statistics are a property of the rig, computed from its motion library and supplied with it at deployment,
+just as motion-transfer tools require example motions of the target
+character~\citep{chen2025motion2motion}. The library, its split and the conversion are described in
+\S\ref{sec:exp:setup} and App.~\ref{app:rep}.
 
 \subsection{In-context skeleton conditioning}\label{sec:method:model}
 
-\paragraph{Layout.} The network input is $[\,\mathbf{x}^{\mathrm{demo}}\mid
-\mathbf{x}_t^{\mathrm{tgt}}\,]$ along time: one clean frame holding the rig's analytic rest pose,
-never noised, followed by the $T{=}240$ target frames that carry the flow interpolant and are the
-only frames denoised and scored. Under the rest-delta parameterisation the rest frame's rotation
-channels are the identity on every rig, so it conveys proportions, joint count and graph rather
-than motion; after per-cell normalisation it also carries the rig's statistics.
+\paragraph{Tokens and layout.} One token per frame and joint (Figure~\ref{fig:teaser}, \emph{any rig
+$\to$ tokens}): the 17 channels of a cell are projected to width $D$ and receive a frame-index and a
+joint-slot embedding. The sequence is $[\,\mathbf{x}^{\mathrm{demo}}\mid\mathbf{x}_t^{\mathrm{tgt}}\,]$
+along time: one clean frame holding the rig's analytic rest pose, never noised, followed by the $L$
+target frames (Table~\ref{tab:hparams}), which carry the flow interpolant and a learned marker and are the
+only frames denoised and scored. Under the rest-delta parameterisation the rest frame's rotations are the identity
+on every rig, so it conveys proportions, joint count and graph rather than motion; after per-cell
+normalisation it also carries the rig's statistics.
 
-\paragraph{Joint semantics.} Each joint description $d_j$ is embedded once with
-LLM2Vec~\citep{behnamghader2024llm2vec} (4096-d), projected and \emph{added} to every token of joint
-$j$; descriptions rather than bone names, because ``front left upper leg'' is the same concept on a
-horse and a lizard whereas \texttt{L\_Femur\_02} and \texttt{b\_hindleg\_l\_1} are not, and a new
-rig's naming scheme need never have been seen.
+\paragraph{Three signals identify the skeleton.} Nothing in the network is indexed by rig; what it knows
+about a body arrives as input (Figure~\ref{fig:teaser}, \emph{token embedding}). \emph{Geometry}: the
+rest frame above. \emph{Identity}: each joint description $d_j$ is embedded once with frozen
+LLM2Vec~\citep{behnamghader2024llm2vec} (4096-d), projected and added to every token of joint $j$.
+We use descriptions rather than bone names because ``front left upper leg'' is the same concept on a horse
+and a lizard whereas \texttt{L\_Femur\_02} and \texttt{b\_hindleg\_l\_1} are not, and a new rig's
+naming scheme need never have been seen. \emph{Place in the tree}: an 8-d structural vector per joint
+(rest-offset direction, bone length, tree depth, root-path length, child count, leaf flag) passes
+through a zero-initialised MLP and is added to the same tokens.
 
-\paragraph{Structure and graph bias.} An 8-d structural vector per joint (rest-offset direction,
-bone length, tree depth, root-path length, child count, leaf flag) enters through a zero-initialised
-MLP, and spatial attention receives a fixed bias from the geodesic distance on the tree plus two
-learned tables indexed by the hops to the lowest common ancestor (App.~\ref{app:model}).
+\paragraph{The graph enters as an attention bias.} Each of the $N_b$ blocks factorises attention over the
+two token axes (Figure~\ref{fig:teaser}, \emph{transformer}): temporal attention, one joint over its
+frames; spatial attention, one frame over its joints; then a $4\times$ MLP. Only the spatial attention
+sees the kinematic tree, as an additive per-head bias on the logits between joints $i$ and $j$,
+$b^{(h)}_{ij}=-g_{ij}+u^{(h)}_{a_{ij}}+d^{(h)}_{s_{ij}}$, where $g_{ij}$ is the hop distance on the tree,
+clipped at $g_{\max}$, $a_{ij},s_{ij}$ are the hops up and down to the lowest common ancestor, clipped at
+$a_{\max}$ (Table~\ref{tab:hparams}), and $u,d$ are zero-initialised per-head tables. Nearer joints attend
+more by default, and the tables let a head tell parent from child, and a joint on the same limb from one
+across the body (App.~\ref{app:model}). The
+tree is a soft prior on a fully connected joint attention, not a fixed layer, so one network serves
+any joint count and topology.
 
-\paragraph{Block.} Each of the 14 blocks applies temporal attention (tokens are frames, batched
-over joints), spatial attention (tokens are joints, batched over frames, with the graph bias) and a
-$4\times$ MLP, each modulated by AdaLN~\citep{peebles2023dit} from
+\paragraph{Text and time modulate.} The conditioning vector
 $\mathbf{c}=\mathrm{MLP}(t)+\mathrm{MLP}(\mathbf{e}_c)$, with $\mathbf{e}_c$ the pooled LLM2Vec caption
-embedding, so text reaches the model only through modulation and the token stream stays kinematic.
-Width 896, 14 heads, \num{302.9}M parameters.
+embedding, drives the AdaLN~\citep{peebles2023dit} shift, scale and gate of every sub-layer (shift and scale
+only on the output head), so text reaches the model only through modulation and the token stream stays
+kinematic. The caption is dropped with probability $p_{\mathrm{drop}}$ (Table~\ref{tab:hparams}) for
+classifier-free guidance; the rest-pose prompt is never dropped.
 
-\paragraph{Stability and guidance.} Queries and keys are RMS-normalised per head before the dot
-product~\citep{dehghani2023vit22b}: in our runs every 0.3B attempt without it diverged with
-attention logits growing from $\sim$1.4k to 23k, and with it the eight probes taken through epoch 199
-of the \num{303}M run peak at \num{28.1}. The caption is dropped with
-probability 0.1 for classifier-free guidance; the rest-pose prompt is never dropped.
+\paragraph{Stability.} Queries and keys are RMS-normalised per head before the dot
+product~\citep{dehghani2023vit22b}; without it, every attempt at 0.3B diverged (App.~\ref{app:ablation_notes}).
 
 \subsection{Calibrated grouped flow-matching objective}\label{sec:method:objective}
 
@@ -89,85 +94,47 @@ sample $\hat{\mathbf{x}}_1$, and the velocity-space weight of \citet{li2025jit} 
   \qquad w(t)=\frac{1}{\max(1-t,\,\sigma_{\min})^{2}},
   \label{eq:elem}
 \end{equation}
-with $\sigma_{\min}=0.2$, $\delta=10$ (below the measured 99.99th percentile of the normalised
-targets, \num{11.45}; the knee acts on residuals, and at initialisation it binds on \num{0.015}\% of
-supervised cells, recorded in the calibration artifact) and a
-uniform $t$ sampler (App.~\ref{app:ablation_notes}).
+with $\mathrm{Huber}_{\delta}(r)=r^{2}$ for $|r|\le\delta$ and $\delta(2|r|-\delta)$ beyond, applied per cell;
+$\delta$ sits below the 99.99th percentile of the normalised targets (App.~\ref{app:calib}), $\sigma_{\min}$
+and $\delta$ are given in Table~\ref{tab:hparams}, and $t$ is sampled uniformly (App.~\ref{app:ablation_notes}).
 
 \paragraph{Grouped loss.} A rig with 102 joints has three times the body cells of one with 34 and
 the same single root row, so a plain mean over cells would drown the root trajectory, heading and
 contact channels---the ones that decide whether a walk is a walk---in body rotations on large rigs.
-We partition the channels into nine groups $g$ (root and body $\times$ position, rotation, velocity;
-contact; root track; heading) and use
+We partition the channels into nine groups $g$: position, rotation and velocity, each for the root and
+for the body, plus contact, root track and heading, and use
 \begin{equation}
   \mathcal{L}=\sum_{g}\gamma_g\sqrt{\frac{N_g}{N}}\;\bar{\ell}_g,
   \label{eq:grouped}
 \end{equation}
-where $\bar{\ell}_g$ is the masked mean of Eq.~\eqref{eq:elem} over the $N_g$ valid cells of group
-$g$ and $N=\sum_g N_g$; the groups are the nine channel families of Table~\ref{tab:channels}, weighted to a target share profile~\citep{rempe2026kimodo}.
+where $\bar{\ell}_g$ is the masked mean of Eq.~(\ref{eq:elem}) over the $N_g$ valid cells of group
+$g$ in the batch and $N=\sum_g N_g$; the $\gamma_g$ are set by the calibration below, following the
+target-share weighting of Kimodo~\citep{rempe2026kimodo}.
 Under this weighting the explicit $N_g$ dependence of the output-gradient energy of group $g$
 cancels: it is proportional to $\gamma_g^{2}Q_g$, where $Q_g$ is the group's mean weighted squared
 residual, so a group's weight in $\partial\mathcal{L}/\partial\hat{\mathbf{x}}_1$ no longer grows
-with how many joints the rig has (App.~\ref{app:calib}). The shares realised during
-training still follow the evolving residuals; the weighting removes the joint-count bias, it does not
-fix the shares.
+with the number of cells the group spans in the batch (App.~\ref{app:calib}).
 
 \paragraph{Calibration.} The $\gamma_g$ are not hand-tuned. A target share profile over channel
-families is pre-registered, the group energies $E_g$ are measured over one pass of the training set
+families is fixed in advance, the group energies $E_g$ are measured over one pass of the training set
 under exactly the training crops and masks, and the weights are solved as
-$\gamma=\sqrt{\text{share}/E}$, with the rotation family anchored at $\gamma{=}10$ and the others solved
-relative to it. A \emph{mechanism check} then takes 30 optimiser-free steps of a small arm model and verifies that
-every family's measured share of $\|\partial\mathcal{L}/\partial\hat{\mathbf{x}}_1\|^{2}$, accumulated
-over those steps, matches the $\gamma_g^{2}Q_g$ prediction within 25\%. It certifies the wiring of the
-weights, not that the pre-registered profile is realised during training: the realised share moves with
-the error energies, which evolve. The trainer refuses to start unless the artifact matches the objective
-it is run with ($t$ sampler, $\sigma_{\min}$, Huber knee, masks, batch size; App.~\ref{app:calib}).
+$\gamma=\sqrt{\text{share}/E}$, with the rotation family anchored at $\gamma_{\mathrm{rot}}$
+(Table~\ref{tab:hparams}) and the others solved relative to it. A \emph{mechanism check} then takes a few
+optimiser-free steps of a small model of the same recipe and verifies that every family's measured share of
+$\|\partial\mathcal{L}/\partial\hat{\mathbf{x}}_1\|^{2}$ matches the $\gamma_g^{2}Q_g$ prediction
+(App.~\ref{app:calib}). It certifies the wiring of the weights, not that the profile fixed in advance is
+realised during training: the realised share moves with the error energies, which evolve.
 
-\paragraph{Auxiliary terms.} A forward-kinematics consistency term between predicted positions and
-positions forward-kinematised from predicted rotations, a velocity term on world joint displacements,
-a foot-lock term gated by the contact channel, and an acceleration-matching term are added in the same
-frame (App.~\ref{app:calib}).
-
-\paragraph{Optimisation.} AdamW, learning rate $1.5\times10^{-4}$ at global batch 128 (the
-\num{36}M pilot: $2\times10^{-4}$), 4k warm-up steps, cosine decay to a $10^{-2}$ floor over 40
-epochs, bf16, gradient clipping at 1.0, and rejection of any step whose pre-clipping gradient norm
-exceeds $200$; 8 H200 GPUs, \num{578} steps per epoch, \num{290} epochs (best validation loss at 289).
+\paragraph{Auxiliary terms.} Four terms are added with weights $\lambda_{\mathrm{FK}}$,
+$\lambda_{\mathrm{vel}}$, $\lambda_{\mathrm{lock}}$ and $\lambda_{\mathrm{acc}}$ (Table~\ref{tab:hparams}), none
+carrying the time weight $w(t)$: a forward-kinematics consistency term between predicted positions and
+positions forward-kinematised from predicted rotations, a velocity term on world joint displacements, a
+foot-lock term gated by the contact channel, and an acceleration-matching term (App.~\ref{app:calib}).
 
 \subsection{Sampling}\label{sec:method:sampling}
 Samples follow the straight path with Euler steps
-$\mathbf{x}\leftarrow\mathbf{x}+(\hat{\mathbf{x}}_1-\mathbf{x})/(S-i)$, $S{=}20$; invalid cells are
-projected back to zero after every step, and guidance is applied on the text stream only,
+$\mathbf{x}\leftarrow\mathbf{x}+(\hat{\mathbf{x}}_1-\mathbf{x})/(S-i)$ over $S$ steps; invalid cells are
+projected back to zero after every step, and guidance is applied to the caption only,
 $\hat{\mathbf{x}}_1=\hat{\mathbf{x}}_1^{\varnothing}+s\,(\hat{\mathbf{x}}_1^{c}-\hat{\mathbf{x}}_1^{\varnothing})$
-with $s{=}2$. Twenty steps is the operating point used throughout; ten give the same retrieval at half the
+with guidance scale $s$ (Table~\ref{tab:hparams}). Twenty steps is the operating point used throughout; ten give the same retrieval at half the
 cost, and App.~\ref{app:cost} gives the latency and quality of both.
-
-\subsection{Extending the model to a rig it has never seen}\label{sec:method:lora}
-\paragraph{Zero-training arm.} An unseen rig is served by the frozen backbone as soon as its rest
-pose, joint descriptions and per-cell statistics (from its own clips) are supplied; on the Truebones
-rigs this yields motion with far more jitter than the real clips, since wing chains and eight-legged
-gaits are absent from the training prior.
-
-\paragraph{Per-rig LoRA.} When roughly ten clips of the new rig exist, we attach rank-64 or rank-128
-adapters~\citep{hu2022lora} (scale 1) to the attention projections, the MLPs and the conditioning
-paths (joint-semantics projection, caption MLP, structural MLP, AdaLN), leaving the input and output
-projections and the timestep MLP frozen; the adapters hold 26.8M (r64) or 53.6M (r128) parameters
-and are folded back into the weights at export, so every consumer loads a plain checkpoint. The
-new rig's data view is built by the corpus script (joint pruning to the deformation-bone convention,
-corpus-style captions, a split by source animation) and the adapter is trained with the backbone
-recipe for 300--900 epochs (App.~\ref{app:lora}); a single adapter shared by a group of rigs
-recovers most of the same ground (App.~\ref{app:extend_more}).
-
-\subsection{Skeleton-aware evaluation}\label{sec:method:eval}
-\paragraph{Evaluator.} Retrieval metrics require a text--motion embedding, and existing ones are
-tied to one skeleton. We train two towers into a shared 512-d space: a frozen DistilBERT text tower
-with a trainable pooling head, and a graph-aware motion tower (6 graph layers, 4 temporal layers)
-over the \rep{} channels without contact, with a symmetric InfoNCE objective whose false-negative
-mask ties together clips of the same motion, the same source animation and the same caption. The
-evaluator sees only real data, never generated samples, and shares no weights with the generator.
-
-\paragraph{Protocol.} Text$\to$motion R@1/2/3 in pools of 64, matching score and FID in the
-evaluator space, each next to the evaluator's score on the real clips of the same pools (with shuffled
-captions the evaluator scores R@1 \num{0.035} in pools of 32, chance \num{0.031}); generation is fixed at 20 steps,
-$s{=}2$ and one seed and sharded across GPUs under a hashed generation plan with provenance checks.
-Rigs outside the library, for which no evaluator exists, are scored geometrically
-(\S\ref{sec:exp:setup}).

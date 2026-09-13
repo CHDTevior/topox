@@ -3,18 +3,18 @@
 \providecommand\HyField@AuxAddToFields[1]{}
 \providecommand\HyField@AuxAddToCoFields[2]{}
 \citation{guo2022generating}
-\citation{wang2025animo}
 \citation{villegas2018nkn,aberman2020skeleton,lee2023same}
-\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
-\newlabel{sec:intro}{{1}{1}{Introduction}{section.1}{}}
 \citation{gat2025anytop}
 \citation{chen2025omnizoo}
 \citation{lee2025dragon}
-\citation{samor2026}
-\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces \textsc  {TopX}{} overview. A rig enters as data: each joint of each frame is one token of 17 standardised channels, and the sequence is the rig's clean rest pose followed by 240 noise-mixed target frames. A token is the sum of six terms (band~2). The caption and the flow time form $\mathbf  c$, which sets the shift, scale and gate of every sub-layer (AdaLN) and is the caption's only route into the network. Fourteen blocks alternate temporal and spatial attention, the latter biased by tree distance; the head predicts the clean motion $\hat  {\mathbf  x}_1$, and 20 Euler steps with caption guidance $s{=}2$ update the target frames only; rotations are then forward-kinematised on the rig and skinned. An unseen rig takes the same pass, optionally with a ten-clip LoRA. All glyphs are the model's own output on a moose run-to-walk clip.}}{2}{figure.1}\protected@file@percent }
-\newlabel{fig:teaser}{{1}{2}{\method {} overview. A rig enters as data: each joint of each frame is one token of 17 standardised channels, and the sequence is the rig's clean rest pose followed by 240 noise-mixed target frames. A token is the sum of six terms (band~2). The caption and the flow time form $\mathbf c$, which sets the shift, scale and gate of every sub-layer (AdaLN) and is the caption's only route into the network. Fourteen blocks alternate temporal and spatial attention, the latter biased by tree distance; the head predicts the clean motion $\hat {\mathbf x}_1$, and 20 Euler steps with caption guidance $s{=}2$ update the target frames only; rotations are then forward-kinematised on the rig and skinned. An unseen rig takes the same pass, optionally with a ten-clip LoRA. All glyphs are the model's own output on a moose run-to-walk clip}{figure.1}{}}
-\@writefile{toc}{\contentsline {paragraph}{Our position.}{2}{section*.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Contributions.}{2}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\newlabel{sec:intro}{{1}{1}{Introduction}{section.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Why one model for many skeletons is hard.}{1}{section*.1}\protected@file@percent }
+\citation{wang2025animo}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces \textsc  {TopX}{} overview. A rig enters as data: one token per joint and frame with 17 standardised channels, and the sequence is the rig's clean rest pose followed by the noise-mixed target frames. The skeleton enters through the token sum (panel~2) and a tree-distance bias on spatial attention; the caption and the flow time modulate every block through AdaLN. The head predicts the clean motion, the Euler steps update the target frames only, and the rotations are played on the rig. An unseen rig takes the same pass. All skeleton drawings are the model's own output on a moose run-to-walk clip.}}{2}{figure.1}\protected@file@percent }
+\newlabel{fig:teaser}{{1}{2}{\method {} overview. A rig enters as data: one token per joint and frame with 17 standardised channels, and the sequence is the rig's clean rest pose followed by the noise-mixed target frames. The skeleton enters through the token sum (panel~2) and a tree-distance bias on spatial attention; the caption and the flow time modulate every block through AdaLN. The head predicts the clean motion, the Euler steps update the target frames only, and the rotations are played on the rig. An unseen rig takes the same pass. All skeleton drawings are the model's own output on a moose run-to-walk clip}{figure.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Our position.}{2}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Contributions.}{2}{section*.3}\protected@file@percent }
 \citation{guo2022generating}
 \citation{tevet2023mdm,zhang2024motiondiffuse}
 \citation{chen2023mld}
@@ -24,16 +24,18 @@
 \citation{hong2025salad}
 \citation{villegas2018nkn,aberman2020skeleton}
 \citation{lee2023same}
+\citation{zhang2026sata}
 \citation{raab2024sinmdm}
 \citation{gat2025anytop}
 \citation{truebones}
 \citation{khani2025unimogen}
 \citation{yang2024omnimotiongpt}
 \citation{wang2025xmogen}
-\citation{chen2025omnizoo}
 \citation{wang2025animo}
+\citation{liu2025omniskel}
+\citation{chen2025omnizoo}
 \citation{lee2025dragon}
-\citation{samor2026}
+\citation{mou2026unimate}
 \citation{peebles2023dit}
 \citation{lipman2023flow,liu2023rectified}
 \citation{ho2022cfg}
@@ -46,85 +48,77 @@
 \citation{hu2022lora}
 \citation{guo2022generating}
 \citation{petrovich2023tmr}
-\@writefile{toc}{\contentsline {paragraph}{Results.}{3}{section*.3}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {2}Related Work}{3}{section.2}\protected@file@percent }
 \newlabel{sec:related}{{2}{3}{Related Work}{section.2}{}}
 \@writefile{toc}{\contentsline {paragraph}{Text-to-motion generation.}{3}{section*.4}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{Motion across skeleton topologies.}{3}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Building blocks.}{3}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Method}{3}{section.3}\protected@file@percent }
+\newlabel{sec:method}{{3}{3}{Method}{section.3}{}}
 \citation{zhou2019continuity}
 \citation{chen2025motion2motion}
-\citation{gat2025anytop}
 \citation{behnamghader2024llm2vec}
-\@writefile{toc}{\contentsline {paragraph}{Objective, encoders, adaptation and evaluation.}{4}{section*.6}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {3}Method}{4}{section.3}\protected@file@percent }
-\newlabel{sec:method}{{3}{4}{Method}{section.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}KTJD-17{}: a per-joint representation any rig can be converted to}{4}{subsection.3.1}\protected@file@percent }
-\newlabel{sec:method:rep}{{3.1}{4}{\rep {}: a per-joint representation any rig can be converted to}{subsection.3.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}\textsc  {TopX}{}-17{}: a per-joint representation for any rig}{4}{subsection.3.1}\protected@file@percent }
+\newlabel{sec:method:rep}{{3.1}{4}{\rep {}: a per-joint representation for any rig}{subsection.3.1}{}}
 \@writefile{toc}{\contentsline {paragraph}{Channels.}{4}{section*.7}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{Per-cell normalisation.}{4}{section*.8}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Corpus.}{4}{section*.9}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.2}In-context skeleton conditioning}{4}{subsection.3.2}\protected@file@percent }
 \newlabel{sec:method:model}{{3.2}{4}{In-context skeleton conditioning}{subsection.3.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Layout.}{4}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Tokens and layout.}{4}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Three signals identify the skeleton.}{4}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The graph enters as an attention bias.}{4}{section*.11}\protected@file@percent }
 \citation{peebles2023dit}
 \citation{dehghani2023vit22b}
 \citation{lipman2023flow,liu2023rectified}
 \citation{li2025jit}
 \citation{rempe2026kimodo}
-\@writefile{toc}{\contentsline {paragraph}{Joint semantics.}{5}{section*.11}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Structure and graph bias.}{5}{section*.12}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Block.}{5}{section*.13}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Stability and guidance.}{5}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Text and time modulate.}{5}{section*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Stability.}{5}{section*.13}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Calibrated grouped flow-matching objective}{5}{subsection.3.3}\protected@file@percent }
 \newlabel{sec:method:objective}{{3.3}{5}{Calibrated grouped flow-matching objective}{subsection.3.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Flow matching with $\mathbf  {x}$-prediction.}{5}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Flow matching with $\mathbf  {x}$-prediction.}{5}{section*.14}\protected@file@percent }
 \newlabel{eq:elem}{{1}{5}{Flow matching with $\mathbf {x}$-prediction}{equation.1}{}}
-\@writefile{toc}{\contentsline {paragraph}{Grouped loss.}{5}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Grouped loss.}{5}{section*.15}\protected@file@percent }
 \newlabel{eq:grouped}{{2}{5}{Grouped loss}{equation.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Calibration.}{5}{section*.17}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Calibration.}{5}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Auxiliary terms.}{5}{section*.17}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Sampling}{5}{subsection.3.4}\protected@file@percent }
+\newlabel{sec:method:sampling}{{3.4}{5}{Sampling}{subsection.3.4}{}}
+\citation{truebones}
+\citation{guo2022generating}
+\citation{guo2022generating}
 \citation{hu2022lora}
-\@writefile{toc}{\contentsline {paragraph}{Auxiliary terms.}{6}{section*.18}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Optimisation.}{6}{section*.19}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Sampling}{6}{subsection.3.4}\protected@file@percent }
-\newlabel{sec:method:sampling}{{3.4}{6}{Sampling}{subsection.3.4}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}Extending the model to a rig it has never seen}{6}{subsection.3.5}\protected@file@percent }
-\newlabel{sec:method:lora}{{3.5}{6}{Extending the model to a rig it has never seen}{subsection.3.5}{}}
-\@writefile{toc}{\contentsline {paragraph}{Zero-training arm.}{6}{section*.20}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Per-rig LoRA.}{6}{section*.21}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.6}Skeleton-aware evaluation}{6}{subsection.3.6}\protected@file@percent }
-\newlabel{sec:method:eval}{{3.6}{6}{Skeleton-aware evaluation}{subsection.3.6}{}}
-\@writefile{toc}{\contentsline {paragraph}{Evaluator.}{6}{section*.22}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Protocol.}{6}{section*.23}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {4}Experiments}{6}{section.4}\protected@file@percent }
 \newlabel{sec:exp}{{4}{6}{Experiments}{section.4}{}}
-\citation{truebones}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Setup}{7}{subsection.4.1}\protected@file@percent }
-\newlabel{sec:exp:setup}{{4.1}{7}{Setup}{subsection.4.1}{}}
-\@writefile{toc}{\contentsline {paragraph}{Library and splits.}{7}{section*.24}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Models.}{7}{section*.25}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Protocol.}{7}{section*.26}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}One model for 311 skeletons}{7}{subsection.4.2}\protected@file@percent }
-\newlabel{sec:exp:main}{{4.2}{7}{One model for 311 skeletons}{subsection.4.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{What the score responds to.}{7}{section*.27}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Text-to-motion generation on the validation set (\textcolor {blue}{3{,}899} clips over \textcolor {blue}{311} rigs; 60 pools of 64, 20 steps, $s{=}2$, one seed; App.~\ref {app:split} gives the other pool sizes). The reference row scores the real clips with the same evaluator in the same pools. R-precision is text$\rightarrow $motion; Match is the mean text--motion cosine; FID is on the evaluator's normalised embeddings (lower is better).}}{8}{table.1}\protected@file@percent }
-\newlabel{tab:main}{{1}{8}{Text-to-motion generation on the validation set (\num {3{,}899} clips over \num {311} rigs; 60 pools of 64, 20 steps, $s{=}2$, one seed; App.~\ref {app:split} gives the other pool sizes). The reference row scores the real clips with the same evaluator in the same pools. R-precision is text$\rightarrow $motion; Match is the mean text--motion cosine; FID is on the evaluator's normalised embeddings (lower is better)}{table.1}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Seven generated clips of five library rigs, rendered on their production meshes. For travelling actions, four to five poses at equal distances along the root path, shaded from light (first) to dark (last), with the root trajectory and its direction on the ground; for actions on the spot, four frames at equal times from one fixed camera. The ground plane sits at the level the feet occupy most often; the water plane in the swimming clip is placed just below the root. Captions are the clips' own.}}{8}{figure.2}\protected@file@percent }
-\newlabel{fig:qual}{{2}{8}{Seven generated clips of five library rigs, rendered on their production meshes. For travelling actions, four to five poses at equal distances along the root path, shaded from light (first) to dark (last), with the root trajectory and its direction on the ground; for actions on the spot, four frames at equal times from one fixed camera. The ground plane sits at the level the feet occupy most often; the water plane in the swimming clip is placed just below the root. Captions are the clips' own}{figure.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Extending the model to rigs it has never seen}{8}{subsection.4.3}\protected@file@percent }
-\newlabel{sec:exp:extend}{{4.3}{8}{Extending the model to rigs it has never seen}{subsection.4.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Zero training and per-rig LoRA.}{8}{section*.28}\protected@file@percent }
-\citation{gat2025anytop}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Extending \textsc  {TopX}{} (\textcolor {blue}{303}M) to four Truebones rigs. Each rig arrives with its own per-cell statistics and masks, computed from its clips as \S  \ref {sec:method:rep} prescribes, and the adapter is the checkpoint with the lowest validation loss on that rig. \emph  {zero}: the library model served with the rig's statistics and nothing else (gap read after at most 15 adapter warm-up steps); \emph  {LoRA}: the per-rig adapter; \emph  {TB-only}: a \textcolor {blue}{36}M model trained on all Truebones clips including these, a seen-clip reference whose gap is read the same way as the zero column. Gap in bone lengths; articulation and jitter of the sampled FK output relative to all real clips of the rig (1 = real). The same study on the \textcolor {blue}{36}M pilot backbone, and a single adapter shared by eight flying rigs, are in App.~\ref {app:extend_more}.}}{9}{table.2}\protected@file@percent }
-\newlabel{tab:lora}{{2}{9}{Extending \method {} (\num {303}M) to four Truebones rigs. Each rig arrives with its own per-cell statistics and masks, computed from its clips as \S \ref {sec:method:rep} prescribes, and the adapter is the checkpoint with the lowest validation loss on that rig. \emph {zero}: the library model served with the rig's statistics and nothing else (gap read after at most 15 adapter warm-up steps); \emph {LoRA}: the per-rig adapter; \emph {TB-only}: a \num {36}M model trained on all Truebones clips including these, a seen-clip reference whose gap is read the same way as the zero column. Gap in bone lengths; articulation and jitter of the sampled FK output relative to all real clips of the rig (1 = real). The same study on the \num {36}M pilot backbone, and a single adapter shared by eight flying rigs, are in App.~\ref {app:extend_more}}{table.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Relation to prior work}{9}{subsection.4.4}\protected@file@percent }
-\newlabel{sec:exp:compare}{{4.4}{9}{Relation to prior work}{subsection.4.4}{}}
-\@writefile{toc}{\contentsline {paragraph}{Capabilities.}{9}{section*.29}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{AnyTop as an in-distribution reference.}{9}{section*.30}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Ablations}{9}{subsection.4.5}\protected@file@percent }
-\newlabel{sec:exp:ablation}{{4.5}{9}{Ablations}{subsection.4.5}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {5}Conclusion}{9}{section.5}\protected@file@percent }
-\newlabel{sec:conclusion}{{5}{9}{Conclusion}{section.5}{}}
-\@writefile{toc}{\contentsline {paragraph}{Limitations.}{9}{section*.31}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Setup}{6}{subsection.4.1}\protected@file@percent }
+\newlabel{sec:exp:setup}{{4.1}{6}{Setup}{subsection.4.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Library and splits.}{6}{section*.18}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Models and optimisation.}{6}{section*.19}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Evaluator.}{6}{section*.20}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Protocol.}{6}{section*.21}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}One model for 311 skeletons}{6}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:exp:main}{{4.2}{6}{One model for 311 skeletons}{subsection.4.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Text-to-motion generation on the validation set (3{,}899 clips over 311 rigs; 60 pools of 64, 20 steps, $s{=}2$; Table~\ref {tab:pool} gives the other pool sizes). Each model row is the mean over five sampling seeds with the half-width of the 95\% interval; the reference row scores the real clips with the same evaluator in the same pools. R-precision is text$\rightarrow $motion; Match is the mean text--motion cosine; FID is on the evaluator's normalised embeddings; Diversity ($\rightarrow $: nearer the real clips' value) and MModality follow \citet  {guo2022generating} (App.~\ref {app:metrics}).}}{7}{table.1}\protected@file@percent }
+\newlabel{tab:main}{{1}{7}{Text-to-motion generation on the validation set (\num {3{,}899} clips over \num {311} rigs; 60 pools of 64, 20 steps, $s{=}2$; Table~\ref {tab:pool} gives the other pool sizes). Each model row is the mean over five sampling seeds with the half-width of the 95\% interval; the reference row scores the real clips with the same evaluator in the same pools. R-precision is text$\rightarrow $motion; Match is the mean text--motion cosine; FID is on the evaluator's normalised embeddings; Diversity ($\rightarrow $: nearer the real clips' value) and MModality follow \citet {guo2022generating} (App.~\ref {app:metrics})}{table.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Sampling cost and quality against the number of Euler steps ($s{=}2$, seed 42, validation set; runs at 10 and 5 steps are stamped as protocol variants). Latency: batch 1, one H200, fp32, 240 padded frames, 38 joints.}}{7}{table.2}\protected@file@percent }
+\newlabel{tab:cost}{{2}{7}{Sampling cost and quality against the number of Euler steps ($s{=}2$, seed 42, validation set; runs at 10 and 5 steps are stamped as protocol variants). Latency: batch 1, one H200, fp32, 240 padded frames, 38 joints}{table.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Extending the model to rigs it has never seen}{7}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:exp:extend}{{4.3}{7}{Extending the model to rigs it has never seen}{subsection.4.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Zero training and per-rig LoRA.}{7}{section*.22}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Ablations}{7}{subsection.4.4}\protected@file@percent }
+\newlabel{sec:exp:ablation}{{4.4}{7}{Ablations}{subsection.4.4}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Seven generated clips of five library rigs on their production meshes. Travelling actions: four to five poses at equal distances along the root path, light (first) to dark (last), with the root trajectory on the ground. Actions on the spot: four frames at equal times from a fixed camera. Prompts are the clips' own captions.}}{8}{figure.2}\protected@file@percent }
+\newlabel{fig:qual}{{2}{8}{Seven generated clips of five library rigs on their production meshes. Travelling actions: four to five poses at equal distances along the root path, light (first) to dark (last), with the root trajectory on the ground. Actions on the spot: four frames at equal times from a fixed camera. Prompts are the clips' own captions}{figure.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Extending \textsc  {TopX}{} (303M) to four Truebones rigs, each supplied with its own per-cell statistics and masks. \emph  {zero}: the library model served with those statistics and nothing else; \emph  {LoRA}: the per-rig adapter; \emph  {TB-only}: a 36M model trained on all Truebones clips including these. All columns come from the same generated sequences: the gap is the FK--pose gap of \S  \ref {sec:exp:setup}; articulation and jitter are of the sampled FK output relative to all real clips of the rig (1 = real). Settings and further arms: App.~\ref {app:lora}, \ref {app:extend_more}.}}{8}{table.3}\protected@file@percent }
+\newlabel{tab:lora}{{3}{8}{Extending \method {} (\num {303}M) to four Truebones rigs, each supplied with its own per-cell statistics and masks. \emph {zero}: the library model served with those statistics and nothing else; \emph {LoRA}: the per-rig adapter; \emph {TB-only}: a \num {36}M model trained on all Truebones clips including these. All columns come from the same generated sequences: the gap is the FK--pose gap of \S \ref {sec:exp:setup}; articulation and jitter are of the sampled FK output relative to all real clips of the rig (1 = real). Settings and further arms: App.~\ref {app:lora}, \ref {app:extend_more}}{table.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Conclusion}{8}{section.5}\protected@file@percent }
+\newlabel{sec:conclusion}{{5}{8}{Conclusion}{section.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Four rigs outside the library with their per-rig adapters (Table~\ref {tab:lora}): one held-out clip per rig, nine frames spread evenly over the clip, prompt quoted. Each panel draws the sample's two decodings, the directly predicted positions (clay) with the forward kinematics of the predicted rotations (teal) over them; a visible separation is a disagreement of the two. Frames are anchored on the root horizontally and keep their world height, the grey line marking the floor height beneath the root; the flying Dragon is anchored in every axis. Clip selection and the unadapted model: App.~\ref {app:qual}.}}{9}{figure.3}\protected@file@percent }
+\newlabel{fig:tb_main}{{3}{9}{Four rigs outside the library with their per-rig adapters (Table~\ref {tab:lora}): one held-out clip per rig, nine frames spread evenly over the clip, prompt quoted. Each panel draws the sample's two decodings, the directly predicted positions (clay) with the forward kinematics of the predicted rotations (teal) over them; a visible separation is a disagreement of the two. Frames are anchored on the root horizontally and keep their world height, the grey line marking the floor height beneath the root; the flying Dragon is anchored in every axis. Clip selection and the unadapted model: App.~\ref {app:qual}}{figure.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces One ingredient at a time on the 36M pilot; every row shares clips, split, captions, batch, schedule and budget (frozen protocol, seed 42). Last row: the adapted baseline of App.~\ref {app:flat}.}}{9}{table.4}\protected@file@percent }
+\newlabel{tab:simple}{{4}{9}{One ingredient at a time on the \num {36}M pilot; every row shares clips, split, captions, batch, schedule and budget (frozen protocol, seed 42). Last row: the adapted baseline of App.~\ref {app:flat}}{table.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Geometry of the generated clips against their ground truth (36M arms at the last epoch of Table~\ref {tab:simple}, 303M at the checkpoint of Table~\ref {tab:main}; bl = mean rest bone length; full table: Table~\ref {tab:physical}). \emph  {\textsc  {TopX}{}-17{} closer}: share of clips on which the 36M \textsc  {TopX}{}-17{} sample is nearer the ground truth than the 13-channel one.}}{9}{table.5}\protected@file@percent }
+\newlabel{tab:geom}{{5}{9}{Geometry of the generated clips against their ground truth (\num {36}M arms at the last epoch of Table~\ref {tab:simple}, \num {303}M at the checkpoint of Table~\ref {tab:main}; bl = mean rest bone length; full table: Table~\ref {tab:physical}). \emph {\rep {} closer}: share of clips on which the \num {36}M \rep {} sample is nearer the ground truth than the 13-channel one}{table.5}{}}
 \citation{wang2025animo}
 \citation{wang2025animo}
 \bibdata{references}
@@ -148,53 +142,70 @@
 \bibcite{li2025jit}{{18}{2025}{{Li \& He}}{{Li and He}}}
 \bibcite{lin2023motionx}{{19}{2023}{{Lin et~al.}}{{Lin, Zeng, Lu, Cai, Zhang, Wang, and Zhang}}}
 \bibcite{lipman2023flow}{{20}{2023}{{Lipman et~al.}}{{Lipman, Chen, Ben-Hamu, Nickel, and Le}}}
-\bibcite{liu2023rectified}{{21}{2023}{{Liu et~al.}}{{Liu, Gong, and Liu}}}
-\bibcite{peebles2023dit}{{22}{2023}{{Peebles \& Xie}}{{Peebles and Xie}}}
-\bibcite{petrovich2023tmr}{{23}{2023}{{Petrovich et~al.}}{{Petrovich, Black, and Varol}}}
-\bibcite{raab2024sinmdm}{{24}{2024}{{Raab et~al.}}{{Raab, Leibovitch, Tevet, Arar, Bermano, and Cohen-Or}}}
-\bibcite{radford2021clip}{{25}{2021}{{Radford et~al.}}{{Radford, Kim, Hallacy, Ramesh, Goh, Agarwal, Sastry, Askell, Mishkin, Clark, Krueger, and Sutskever}}}
-\bibcite{raffel2020t5}{{26}{2020}{{Raffel et~al.}}{{Raffel, Shazeer, Roberts, Lee, Narang, Matena, Zhou, Li, and Liu}}}
-\bibcite{rempe2026kimodo}{{27}{2026}{{Rempe et~al.}}{{Rempe, Petrovich, Yuan, Zhang, Peng, Jiang, Wang, Iqbal, Minor, de~Ruyter, Li, Tessler, Lim, Jeong, Wu, Hassani, Huang, Yu, Chung, Song, Dionne, Kautz, Yuen, and Fidler}}}
-\bibcite{tevet2023mdm}{{28}{2023}{{Tevet et~al.}}{{Tevet, Raab, Gordon, Shafir, Cohen-Or, and Bermano}}}
-\bibcite{truebones}{{29}{2022}{{Truebones Motions Animation Studios}}{{}}}
-\bibcite{villegas2018nkn}{{30}{2018}{{Villegas et~al.}}{{Villegas, Yang, Ceylan, and Lee}}}
-\bibcite{wang2025xmogen}{{31}{2025{a}}{{Wang et~al.}}{{Wang, Ruan, Qian, Guo, Su, and Wang}}}
-\bibcite{wang2025animo}{{32}{2025{b}}{{Wang et~al.}}{{Wang, Ruan, Zhang, and Wang}}}
-\bibcite{wang2023promptdiffusion}{{33}{2023}{{Wang et~al.}}{{Wang, Jiang, Lu, Shen, He, Chen, Wang, and Zhou}}}
-\bibcite{yang2024omnimotiongpt}{{34}{2024}{{Yang et~al.}}{{Yang, Zhou, Shan, Wen, Xuan, Hill, Bai, Qi, and Wang}}}
-\bibcite{zhang2023t2mgpt}{{35}{2023}{{Zhang et~al.}}{{Zhang, Zhang, Cun, Huang, Zhang, Zhao, Lu, and Shen}}}
-\bibcite{zhang2024motiondiffuse}{{36}{2024}{{Zhang et~al.}}{{Zhang, Cai, Pan, Hong, Guo, Yang, and Liu}}}
-\bibcite{samor2026}{{37}{2026}{{Zhang et~al.}}{{Zhang, Pons-Moll, and Birdal}}}
-\bibcite{zhou2019continuity}{{38}{2019}{{Zhou et~al.}}{{Zhou, Barnes, Lu, Yang, and Li}}}
+\bibcite{liu2025omniskel}{{21}{2025}{{Liu et~al.}}{{Liu, Lv, Dong, Xue, Niu, and Wang}}}
+\bibcite{liu2023rectified}{{22}{2023}{{Liu et~al.}}{{Liu, Gong, and Liu}}}
+\bibcite{mou2026unimate}{{23}{2026}{{Mou et~al.}}{{Mou, Lei, Dou, Cai, Song, Finkelstein, and Rusinkiewicz}}}
+\bibcite{peebles2023dit}{{24}{2023}{{Peebles \& Xie}}{{Peebles and Xie}}}
+\bibcite{petrovich2023tmr}{{25}{2023}{{Petrovich et~al.}}{{Petrovich, Black, and Varol}}}
+\bibcite{raab2024sinmdm}{{26}{2024}{{Raab et~al.}}{{Raab, Leibovitch, Tevet, Arar, Bermano, and Cohen-Or}}}
+\bibcite{radford2021clip}{{27}{2021}{{Radford et~al.}}{{Radford, Kim, Hallacy, Ramesh, Goh, Agarwal, Sastry, Askell, Mishkin, Clark, Krueger, and Sutskever}}}
+\bibcite{raffel2020t5}{{28}{2020}{{Raffel et~al.}}{{Raffel, Shazeer, Roberts, Lee, Narang, Matena, Zhou, Li, and Liu}}}
+\bibcite{rempe2026kimodo}{{29}{2026}{{Rempe et~al.}}{{Rempe, Petrovich, Yuan, Zhang, Peng, Jiang, Wang, Iqbal, Minor, de~Ruyter, Li, Tessler, Lim, Jeong, Wu, Hassani, Huang, Yu, Chung, Song, Dionne, Kautz, Yuen, and Fidler}}}
+\bibcite{tevet2023mdm}{{30}{2023}{{Tevet et~al.}}{{Tevet, Raab, Gordon, Shafir, Cohen-Or, and Bermano}}}
+\bibcite{truebones}{{31}{2022}{{Truebones Motions Animation Studios}}{{}}}
+\bibcite{villegas2018nkn}{{32}{2018}{{Villegas et~al.}}{{Villegas, Yang, Ceylan, and Lee}}}
+\bibcite{wang2025animo}{{33}{2025}{{Wang et~al.}}{{Wang, Ruan, Zhang, and Wang}}}
+\bibcite{wang2025xmogen}{{34}{2026}{{Wang et~al.}}{{Wang, Ruan, Qian, Guo, Su, and Wang}}}
+\bibcite{wang2023promptdiffusion}{{35}{2023}{{Wang et~al.}}{{Wang, Jiang, Lu, Shen, He, Chen, Wang, and Zhou}}}
+\bibcite{yang2024omnimotiongpt}{{36}{2024}{{Yang et~al.}}{{Yang, Zhou, Shan, Wen, Xuan, Hill, Bai, Qi, and Wang}}}
+\bibcite{zhang2023t2mgpt}{{37}{2023}{{Zhang et~al.}}{{Zhang, Zhang, Cun, Huang, Zhang, Zhao, Lu, and Shen}}}
+\bibcite{zhang2024motiondiffuse}{{38}{2024}{{Zhang et~al.}}{{Zhang, Cai, Pan, Hong, Guo, Yang, and Liu}}}
+\bibcite{zhang2026sata}{{39}{2026}{{Zhang et~al.}}{{Zhang, Cui, Liu, and Wang}}}
+\bibcite{zhou2019continuity}{{40}{2019}{{Zhou et~al.}}{{Zhou, Barnes, Lu, Yang, and Li}}}
 \bibstyle{iclr2027_conference}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces KTJD-17{} channel layout per joint and frame. Channels 13--16 exist on the root row only; every (rig, joint, channel) cell is normalised with its own statistics and exactly-constant cells are excluded from supervision.}}{13}{table.3}\protected@file@percent }
-\newlabel{tab:channels}{{3}{13}{\rep {} channel layout per joint and frame. Channels 13--16 exist on the root row only; every (rig, joint, channel) cell is normalised with its own statistics and exactly-constant cells are excluded from supervision}{table.3}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {A}KTJD-17{} details}{13}{appendix.A}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces \textsc  {TopX}{}-17{} channel layout per joint and frame. Channels 13--16 exist on the root row only; every (rig, joint, channel) cell is normalised with its own statistics and exactly-constant cells are excluded from supervision.}}{13}{table.6}\protected@file@percent }
+\newlabel{tab:channels}{{6}{13}{\rep {} channel layout per joint and frame. Channels 13--16 exist on the root row only; every (rig, joint, channel) cell is normalised with its own statistics and exactly-constant cells are excluded from supervision}{table.6}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {A}\textsc  {TopX}{}-17{} details}{13}{appendix.A}\protected@file@percent }
 \newlabel{app:rep}{{A}{13}{\rep {} details}{appendix.A}{}}
-\@writefile{toc}{\contentsline {paragraph}{Validity.}{13}{section*.36}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Why standardise rather than scale.}{13}{section*.37}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Conversion.}{13}{section*.38}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Per-cell statistics.}{13}{section*.39}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Where the global state lives.}{13}{section*.27}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Validity.}{13}{section*.28}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why standardise rather than scale.}{13}{section*.29}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Conversion.}{13}{section*.30}\protected@file@percent }
 \citation{wang2025animo}
-\@writefile{toc}{\contentsline {paragraph}{Corpus statistics.}{14}{section*.40}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Per-cell statistics.}{14}{section*.31}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Corpus statistics.}{14}{section*.32}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {B}Model details}{14}{appendix.B}\protected@file@percent }
 \newlabel{app:model}{{B}{14}{Model details}{appendix.B}{}}
-\@writefile{toc}{\contentsline {paragraph}{Structure and graph bias.}{14}{section*.41}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Structure and graph bias.}{14}{section*.33}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {C}Calibration of the grouped objective}{14}{appendix.C}\protected@file@percent }
 \newlabel{app:calib}{{C}{14}{Calibration of the grouped objective}{appendix.C}{}}
-\@writefile{toc}{\contentsline {paragraph}{Batch of the mechanism check.}{14}{section*.42}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Auxiliary terms.}{14}{section*.43}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Groups, families and target shares.}{14}{section*.44}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Mechanism check and artifact.}{15}{section*.45}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {D}Adapter settings}{15}{appendix.D}\protected@file@percent }
-\newlabel{app:lora}{{D}{15}{Adapter settings}{appendix.D}{}}
-\@writefile{toc}{\contentsline {paragraph}{Data view of a new rig.}{15}{section*.46}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Hyper-parameters.}{15}{section*.47}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Per-rig adapter settings. Clips are the usable Truebones clips after the source audit, split by source animation.}}{15}{table.4}\protected@file@percent }
-\newlabel{tab:lora_hp}{{4}{15}{Per-rig adapter settings. Clips are the usable Truebones clips after the source audit, split by source animation}{table.4}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {E}Additional extension results}{15}{appendix.E}\protected@file@percent }
-\newlabel{app:extend_more}{{E}{15}{Additional extension results}{appendix.E}{}}
-\@writefile{toc}{\contentsline {paragraph}{Smaller backbones.}{15}{section*.48}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Huber knee.}{14}{section*.34}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Auxiliary terms.}{14}{section*.35}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Tensor flow and training details of the 303M model. Solid arrows carry data or state, dashed arrows conditioning. Left to right: rig and motion tokens with the 17-channel layout and the validity masks; the token embedding and the two conditioning paths (per-joint, and the global vector $\mathbf  c$ that drives AdaLN); the fourteen factorised blocks with the spatial-attention bias; sampling with caption guidance, the 20 Euler steps, de-normalisation and the two decodes. The bottom band lists the training inputs, the grouped Huber objective of Eqs.~(\ref {eq:elem})--(\ref {eq:grouped}), the acceleration term and the three further auxiliary terms.}}{15}{figure.4}\protected@file@percent }
+\newlabel{fig:model_details}{{4}{15}{Tensor flow and training details of the \num {303}M model. Solid arrows carry data or state, dashed arrows conditioning. Left to right: rig and motion tokens with the 17-channel layout and the validity masks; the token embedding and the two conditioning paths (per-joint, and the global vector $\mathbf c$ that drives AdaLN); the fourteen factorised blocks with the spatial-attention bias; sampling with caption guidance, the 20 Euler steps, de-normalisation and the two decodes. The bottom band lists the training inputs, the grouped Huber objective of Eqs.~(\ref {eq:elem})--(\ref {eq:grouped}), the acceleration term and the three further auxiliary terms}{figure.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Groups, families and target shares.}{15}{section*.36}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Mechanism check and artifact.}{15}{section*.37}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {D}Adapter settings}{16}{appendix.D}\protected@file@percent }
+\newlabel{app:lora}{{D}{16}{Adapter settings}{appendix.D}{}}
+\@writefile{toc}{\contentsline {paragraph}{Data view of a new rig.}{16}{section*.38}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Hyper-parameters.}{16}{section*.39}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Per-rig adapter settings. Clips are the usable Truebones clips after the source audit, split 80/20.}}{16}{table.7}\protected@file@percent }
+\newlabel{tab:lora_hp}{{7}{16}{Per-rig adapter settings. Clips are the usable Truebones clips after the source audit, split 80/20}{table.7}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {E}Additional extension results}{16}{appendix.E}\protected@file@percent }
+\newlabel{app:extend_more}{{E}{16}{Additional extension results}{appendix.E}{}}
+\@writefile{toc}{\contentsline {paragraph}{Smaller backbones.}{16}{section*.40}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{An adapter shared across species helps, and does not replace a per-rig one.}{16}{section*.41}\protected@file@percent }
+\citation{mou2026unimate}
+\citation{gat2025anytop}
+\citation{chen2025omnizoo}
+\citation{liu2025omniskel}
+\citation{zhang2026sata}
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces A shared adapter over eight flying rigs against zero training (303M backbone, FK output relative to all real clips of the rig, 30\,Hz; 1 = real). $n$: validation clips.}}{17}{table.8}\protected@file@percent }
+\newlabel{tab:flyers}{{8}{17}{A shared adapter over eight flying rigs against zero training (\num {303}M backbone, FK output relative to all real clips of the rig, 30\,Hz; 1 = real). $n$: validation clips}{table.8}{}}
+\@writefile{toc}{\contentsline {paragraph}{Statistics from the adaptation clips alone.}{17}{section*.42}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces Statistics from the adaptation clips only (303M backbone, same recipe, same protocol as Table~\ref {tab:lora}; released values in brackets). Gap in bone lengths; articulation and jitter of the sampled FK output relative to all real clips of the rig (1 = real). Spider's real root is static, so its root-speed ratio is undefined.}}{17}{table.9}\protected@file@percent }
+\newlabel{tab:supportonly}{{9}{17}{Statistics from the adaptation clips only (\num {303}M backbone, same recipe, same protocol as Table~\ref {tab:lora}; released values in brackets). Gap in bone lengths; articulation and jitter of the sampled FK output relative to all real clips of the rig (1 = real). Spider's real root is static, so its root-speed ratio is undefined}{table.9}{}}
+\@writefile{toc}{\contentsline {paragraph}{How long to train the adapter.}{17}{section*.43}\protected@file@percent }
 \citation{tevet2023mdm,zhang2024motiondiffuse}
 \citation{wang2025animo}
 \citation{yang2024omnimotiongpt}
@@ -202,53 +213,69 @@
 \citation{gat2025anytop}
 \citation{chen2025omnizoo}
 \citation{lee2025dragon}
-\citation{samor2026}
+\citation{mou2026unimate}
 \citation{gat2025anytop}
-\@writefile{toc}{\contentsline {paragraph}{Sharing an adapter across species does not help.}{16}{section*.49}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces A shared adapter over eight flying rigs against zero training (\textcolor {blue}{303}M backbone, FK output relative to all real clips of the rig, 30\,Hz; 1 = real). $n$: validation clips. Pteranodon is omitted: decoding its ground-truth clip for the comparison hit a degenerate 6D vector at its first frame and the renderer refused it.}}{16}{table.5}\protected@file@percent }
-\newlabel{tab:flyers}{{5}{16}{A shared adapter over eight flying rigs against zero training (\num {303}M backbone, FK output relative to all real clips of the rig, 30\,Hz; 1 = real). $n$: validation clips. Pteranodon is omitted: decoding its ground-truth clip for the comparison hit a degenerate 6D vector at its first frame and the renderer refused it}{table.5}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {F}Capabilities of related systems}{16}{appendix.F}\protected@file@percent }
-\newlabel{app:capability}{{F}{16}{Capabilities of related systems}{appendix.F}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Capabilities of motion generators across skeletons, as described in the papers and released code. \emph  {Any topology}: one model serves skeletons of different joint counts and trees. \emph  {Text}: language-conditioned. \emph  {Rotations}: joint rotations are predicted. \emph  {IK-free}: the exported animation needs no inverse-kinematics fit. \emph  {Root}: a world-space root trajectory is generated. \emph  {Unseen rig}: a rig absent from training is served, and how. \emph  {Baselines}: how the paper compares to other methods. n.r.\ = not reported. SAMoR is its cross-topology variant; its HumanML3D variant has a root and rotation branch. G-MDM omits root translation in its current implementation.}}{16}{table.6}\protected@file@percent }
-\newlabel{tab:capability}{{6}{16}{Capabilities of motion generators across skeletons, as described in the papers and released code. \emph {Any topology}: one model serves skeletons of different joint counts and trees. \emph {Text}: language-conditioned. \emph {Rotations}: joint rotations are predicted. \emph {IK-free}: the exported animation needs no inverse-kinematics fit. \emph {Root}: a world-space root trajectory is generated. \emph {Unseen rig}: a rig absent from training is served, and how. \emph {Baselines}: how the paper compares to other methods. n.r.\ = not reported. SAMoR is its cross-topology variant; its HumanML3D variant has a root and rotation branch. G-MDM omits root translation in its current implementation}{table.6}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {G}AnyTop as an in-distribution reference}{16}{appendix.G}\protected@file@percent }
-\newlabel{app:anytop}{{G}{16}{AnyTop as an in-distribution reference}{appendix.G}{}}
-\@writefile{toc}{\contentsline {paragraph}{In-distribution references, not a comparison.}{16}{section*.50}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Per-rig descriptive kinematics on the Truebones zoo, on the deployable output, relative to all real clips of the rig (1 = real). AnyTop: released weights, 8 samples per rig, unconditional, \emph  {trained on these rigs} (an in-distribution reference, not a competitor). Ours: \textcolor {blue}{303}M model, held-out clips, caption-conditioned; \emph  {zero} = statistics only, \emph  {LoRA} = per-rig adapter (FK--pose gap as in Table~\ref {tab:lora}). Spider's real root is static, so its root-speed ratio is undefined. $n$ = number of sequences.}}{17}{table.7}\protected@file@percent }
-\newlabel{tab:anytop}{{7}{17}{Per-rig descriptive kinematics on the Truebones zoo, on the deployable output, relative to all real clips of the rig (1 = real). AnyTop: released weights, 8 samples per rig, unconditional, \emph {trained on these rigs} (an in-distribution reference, not a competitor). Ours: \num {303}M model, held-out clips, caption-conditioned; \emph {zero} = statistics only, \emph {LoRA} = per-rig adapter (FK--pose gap as in Table~\ref {tab:lora}). Spider's real root is static, so its root-speed ratio is undefined. $n$ = number of sequences}{table.7}{}}
-\@writefile{toc}{\contentsline {paragraph}{Protocol details.}{17}{section*.51}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {H}Evaluator controls}{17}{appendix.H}\protected@file@percent }
-\newlabel{app:controls}{{H}{17}{Evaluator controls}{appendix.H}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces Adapter training length. Snapshots of the per-rig LoRA (303M backbone, same clips, learning rate and batch as Table~\ref {tab:lora}); FK--pose gap of the sampled output in bone lengths, articulation and jitter of the sampled FK output relative to all real clips of the rig (1 = real). Epoch 0 is the library model with the rig's statistics and no adapter update; every column, the gap included, is measured on that snapshot's own generated sequences. Dragon's snapshots are at 150 / 300 / 450 / 600 / 900 epochs.}}{18}{table.10}\protected@file@percent }
+\newlabel{tab:lora_len}{{10}{18}{Adapter training length. Snapshots of the per-rig LoRA (\num {303}M backbone, same clips, learning rate and batch as Table~\ref {tab:lora}); FK--pose gap of the sampled output in bone lengths, articulation and jitter of the sampled FK output relative to all real clips of the rig (1 = real). Epoch 0 is the library model with the rig's statistics and no adapter update; every column, the gap included, is measured on that snapshot's own generated sequences. Dragon's snapshots are at 150 / 300 / 450 / 600 / 900 epochs}{table.10}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {F}Capabilities of related systems}{18}{appendix.F}\protected@file@percent }
+\newlabel{app:capability}{{F}{18}{Capabilities of related systems}{appendix.F}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces Capabilities of motion generators across skeletons, as described in the papers and released code. \emph  {Any topology}: one model serves skeletons of different joint counts and trees. \emph  {Text}: language-conditioned. \emph  {Rotations}: joint rotations are predicted. \emph  {IK-free}: the exported animation needs no inverse-kinematics fit. \emph  {Root}: a world-space root trajectory is generated. \emph  {Unseen rig}: a rig absent from training is served, and how. \emph  {Baselines}: how the paper compares to other methods. n.r.\ = not reported. G-MDM omits root translation in its current implementation.}}{18}{table.11}\protected@file@percent }
+\newlabel{tab:capability}{{11}{18}{Capabilities of motion generators across skeletons, as described in the papers and released code. \emph {Any topology}: one model serves skeletons of different joint counts and trees. \emph {Text}: language-conditioned. \emph {Rotations}: joint rotations are predicted. \emph {IK-free}: the exported animation needs no inverse-kinematics fit. \emph {Root}: a world-space root trajectory is generated. \emph {Unseen rig}: a rig absent from training is served, and how. \emph {Baselines}: how the paper compares to other methods. n.r.\ = not reported. G-MDM omits root translation in its current implementation}{table.11}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {G}AnyTop as an in-distribution reference}{18}{appendix.G}\protected@file@percent }
+\newlabel{app:anytop}{{G}{18}{AnyTop as an in-distribution reference}{appendix.G}{}}
+\@writefile{toc}{\contentsline {paragraph}{AnyTop on the same rigs.}{18}{section*.44}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {12}{\ignorespaces Per-rig kinematics on the Truebones zoo, on the deployable output, relative to all real clips of the rig (1 = real). AnyTop: released weights, 8 samples per rig, unconditional, \emph  {trained on these rigs} (an in-distribution reference, not a competitor). Ours: 303M model, held-out clips, caption-conditioned; \emph  {zero} = statistics only, \emph  {LoRA} = per-rig adapter (FK--pose gap as in Table~\ref {tab:lora}). Spider's real root is static, so its root-speed ratio is undefined. $n$ = number of sequences.}}{19}{table.12}\protected@file@percent }
+\newlabel{tab:anytop}{{12}{19}{Per-rig kinematics on the Truebones zoo, on the deployable output, relative to all real clips of the rig (1 = real). AnyTop: released weights, 8 samples per rig, unconditional, \emph {trained on these rigs} (an in-distribution reference, not a competitor). Ours: \num {303}M model, held-out clips, caption-conditioned; \emph {zero} = statistics only, \emph {LoRA} = per-rig adapter (FK--pose gap as in Table~\ref {tab:lora}). Spider's real root is static, so its root-speed ratio is undefined. $n$ = number of sequences}{table.12}{}}
+\@writefile{toc}{\contentsline {paragraph}{Protocol details.}{19}{section*.45}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {H}Sampling cost}{19}{appendix.H}\protected@file@percent }
+\newlabel{app:cost}{{H}{19}{Sampling cost}{appendix.H}{}}
+\citation{guo2022generating}
+\@writefile{toc}{\contentsline {section}{\numberline {I}Metric definitions}{20}{appendix.I}\protected@file@percent }
+\newlabel{app:metrics}{{I}{20}{Metric definitions}{appendix.I}{}}
+\@writefile{toc}{\contentsline {paragraph}{Diversity and MModality.}{20}{section*.46}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Retrieval on the played animation.}{20}{section*.47}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {J}Training details}{20}{appendix.J}\protected@file@percent }
+\newlabel{app:training}{{J}{20}{Training details}{appendix.J}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {13}{\ignorespaces Symbols of \S  \ref {sec:method} and their values. Two values are the 303M main model / the 36M pilot; one value is shared.}}{20}{table.13}\protected@file@percent }
+\newlabel{tab:hparams}{{13}{20}{Symbols of \S \ref {sec:method} and their values. Two values are the \num {303}M main model / the \num {36}M pilot; one value is shared}{table.13}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {K}Ablation notes}{20}{appendix.K}\protected@file@percent }
+\newlabel{app:ablation_notes}{{K}{20}{Ablation notes}{appendix.K}{}}
+\@writefile{toc}{\contentsline {paragraph}{What each ingredient is worth.}{20}{section*.48}\protected@file@percent }
 \citation{li2025jit}
-\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces Evaluator controls: R@1 in pools of 64 over the \textcolor {blue}{3{,}899} validation clips. The 95\% bootstrap interval over the 60 pools is \textcolor {blue}{0.029} wide for the generated column and at most \textcolor {blue}{0.047} wide for any other (\textcolor {blue}{0.922} $\in [\textcolor {blue}{0.907}, \textcolor {blue}{0.936}]$ for the \textcolor {blue}{303}M model). The static and rest columns are built from real clips rather than from the model, and come out identical for every arm, as re-scoring the same pools with the same evaluator should.}}{18}{table.8}\protected@file@percent }
-\newlabel{tab:controls}{{8}{18}{Evaluator controls: R@1 in pools of 64 over the \num {3{,}899} validation clips. The 95\% bootstrap interval over the 60 pools is \num {0.029} wide for the generated column and at most \num {0.047} wide for any other (\num {0.922} $\in [\num {0.907}, \num {0.936}]$ for the \num {303}M model). The static and rest columns are built from real clips rather than from the model, and come out identical for every arm, as re-scoring the same pools with the same evaluator should}{table.8}{}}
-\@writefile{toc}{\contentsline {paragraph}{Diversity.}{18}{section*.52}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {I}Ablation notes}{18}{appendix.I}\protected@file@percent }
-\newlabel{app:ablation_notes}{{I}{18}{Ablation notes}{appendix.I}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces Ablations on the \textcolor {blue}{36}M pilot at matched optimiser steps (epoch-200 checkpoints; validation loss, FK--pose gap, R@1 and FID on the validation set). The variant without the acceleration term optimises a different objective, so its validation loss is not listed.}}{18}{table.9}\protected@file@percent }
-\newlabel{tab:ablation}{{9}{18}{Ablations on the \num {36}M pilot at matched optimiser steps (epoch-200 checkpoints; validation loss, FK--pose gap, R@1 and FID on the validation set). The variant without the acceleration term optimises a different objective, so its validation loss is not listed}{table.9}{}}
-\@writefile{toc}{\contentsline {paragraph}{Prediction target and sampler.}{18}{section*.53}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Acceleration-matching term.}{19}{section*.54}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Normalisation of the representation.}{19}{section*.55}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces Per-cell against scale-only normalisation at matched epochs (\textcolor {blue}{36}M recipe, global batch 128, frozen protocol: pool 64, 20 Euler steps, guidance 2, seed 42). FK--pose gap in bone lengths from the training-time validation pass at the same epoch.}}{19}{table.10}\protected@file@percent }
-\newlabel{tab:rep}{{10}{19}{Per-cell against scale-only normalisation at matched epochs (\num {36}M recipe, global batch 128, frozen protocol: pool 64, 20 Euler steps, guidance 2, seed 42). FK--pose gap in bone lengths from the training-time validation pass at the same epoch}{table.10}{}}
-\@writefile{toc}{\contentsline {paragraph}{Representation content.}{19}{section*.56}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces Geometry of the generated clips against their ground truth (epoch 100, the \textcolor {blue}{3899} validation clips and the same frozen samples as Table~\ref {tab:repcontent}; official codec; bl = the rig's mean rest bone length). Last column: share of clips on which the KTJD-17{} sample is closer to the ground truth than the 13-channel sample (ties count for neither). Every row uses all \textcolor {blue}{3899} clips except foot slide, which each stream computes under its own contact flags and which is therefore compared only on the \textcolor {blue}{3610} clips where all three are defined. Epochs 50 and 75 give the same picture.}}{20}{table.11}\protected@file@percent }
-\newlabel{tab:physical}{{11}{20}{Geometry of the generated clips against their ground truth (epoch 100, the \num {3899} validation clips and the same frozen samples as Table~\ref {tab:repcontent}; official codec; bl = the rig's mean rest bone length). Last column: share of clips on which the \rep {} sample is closer to the ground truth than the 13-channel sample (ties count for neither). Every row uses all \num {3899} clips except foot slide, which each stream computes under its own contact flags and which is therefore compared only on the \num {3610} clips where all three are defined. Epochs 50 and 75 give the same picture}{table.11}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {12}{\ignorespaces Channel layout at matched epochs (\textcolor {blue}{36}M recipe, global batch 128, per-cell normalisation in both; frozen protocol: pool 64, 20 Euler steps, guidance 2, seed 42). The AnyTop-13 rows were sampled with TF32 matrix multiplication, the KTJD-17{} rows in fp32.}}{20}{table.12}\protected@file@percent }
-\newlabel{tab:repcontent}{{12}{20}{Channel layout at matched epochs (\num {36}M recipe, global batch 128, per-cell normalisation in both; frozen protocol: pool 64, 20 Euler steps, guidance 2, seed 42). The AnyTop-13 rows were sampled with TF32 matrix multiplication, the \rep {} rows in fp32}{table.12}{}}
-\@writefile{toc}{\contentsline {paragraph}{Model size.}{20}{section*.57}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {13}{\ignorespaces Model size at matched optimiser steps (epoch 200, global batch 128; frozen protocol, pool 64, 20 Euler steps, guidance 2, seed 42). The \textcolor {blue}{36}M row was sampled in fp32, the two larger rows with TF32 matrix multiplication.}}{20}{table.13}\protected@file@percent }
-\newlabel{tab:size}{{13}{20}{Model size at matched optimiser steps (epoch 200, global batch 128; frozen protocol, pool 64, 20 Euler steps, guidance 2, seed 42). The \num {36}M row was sampled in fp32, the two larger rows with TF32 matrix multiplication}{table.13}{}}
-\@writefile{toc}{\contentsline {paragraph}{Stability.}{20}{section*.58}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {J}Additional qualitative results}{21}{appendix.J}\protected@file@percent }
-\newlabel{app:qual}{{J}{21}{Additional qualitative results}{appendix.J}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {K}Validation split}{21}{appendix.K}\protected@file@percent }
-\newlabel{app:split}{{K}{21}{Validation split}{appendix.K}{}}
-\@writefile{toc}{\contentsline {paragraph}{Shared source animations.}{21}{section*.59}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Pool size.}{21}{section*.60}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {14}{\ignorespaces R@1 of the same samples (20 steps, $s{=}2$, one seed) re-scored in pools of 16, 32, 64 and 128 formed by chunking the dataset order; the incomplete last pool is dropped. The real clips are scored by the same evaluator in the same pools.}}{21}{table.14}\protected@file@percent }
-\newlabel{tab:pool}{{14}{21}{R@1 of the same samples (20 steps, $s{=}2$, one seed) re-scored in pools of 16, 32, 64 and 128 formed by chunking the dataset order; the incomplete last pool is dropped. The real clips are scored by the same evaluator in the same pools}{table.14}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Truebones arms of Table~\ref {tab:lora}: one held-out clip per rig, six frames spread evenly over the clip, three-quarter view; the quoted sentence is the conditioning prompt. In every panel the directly predicted joint positions (clay) are overlaid by the forward kinematics of the predicted rotations (teal); a visible separation is the projected FK--pose discrepancy (a single view can hide a disagreement in depth). Rows: the library model with the rig's statistics only (\emph  {zero}, the unadapted snapshot, whereas the zero column of Table~\ref {tab:lora} is read after at most 15 warm-up steps) and the per-rig adapter (\emph  {LoRA}). Frames are anchored on the root horizontally and keep their height above the floor; the grey line marks the floor height beneath the root. The Dragon, a flying rig, is anchored on the root in all axes, which removes its dive trajectory. Both rows of a rig are drawn at the same scale.}}{22}{figure.3}\protected@file@percent }
-\newlabel{fig:tb_filmstrips}{{3}{22}{Truebones arms of Table~\ref {tab:lora}: one held-out clip per rig, six frames spread evenly over the clip, three-quarter view; the quoted sentence is the conditioning prompt. In every panel the directly predicted joint positions (clay) are overlaid by the forward kinematics of the predicted rotations (teal); a visible separation is the projected FK--pose discrepancy (a single view can hide a disagreement in depth). Rows: the library model with the rig's statistics only (\emph {zero}, the unadapted snapshot, whereas the zero column of Table~\ref {tab:lora} is read after at most 15 warm-up steps) and the per-rig adapter (\emph {LoRA}). Frames are anchored on the root horizontally and keep their height above the floor; the grey line marks the floor height beneath the root. The Dragon, a flying rig, is anchored on the root in all axes, which removes its dive trajectory. Both rows of a rig are drawn at the same scale}{figure.3}{}}
-\gdef \@abspage@last{22}
+\@writefile{lot}{\contentsline {table}{\numberline {14}{\ignorespaces Ablations on the 36M pilot at matched optimiser steps (epoch 200; validation loss, FK--pose gap from the validation pass, R@1 in pools of 64 and FID on the validation set). The variant without the acceleration term optimises a different objective, so its validation loss is not listed.}}{21}{table.14}\protected@file@percent }
+\newlabel{tab:ablation}{{14}{21}{Ablations on the \num {36}M pilot at matched optimiser steps (epoch 200; validation loss, FK--pose gap from the validation pass, R@1 in pools of 64 and FID on the validation set). The variant without the acceleration term optimises a different objective, so its validation loss is not listed}{table.14}{}}
+\@writefile{toc}{\contentsline {paragraph}{Prediction target and sampler.}{21}{section*.49}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Acceleration-matching term.}{21}{section*.50}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Normalisation of the representation.}{21}{section*.51}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Representation content.}{21}{section*.52}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {15}{\ignorespaces Per-cell against scale-only normalisation at matched epochs (36M recipe, global batch 128, frozen protocol: pool 64, 20 Euler steps, guidance 2, seed 42). FK--pose gap in bone lengths from the training-time validation pass at the same epoch.}}{22}{table.15}\protected@file@percent }
+\newlabel{tab:rep}{{15}{22}{Per-cell against scale-only normalisation at matched epochs (\num {36}M recipe, global batch 128, frozen protocol: pool 64, 20 Euler steps, guidance 2, seed 42). FK--pose gap in bone lengths from the training-time validation pass at the same epoch}{table.15}{}}
+\@writefile{toc}{\contentsline {paragraph}{Model size.}{22}{section*.53}\protected@file@percent }
+\citation{gat2025anytop}
+\citation{chen2025omnizoo}
+\@writefile{lot}{\contentsline {table}{\numberline {16}{\ignorespaces Geometry of the generated clips against their ground truth (epoch 100, the 3{,}899 validation clips and the same frozen samples as Table~\ref {tab:repcontent}; official codec; bl = the rig's mean rest bone length). Last column: share of clips on which the \textsc  {TopX}{}-17{} sample is closer to the ground truth than the 13-channel sample (ties count for neither). Every row uses all 3{,}899 clips except foot slide, which each stream computes under its own contact flags and which is therefore compared only on the 3610 clips where all three are defined; over all 3{,}899 clips the streams flag contact on a similar share of frames --- 0.58 for \textsc  {TopX}{}-17{}, 0.56 for the 13-channel layout, 0.57 for the 303M model and 0.59 in the real clips --- so the lower sliding is not a matter of flagging fewer frames. Epochs 50 and 75 give the same picture. The 303M column is the main model's own frozen samples (the checkpoint of Table~\ref {tab:main}), decoded through the same stream and scored on the same 3{,}899 clips; it is read against the ground truth clip for clip exactly as the 36M column is, and it is closer to the ground truth than the 36M pilot on the FK--pose gap (95.4\% of clips), bone-length error (96.3\%), foot slide (65.8\%) and internal articulation (72.9\%), and farther from it on root displacement, root path length and the two jitter rows. The \textsc  {TopX}{}-17{} closer column compares the two 36M layouts, which is what that comparison is about. Foot slide is the one reference that depends on which pair of arms supplies the contact frames: 2.02 against the 13-channel arm, 2.03 against the 303M model.}}{23}{table.16}\protected@file@percent }
+\newlabel{tab:physical}{{16}{23}{Geometry of the generated clips against their ground truth (epoch 100, the \num {3{,}899} validation clips and the same frozen samples as Table~\ref {tab:repcontent}; official codec; bl = the rig's mean rest bone length). Last column: share of clips on which the \rep {} sample is closer to the ground truth than the 13-channel sample (ties count for neither). Every row uses all \num {3{,}899} clips except foot slide, which each stream computes under its own contact flags and which is therefore compared only on the \num {3610} clips where all three are defined; over all \num {3{,}899} clips the streams flag contact on a similar share of frames --- \num {0.58} for \rep {}, \num {0.56} for the 13-channel layout, \num {0.57} for the \num {303}M model and \num {0.59} in the real clips --- so the lower sliding is not a matter of flagging fewer frames. Epochs 50 and 75 give the same picture. The \num {303}M column is the main model's own frozen samples (the checkpoint of Table~\ref {tab:main}), decoded through the same stream and scored on the same \num {3{,}899} clips; it is read against the ground truth clip for clip exactly as the \num {36}M column is, and it is closer to the ground truth than the \num {36}M pilot on the FK--pose gap (\num {95.4}\% of clips), bone-length error (\num {96.3}\%), foot slide (\num {65.8}\%) and internal articulation (\num {72.9}\%), and farther from it on root displacement, root path length and the two jitter rows. The \rep {} closer column compares the two \num {36}M layouts, which is what that comparison is about. Foot slide is the one reference that depends on which pair of arms supplies the contact frames: \num {2.02} against the 13-channel arm, \num {2.03} against the \num {303}M model}{table.16}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {17}{\ignorespaces Channel layout at matched epochs (36M recipe, global batch 128, per-cell normalisation in both; frozen protocol: pool 64, 20 Euler steps, guidance 2, seed 42).}}{23}{table.17}\protected@file@percent }
+\newlabel{tab:repcontent}{{17}{23}{Channel layout at matched epochs (\num {36}M recipe, global batch 128, per-cell normalisation in both; frozen protocol: pool 64, 20 Euler steps, guidance 2, seed 42)}{table.17}{}}
+\@writefile{toc}{\contentsline {paragraph}{Stability.}{23}{section*.54}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {L}A flat, padded-joint baseline}{23}{appendix.L}\protected@file@percent }
+\newlabel{app:flat}{{L}{23}{A flat, padded-joint baseline}{appendix.L}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {18}{\ignorespaces Model size at matched optimiser steps (epoch 200, global batch 128; frozen protocol, pool 64, 20 Euler steps, guidance 2, seed 42).}}{24}{table.18}\protected@file@percent }
+\newlabel{tab:size}{{18}{24}{Model size at matched optimiser steps (epoch 200, global batch 128; frozen protocol, pool 64, 20 Euler steps, guidance 2, seed 42)}{table.18}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {M}Additional qualitative results}{24}{appendix.M}\protected@file@percent }
+\newlabel{app:qual}{{M}{24}{Additional qualitative results}{appendix.M}{}}
+\@writefile{toc}{\contentsline {paragraph}{Two prompts on one unseen rig.}{24}{section*.55}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {N}A motion demonstration in place of the rest frame}{24}{appendix.N}\protected@file@percent }
+\newlabel{app:demo64}{{N}{24}{A motion demonstration in place of the rest frame}{appendix.N}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Truebones arms of Table~\ref {tab:lora}: one held-out clip per rig, six frames spread evenly over the clip, three-quarter view; the quoted sentence is the conditioning prompt. In every panel the directly predicted joint positions (clay) are overlaid by the forward kinematics of the predicted rotations (teal); a visible separation is the projected FK--pose discrepancy (a single view can hide a disagreement in depth). Rows: the library model with the rig's statistics only (\emph  {zero}, the unadapted snapshot, from which every column of that table's \emph  {zero} block is read) and the per-rig adapter (\emph  {LoRA}). Frames are anchored on the root horizontally and keep their height above the floor; the grey line marks the floor height beneath the root. Both rows of a rig are drawn at the same scale. The clip shown is the one of that rig whose adapted sample is closest to the held-out motion; Table~\ref {tab:lora} reports all four rigs over all of their held-out clips.}}{25}{figure.5}\protected@file@percent }
+\newlabel{fig:tb_filmstrips}{{5}{25}{Truebones arms of Table~\ref {tab:lora}: one held-out clip per rig, six frames spread evenly over the clip, three-quarter view; the quoted sentence is the conditioning prompt. In every panel the directly predicted joint positions (clay) are overlaid by the forward kinematics of the predicted rotations (teal); a visible separation is the projected FK--pose discrepancy (a single view can hide a disagreement in depth). Rows: the library model with the rig's statistics only (\emph {zero}, the unadapted snapshot, from which every column of that table's \emph {zero} block is read) and the per-rig adapter (\emph {LoRA}). Frames are anchored on the root horizontally and keep their height above the floor; the grey line marks the floor height beneath the root. Both rows of a rig are drawn at the same scale. The clip shown is the one of that rig whose adapted sample is closest to the held-out motion; Table~\ref {tab:lora} reports all four rigs over all of their held-out clips}{figure.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Two prompts on one rig, in world coordinates. Five frames at equal times of one held-out clip (light first, dark last) with the per-rig adapter of Table~\ref {tab:lora}. Every frame keeps the height the model produced; the horizontal placement is the panel's own time grid, the clay line is the root's height profile through the five frames and the grey line is the floor beneath the root. Skeletons are the deployable output: the forward kinematics of the predicted rotations. The quoted sentence is the conditioning prompt; the two rows of a rig differ in nothing else and are drawn at one scale.}}{26}{figure.6}\protected@file@percent }
+\newlabel{fig:tb_world}{{6}{26}{Two prompts on one rig, in world coordinates. Five frames at equal times of one held-out clip (light first, dark last) with the per-rig adapter of Table~\ref {tab:lora}. Every frame keeps the height the model produced; the horizontal placement is the panel's own time grid, the clay line is the root's height profile through the five frames and the grey line is the floor beneath the root. Skeletons are the deployable output: the forward kinematics of the predicted rotations. The quoted sentence is the conditioning prompt; the two rows of a rig differ in nothing else and are drawn at one scale}{figure.6}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {O}Validation split and evaluator}{27}{appendix.O}\protected@file@percent }
+\newlabel{app:split}{{O}{27}{Validation split and evaluator}{appendix.O}{}}
+\@writefile{toc}{\contentsline {paragraph}{Evaluator.}{27}{section*.56}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Split.}{27}{section*.57}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Pool size.}{27}{section*.58}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {19}{\ignorespaces R@1 of the same samples (20 steps, $s{=}2$, seed 42) re-scored in pools of 16, 32, 64 and 128 formed by chunking the dataset order; the incomplete last pool is dropped. The real clips are scored by the same evaluator in the same pools.}}{27}{table.19}\protected@file@percent }
+\newlabel{tab:pool}{{19}{27}{R@1 of the same samples (20 steps, $s{=}2$, seed 42) re-scored in pools of 16, 32, 64 and 128 formed by chunking the dataset order; the incomplete last pool is dropped. The real clips are scored by the same evaluator in the same pools}{table.19}{}}
+\gdef \@abspage@last{27}

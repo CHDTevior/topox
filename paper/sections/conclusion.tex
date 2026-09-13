@@ -2,12 +2,10 @@
 
 A text-to-motion model can treat the skeleton as an input rather than as part of the architecture:
 one \num{303}M-parameter model trained on \num{311} animal rigs generates text-conditioned motion for
-all of them (R@1 \num{0.922} against \num{0.964} for the real clips), returning rotations and a root
-trajectory the rig plays directly, and a low-rank adapter on eight to twenty-six clips extends it to
-rigs outside the library. The library is animal-only; retrieval comes from an evaluator we train, hence the
-real-motion reference beside every number and the controls of Table~\ref{tab:controls}; a rig's statistics come
-from its own clips, so a new rig needs clips or supplied ones; and the extension study is four case studies of
-two to six clips.
+all of them (R@1 \num{0.867} against \num{0.904} for the real clips), returning rotations and a root
+trajectory the rig plays directly; a rig outside the library is served by the same forward pass, and a
+low-rank adapter on roughly ten clips brings its two output channels into agreement. The library is
+animal-only, and the extension study covers four rigs.
 
 \section*{Reproducibility statement}
 
@@ -15,7 +13,8 @@ Section~\ref{sec:method:rep} and Appendix~\ref{app:rep} specify the representati
 channel, the conversion from a kinematic tree, rest pose and motion, and the per-cell
 normalisation; Appendix~\ref{app:calib} gives the calibration protocol, the target share profile
 and the mechanism check that certifies an artifact; Appendix~\ref{app:lora} lists every adapter
-hyper-parameter; Appendix~\ref{app:anytop} gives the AnyTop sampling protocol and the geometric
+hyper-parameter; Appendix~\ref{app:flat} gives the adapted baseline's construction and everything it is
+given; Appendix~\ref{app:anytop} gives the AnyTop sampling protocol and the geometric
 protocol, including the frame-rate handling. All evaluation runs are seeded, and the sharded
 generation used for retrieval metrics records the checkpoint, sampler and source hashes so that
 a table can be re-scored from the stored samples.

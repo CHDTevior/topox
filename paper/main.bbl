@@ -1,4 +1,4 @@
-\begin{thebibliography}{38}
+\begin{thebibliography}{40}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -110,10 +110,22 @@ Yaron Lipman, Ricky T.~Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le.
 \newblock Flow matching for generative modeling.
 \newblock In \emph{ICLR}, 2023.
 
+\bibitem[Liu et~al.(2025)Liu, Lv, Dong, Xue, Niu, and Wang]{liu2025omniskel}
+Q.~Liu, K.~Lv, K.~Dong, J.~Xue, Z.~Niu, and J.~Wang.
+\newblock Text-to-any-skeleton motion generation without retargeting.
+\newblock In \emph{Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)}, 2025.
+\newblock OmniSkel; SkeleMotion-3D, derived from HumanML3D.
+
 \bibitem[Liu et~al.(2023)Liu, Gong, and Liu]{liu2023rectified}
 Xingchao Liu, Chengyue Gong, and Qiang Liu.
 \newblock Flow straight and fast: Learning to generate and transfer data with rectified flow.
 \newblock In \emph{ICLR}, 2023.
+
+\bibitem[Mou et~al.(2026)Mou, Lei, Dou, Cai, Song, Finkelstein, and Rusinkiewicz]{mou2026unimate}
+Linzhan Mou, Jiahui Lei, Zhiyang Dou, Chenyue Cai, Chaoyue Song, Adam Finkelstein, and Szymon Rusinkiewicz.
+\newblock Unimate: One unified model to animate diverse skeletons.
+\newblock \emph{arXiv:2609.05415}, 2026.
+\newblock SIGGRAPH Asia 2026; concurrent with this submission.
 
 \bibitem[Peebles \& Xie(2023)Peebles and Xie]{peebles2023dit}
 William Peebles and Saining Xie.
@@ -160,15 +172,16 @@ Ruben Villegas, Jimei Yang, Duygu Ceylan, and Honglak Lee.
 \newblock Neural kinematic networks for unsupervised motion retargetting.
 \newblock In \emph{CVPR}, 2018.
 
-\bibitem[Wang et~al.(2025{\natexlab{a}})Wang, Ruan, Qian, Guo, Su, and Wang]{wang2025xmogen}
-Xuan Wang, Kai Ruan, Liyang Qian, Zhizhi Guo, Chang Su, and Gaoang Wang.
-\newblock X-mogen: Unified motion generation across humans and animals.
-\newblock \emph{arXiv preprint arXiv:2508.05162}, 2025{\natexlab{a}}.
-
-\bibitem[Wang et~al.(2025{\natexlab{b}})Wang, Ruan, Zhang, and Wang]{wang2025animo}
+\bibitem[Wang et~al.(2025)Wang, Ruan, Zhang, and Wang]{wang2025animo}
 Xuan Wang, Kai Ruan, Xing Zhang, and Gaoang Wang.
 \newblock Animo: Species-aware model for text-driven animal motion generation.
-\newblock In \emph{CVPR}, 2025{\natexlab{b}}.
+\newblock In \emph{CVPR}, 2025.
+
+\bibitem[Wang et~al.(2026)Wang, Ruan, Qian, Guo, Su, and Wang]{wang2025xmogen}
+Xuan Wang, Kai Ruan, Liyang Qian, Zhizhi Guo, Chang Su, and Gaoang Wang.
+\newblock X-mogen: Unified motion generation across humans and animals.
+\newblock 2026.
+\newblock arXiv:2508.05162.
 
 \bibitem[Wang et~al.(2023)Wang, Jiang, Lu, Shen, He, Chen, Wang, and Zhou]{wang2023promptdiffusion}
 Zhendong Wang, Yifan Jiang, Yadong Lu, Yelong Shen, Pengcheng He, Weizhu Chen, Zhangyang Wang, and Mingyuan Zhou.
@@ -190,11 +203,11 @@ Mingyuan Zhang, Zhongang Cai, Liang Pan, Fangzhou Hong, Xinying Guo, Lei Yang, a
 \newblock Motiondiffuse: Text-driven human motion generation with diffusion model.
 \newblock \emph{IEEE TPAMI}, 2024.
 
-\bibitem[Zhang et~al.(2026)Zhang, Pons-Moll, and Birdal]{samor2026}
-Yuhao Zhang, Gerard Pons-Moll, and Tolga Birdal.
-\newblock Samor: Motion modelling for articulated objects of any skeleton and topology.
-\newblock \emph{arXiv preprint arXiv:2607.02148}, 2026.
-\newblock concurrent work; no code released as of 2026-08.
+\bibitem[Zhang et~al.(2026)Zhang, Cui, Liu, and Wang]{zhang2026sata}
+Zongye Zhang, Yuzhuo Cui, Qingjie Liu, and Yunhong Wang.
+\newblock Semantic-aware motion encoding for topology-agnostic character animation.
+\newblock 2026.
+\newblock arXiv:2605.27055.
 
 \bibitem[Zhou et~al.(2019)Zhou, Barnes, Lu, Yang, and Li]{zhou2019continuity}
 Yi~Zhou, Connelly Barnes, Jingwan Lu, Jimei Yang, and Hao Li.

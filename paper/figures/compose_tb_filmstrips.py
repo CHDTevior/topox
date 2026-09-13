@@ -12,11 +12,10 @@ import matplotlib.pyplot as plt
 OUT = Path(sys.argv[1])
 POSE, FK, INK, MUTE = "#B5552F", "#1F6F8B", "#222222", "#9a9a9a"
 ARMS = [("zero", "zerotrain"), ("LoRA", "lora")]                 # row tag -> renders/cmp_dump_<rig>_<arm>
-RIGS = [  # (display name, dump rig key, clip id, anchor): anchor "ground" keeps the height above the floor, "root" follows the root
-    ("Buffalo (30 j.)", "buffalo", "A_Buffalo__Buffalo___SleepUp_140", "ground"),
-    ("Gazelle (29 j.)", "gazelle", "A_Gazelle__Gazelle___Attack1_381", "ground"),
-    ("Dragon (95 j.)", "dragon", "A_Dragon__Dragon___Attack3_299", "root"),
-    ("Spider (68 j.)", "spider", "A_Spider__Spider___Scramble_916", "ground"),
+RIGS = [  # (display name, dump rig key, clip id, anchor): anchor "ground" keeps the height above the floor
+    ("Buffalo (30 j.)", "buffalo", "A_Buffalo__Buffalo___Cud_146", "ground"),
+    ("Gazelle (29 j.)", "gazelle", "A_Gazelle__Gazelle___HeadPoke_382", "ground"),
+    ("Spider (68 j.)", "spider", "A_Spider__Spider___Fangy_920", "ground"),
 ]
 NF = 6
 FLOOR_Y = 0.0        # KTJD world frame: the floor is the plane Y = 0 (+Y up, +Z forward, X lateral)

@@ -199,7 +199,7 @@ function buildMarks(s) {
     const x0 = BLK.x + 190, y0 = SUB[1].y + 100, cw = 26; for (let i = 0; i < 5; i++) cell(g, x0 + i * cw, y0, cw - 2, 16, mixHex(INDIGO, INDIGO_L, i / 4)); });
   [[1404, 165], [1490, 165], [1576, 165], [1662, 165]].forEach(([x, y], k) => add(3, g => img(g, 'clean_' + k, x, y, 82)));
   add(3, g => img(g, 'motion_strip', 1400, 410, 350));
-  add(3, g => img(g, 'skinned_moose', 1470, 586, 200));
+  add(3, g => img(g, 'skinned_moose', 1470, 606, 200));
   add(3, g => treeIcon(g, treeXY[0], treeXY[1], TEAL));
   add(3, g => dial(g, dialXY[0], dialXY[1]));
 
@@ -217,7 +217,7 @@ function buildMarks(s) {
   add(4, g => line(g, [[1416, 246], [1416, bUp.y - 4]], INK, 4, 14));                                                                                            // prediction -> update
   add(4, g => line(g, [[bUp.x + bUp.w + 4, bUp.cy], [1760, bUp.cy], [1760, 118], [540, 118], [540, bLin.y - 6]], INDIGO, 3.5, 14));                              // updated x re-embedded, 20 times
   add(4, g => line(g, [[1416, bUp.y + bUp.h + 4], [1416, 404]], INK, 4, 14));                                                                                    // after 20 steps -> motion
-  add(4, g => line(g, [[1416, 540], [1416, 580]], INK, 4, 14));                                                                                                  // -> FK -> skinned
+  add(4, g => line(g, [[1416, 540], [1416, 600]], INK, 4, 14));                                                                                                  // -> FK -> skinned
   add(4, g => line(g, [[bCap.x + 60, bCap.y + bCap.h + 4], [bCap.x + 60, bLLMb.y - 6]], CLAY, 3, 12));                                                            // caption -> encoder
   add(4, g => line(g, [[bLLMb.x + bLLMb.w + 4, bLLMb.cy], [plusC[0] - 22, bLLMb.cy]], CLAY, 3, 12));
   add(4, g => line(g, [[dialXY[0], dialXY[1] + 22], [dialXY[0], bMLPt.y - 6]], CLAY, 3, 12));                                                                    // t -> MLP
@@ -248,7 +248,7 @@ function buildMarks(s) {
     txt(g, 'caption', bCap.x, bCap.y - 10, 30, { col: CLAY }); txt(g, 'flow time t', 912, dialXY[1] - 30, 28, { col: CLAY, align: g.RIGHT });
     txt(g, 'c', plusC[0] + 30, plusC[1] - 12, 32, { col: CLAY, italic: true }); });
   for (const sb of SUB) add(5, g => { txt(g, sb.name, BLK.x + 40, sb.y + 36, S_LAB); if (sb.sub) txt(g, sb.sub, BLK.x + 40, sb.y + 68, S_SUB, { col: GREY }); });
-  add(5, g => { txt(g, 'tree bias −min(hops, 8)', BLK.x + BLK.w - 28, SUB[1].y + 184, 30, { col: INDIGO, align: g.RIGHT }); txt(g, '1 hop', BLK.x + 190, SUB[1].y + 140, 24, { col: GREY }); txt(g, '8 hops', BLK.x + 190 + 5 * 26 - 2, SUB[1].y + 140, 24, { col: GREY, align: g.RIGHT });
+  add(5, g => { txt(g, 'bias −min(hops,8) + b↑ + b↓', BLK.x + BLK.w - 26, SUB[1].y + 184, 25, { col: INDIGO, align: g.RIGHT }); txt(g, '1 hop', BLK.x + 190, SUB[1].y + 140, 24, { col: GREY }); txt(g, '8 hops', BLK.x + 190 + 5 * 26 - 2, SUB[1].y + 140, 24, { col: GREY, align: g.RIGHT });
     txt(g, '×14', BLK.x + 48, BLK.y + 34, 28, { col: '#fff', bold: true, align: g.CENTER });
     const rest = ' = predicted clean motion', tw = xhat1Width(g, 30) + measure(g, rest, 30); let x0 = BLK.x + BLK.w / 2 - tw / 2; x0 += xhat1(g, x0, 768, 30, INK); txt(g, rest, x0, 768, 30, { col: INK }); });
   add(5, g => { txt(g, 'AdaLN', ADA.x, ADA.y, 34, { col: CLAY, bold: true }); txt(g, 'c → linear → shift, scale, gate', ADA.x, ADA.y + 36, 28, { col: GREY });
@@ -258,7 +258,7 @@ function buildMarks(s) {
   add(5, g => { const sz = 28, lh = sz * 1.12, y0 = bUp.cy - lh / 2 + sz * 0.36, p1 = 'x ← x + (', p3 = ' − x) / (20 − i)';
     const tw = measure(g, p1, sz) + xhat1Width(g, sz) + measure(g, p3, sz); let x0 = bUp.cx - tw / 2;
     txt(g, p1, x0, y0, sz, { col: INDIGO }); x0 += measure(g, p1, sz); x0 += xhat1(g, x0, y0, sz, INDIGO); txt(g, p3, x0, y0, sz, { col: INDIGO }); });
-  add(5, g => { txt(g, '×20 Euler steps, t = i/20', 1404, 150, 30, { col: INDIGO }); txt(g, 'after 20 steps', 1436, 396, 30, { col: GREY }); txt(g, 'rotations → FK → skinned', 1436, 570, 30, { col: GREY }); });
+  add(5, g => { txt(g, '×20 Euler steps, t = i/20', 1404, 150, 30, { col: INDIGO }); txt(g, 'after 20 steps', 1436, 396, 30, { col: GREY }); txt(g, 'positions read off directly;', 1436, 562, 27, { col: GREY }); txt(g, 'rotations → FK → skinned', 1436, 592, 27, { col: GREY }); });
   return M;
 }
 function paint(g, p) {
