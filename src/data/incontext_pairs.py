@@ -166,6 +166,7 @@ class InContextPairs(Dataset):
     def __init__(self, base: AnyTopDataset, target_names, demo_names, *,
                  object_types=None, demo_frames=DEMO_FRAMES, target_frames=TARGET_FRAMES,
                  balance_skeletons=True, seed=0, emit_fk_fields=False, emit_graph_v2=False,
+                 rig_multiplicity=None, epoch_draws=None,
                  identity_p=0.0, emit_ref_text=False, demo_rest=False, augment=None):
         self.base = base
         # skeleton-robustness augmentation (src/data/ktjd17_augment.py, user 2026-09-07): per-sample
@@ -238,6 +239,35 @@ class InContextPairs(Dataset):
                 self.by_type[ot] = {"targets": legal, "demos": dm}
 
         self.types = sorted(self.by_type)
+        # BALANCED SAMPLING WITH ONE OVERSIZED TOPOLOGY. `balance_skeletons` draws a rig uniformly,
+        # which is right while every rig holds a few hundred clips. A corpus that adds one rig with
+        # a hundred rigs' worth of motion needs a middle ground: uniform-over-rigs gives that rig
+        # 1/N of the samples and uniform-over-clips lets it take a quarter of every batch. A
+        # multiplicity repeats a named rig in the DRAW list only -- `self.types`, `self.by_type` and
+        # `self.index` are untouched, so nothing else in the dataset sees a duplicated rig and every
+        # rig not named keeps exactly the share it had, up to the normalisation.
+        self.rig_multiplicity = dict(rig_multiplicity or {})
+        unknown = sorted(set(self.rig_multiplicity) - set(self.types))
+        if unknown:
+            raise ValueError(f"rig_multiplicity names rigs this cut does not serve: {unknown}")
+        if any(int(v) < 1 for v in self.rig_multiplicity.values()):
+            raise ValueError(f"rig_multiplicity must be >= 1: {self.rig_multiplicity}")
+        self.draw_types = [t for t in self.types
+                           for _ in range(int(self.rig_multiplicity.get(t, 1)))]
+        # HOW LONG AN EPOCH IS. _pick's own rule -- "an epoch is a fixed number of draws, not a cover of
+        # the index" -- leaves that number equal to the corpus size only by accident, so an arm trained on
+        # a larger cut silently takes more optimizer steps per epoch and, because the lr decay horizon is
+        # written in epochs, a longer schedule as well. epoch_draws states the number instead, which is
+        # what lets the animal+human arm run the control's schedule exactly (codex 2026-09-10 r1 P1-1).
+        # Balanced draws only: unbalanced mode indexes self.index[i], where a shorter length would not
+        # shorten the epoch but amputate the corpus after the first epoch_draws clips.
+        self.epoch_draws = None if epoch_draws in (None, 0) else int(epoch_draws)
+        if self.epoch_draws is not None:
+            if not self.balance:
+                raise ValueError("epoch_draws needs balance_skeletons=True: unbalanced mode reads "
+                                 "self.index[i], so a shorter length drops clips rather than draws")
+            if self.epoch_draws < 1:
+                raise ValueError(f"epoch_draws must be >= 1, got {self.epoch_draws}")
         self.index = [(ot, i) for ot in self.types for i in self.by_type[ot]["targets"]]
         # base is built with split="all", which SKIPS AnyTopDataset's own train/val/held
         # disjointness guards (anytop_dataset.py:661 takes the non-file branch). Re-assert here so a
@@ -266,7 +296,7 @@ class InContextPairs(Dataset):
         return n
 
     def __len__(self):
-        return len(self.index)
+        return self.epoch_draws if self.epoch_draws is not None else len(self.index)
 
     def _worker_rng(self):
         """Per-(rank, worker) RNG streams, full-width.
@@ -298,7 +328,7 @@ class InContextPairs(Dataset):
         nondeterministic by design; an epoch is a fixed number of draws, not a cover of the index."""
         if not self.balance:
             return self.index[i]
-        ot = self.types[int(rng.integers(len(self.types)))]
+        ot = self.draw_types[int(rng.integers(len(self.draw_types)))]
         tg = self.by_type[ot]["targets"]
         return ot, int(tg[int(rng.integers(len(tg)))])
 
@@ -376,11 +406,13 @@ class InContextPairs(Dataset):
                                 P_rest_global=np.asarray(sk["P_rest_global"])[:J0],
                                 R_rest_global=np.asarray(sk["R_rest_global"])[:J0],
                                 offset_parent_local=np.asarray(sk["offset_parent_local"])[:J0],
-                                channel_valid=cv0, mu=mu0, sd=sd0, contact_joints=contact)
+                                channel_valid=cv0, mu=mu0, sd=sd0, contact_joints=contact,
+                                fps=30.0,                                   # the corpus rate (validate_schema pins fps_target 30)
+                                rest_norm=(self.base.normalization == "rest"))
             t_x = apply_motion(t_x, tr)
             if not self.demo_rest:
                 d_x = apply_motion(d_x, tr)
-            J = len(tr.keep)
+            J = tr.n_joints
 
         if self.demo_rest:
             # a PRIVATE copy: the clamp below used to run in place on the cached frame, which was harmless while the

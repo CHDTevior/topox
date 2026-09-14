@@ -152,12 +152,20 @@ for J in "$JOB_A" "$JOB_B"; do
   [ -n "$ncpu" ] && [ "$ncpu" -ge "$CPUS" ] \
     || { echo "[orch] PREFLIGHT FAIL: alloc $J has ${ncpu:-?} CPUs, CPUS=$CPUS requested "\
               "(srun would retry forever instead of failing)"; exit 1; }
+  # a memory census that fails to answer counts as occupied (codex heldout r3 P3: a non-zero exit with partial rows passed);
+  # its stderr stays out of the rows (r4 P3: a diagnostic line would count as a GPU) and lands in the orchestrator log
   info=$(srun --jobid="$J" --overlap -n1 -N1 nvidia-smi --query-gpu=index,memory.used \
-         --format=csv,noheader,nounits 2>/dev/null)
+         --format=csv,noheader,nounits); st=$?
+  [ $st -eq 0 ] || { echo "[orch] PREFLIGHT FAIL: alloc $J GPU memory census failed (status $st): $info"; exit 1; }
   [ "$(echo "$info" | wc -l)" -ge "$GPUS_PER" ] \
     || { echo "[orch] PREFLIGHT FAIL: alloc $J has fewer than $GPUS_PER GPUs"; exit 1; }
   busy=$(echo "$info" | awk -F', ' -v m="$IDLE_MIB" '$2+0>m{print $1":"$2}' | tr '\n' ' ')
   [ -z "$busy" ] || { echo "[orch] PREFLIGHT FAIL: alloc $J GPUs in use: $busy"; exit 1; }
+  # any compute process on the node is "in use", whatever its memory (codex heldout r2 P2-1: a 512 MiB process passed the
+  # memory test); a census that fails to answer counts as occupied (user rule: 查询失败一律当作被占用)
+  apps=$(srun --jobid="$J" --overlap -n1 -N1 nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader 2>&1); st=$?
+  [ $st -eq 0 ] || { echo "[orch] PREFLIGHT FAIL: alloc $J compute-apps census failed (status $st): $apps"; exit 1; }
+  [ -z "$apps" ] || { echo "[orch] PREFLIGHT FAIL: alloc $J has compute processes on its GPUs: $(echo "$apps" | tr '\n' ' ')"; exit 1; }
 done
 ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${RDZV_PORT}\$" \
   && { echo "[orch] PREFLIGHT FAIL: port $RDZV_PORT already bound on $MASTER_NODE"; exit 1; }
@@ -167,7 +175,11 @@ ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${RDZV_PORT}\$" \
 SMOKE_ARGS=""
 # the smoke must still take real optimizer steps: with drop_last the trainer refuses a
 # clip budget below one global batch (codex 2026-09-02 P0-3), so the cap scales with BATCH x ranks x 2
-[ "$SMOKE" = 1 ] && SMOKE_ARGS="--epochs 1 --val_every 1000 --ckpt_every 1000 --limit_train_clips $(( BATCH * GPUS_PER * 2 * 2 ))"
+# --epoch_draws is stated by the arms that must match another arm's epoch, and the balanced sampler draws
+# with replacement, so a smoke that kept the real value would run the real number of steps (578, not two) over
+# --limit_train_clips clips: the budget the smoke exists to bound (codex 2026-09-10 r2 P2-3). SMOKE_ARGS is
+# placed AFTER $EXTRA on the command line, so this occurrence is the one argparse keeps.
+[ "$SMOKE" = 1 ] && SMOKE_ARGS="--epochs 1 --val_every 1000 --ckpt_every 1000 --limit_train_clips $(( BATCH * GPUS_PER * 2 * 2 )) --epoch_draws $(( BATCH * GPUS_PER * 2 * 2 ))"
 RES_ARG=""; [ -n "$RESUME" ] && RES_ARG="--resume $RESUME"
 
 echo "[orch] $(date -u +%FT%TZ) master=$MASTER_NODE($JOB_A) worker=$WORKER_NODE($JOB_B)"

@@ -22,6 +22,32 @@ Four sampling-time perturbations of ONE served sample (target clip AND its demo,
      with matched statistics is a no-op in normalised space, so proportion error is represented here.)
      Root cells 13:17 are never perturbed: the crop contract re-bases smooth-root XZ with the rig's stats.
 
+Three KINEMATICS-PRESERVING operations (v2, 2026-09-13; after UniMate's augmentations, written for this
+representation) change the body or the tree and then RE-ENCODE the sample from forward kinematics, so the served
+direct positions, velocities and rotations stay exactly consistent (the corpus invariant the FK term supervises):
+
+  5. bone-length perturbation -- every bone offset is scaled by an independent factor in [1-s, 1+s]; rotations are
+     unchanged and every joint position is recomputed by FK from the (unchanged) root through the new bones.
+  6. chain pooling -- a single-child interior joint is removed and its child re-parented to the grandparent with the
+     rest vector as its new bone; positions are recomputed by FK through the virtual bone (where the removed joint
+     articulated, the child's subtree moves rigidly with the grandparent from then on: the sample is a slightly
+     different, self-consistent motion, not an FK-inconsistent one).
+  7. joint addition -- one synthetic joint is inserted on a random bone at a fraction alpha in [0.3, 0.7] of its
+     length, rigidly attached to the parent (its rest rotation is the parent's, so its rest-delta equals the parent's
+     every frame); FK is preserved exactly. Its description embedding is the mean of the parent's and the child's
+     (as UniMate does); its channel mask and statistics copy the child's row, except the rotation cells, which copy
+     the parent's (they hold the parent's values); its contact flag is zero.
+
+Re-encoding needs every joint's global rotation, delta_j R_rest_j (no rig of this library has fixed-DOF joints; a
+degenerate six-vector on a served row is refused, since the emitted rotations could not reconstruct the positions --
+the corpus has none), the world positions (served q_position plus the root's smooth track), velocities as the
+codec's forward difference at the corpus frame rate, and -- under the rest normalisation -- a mean row for positions
+that is the transformed rest pose, so the rest demo still normalises to zero on the position channels. Position and
+velocity cells the statistics artifact excluded as exact constants (four rigs, near-root joints) re-enter the model
+input and the loss of a re-encoded sample with the channel's scale from the rig's valid rows: they no longer hold
+that constant. Contact flags of existing joints are kept (bone scaling and pooling move joints by small amounts);
+root channels 13:17 are untouched.
+
 Everything is a pure function of (rng, sample); nothing is cached per rig. `AugConfig.protocol()` is the
 record the trainer pins into checkpoints and compares with the gamma calibration.
 """
@@ -34,7 +60,8 @@ import numpy as np
 from src.data.anytop_dataset import _STD_FLOOR
 from src.data.ktjd17.codec import decode_column_cont6d, encode_column_cont6d
 
-AUG_VERSION = "ktjd17_skel_aug_v1"
+AUG_VERSION = "ktjd17_skel_aug_v1"      # protocol record of the four v1 perturbations (pinned in the v1 checkpoints)
+AUG_VERSION_KIN = "ktjd17_skel_aug_v2"  # + bone_scale / pool_frac / add_p (FK re-encoded) when any of the three is active
 STATS_Z_CLIP = 3.0            # standard-normal draws of the statistics perturbation are clipped to +-3 sigma
 STATS_LOGSD_MAX = 1.0         # exp(+-3) at most: the effective scale stays within [e^-3, e^3] of the rig's
 STATS_SHIFT_MAX = 3.0
@@ -51,6 +78,9 @@ class AugConfig:
     sem_drop_p: float = 0.0      # description embeddings: probability of zeroing the whole table
     stats_logsd: float = 0.0     # statistics: std of the log-normal factor on per-cell std
     stats_shift: float = 0.0     # statistics: std of the mean shift, in units of the per-cell std
+    bone_scale: float = 0.0      # kinematics-preserving: per-bone length factor uniform in [1-bone_scale, 1+bone_scale]
+    pool_frac: float = 0.0       # kinematics-preserving: fraction of single-child interior joints pooled away, uniform in [0, max]
+    add_p: float = 0.0           # kinematics-preserving: probability of inserting one synthetic joint on a random bone
 
     def __post_init__(self):
         if self.drop_mode not in ("any", "tips"):
@@ -65,8 +95,10 @@ class AugConfig:
         if self.stats_logsd > STATS_LOGSD_MAX or self.stats_shift > STATS_SHIFT_MAX:
             raise ValueError(f"AugConfig.stats_logsd <= {STATS_LOGSD_MAX} and stats_shift <= {STATS_SHIFT_MAX} are supported "
                              f"(draws are clipped to +-{STATS_Z_CLIP} sigma; beyond that the effective scale can vanish)")
+        if self.bone_scale >= 1.0 or self.pool_frac > 1.0 or self.add_p > 1.0:
+            raise ValueError("AugConfig.bone_scale < 1, pool_frac <= 1 and add_p <= 1")
         if self.p > 0 and not any((self.drop_max_frac, self.rest_deg, self.sem_noise, self.sem_drop_p,
-                                   self.stats_logsd, self.stats_shift)):
+                                   self.stats_logsd, self.stats_shift, self.bone_scale, self.pool_frac, self.add_p)):
             raise ValueError("AugConfig.p > 0 but every perturbation is 0 -- nothing to apply")
 
     @property
@@ -74,8 +106,16 @@ class AugConfig:
         return self.p > 0
 
     def protocol(self) -> dict | None:
-        """None when off (so an unaugmented run matches a calibration that never heard of augmentation)."""
-        return {"version": AUG_VERSION, **asdict(self), "stats_z_clip": STATS_Z_CLIP} if self.active else None
+        """None when off (so an unaugmented run matches a calibration that never heard of augmentation). With the three
+        kinematics-preserving operations at 0 the record is the v1 protocol, key for key (v1 checkpoints and calibrations
+        keep matching); any of them active records the v2 protocol with the three fields."""
+        if not self.active:
+            return None
+        d = asdict(self)
+        kin = {k: d.pop(k) for k in ("bone_scale", "pool_frac", "add_p")}
+        if any(kin.values()):
+            return {"version": AUG_VERSION_KIN, **d, **kin, "stats_z_clip": STATS_Z_CLIP}
+        return {"version": AUG_VERSION, **d, "stats_z_clip": STATS_Z_CLIP}
 
 
 def hop_matrix(parents) -> np.ndarray:
@@ -111,26 +151,53 @@ def _random_rotation(rng, max_deg: float) -> np.ndarray:
 
 @dataclass
 class SkeletonTransform:
-    keep: np.ndarray            # [J'] original indices kept, ascending (keep[0] == 0)
-    parents: np.ndarray         # [J'] new parents (compacted indices)
+    keep: np.ndarray            # [Jk] original indices of the kept ORIGINAL joints, ascending (keep[0] == 0)
+    src: np.ndarray             # [J'] served joint -> original index, or -1 for a synthetic (added) joint
+    synth_pc: np.ndarray        # [J',2] synthetic joint -> (original parent index, original child index); -1 elsewhere
+    parents: np.ndarray         # [J'] new parents (compacted indices, FK order)
     offsets: np.ndarray         # [J',3] float64 rest bone offsets under the new parents (parent rest frame)
     R_rest: np.ndarray          # [J',3,3] float64 perturbed rest rotations Q_j R_rest_j
+    R_rest_old: np.ndarray      # [J',3,3] float64 UNperturbed rest rotations (a synthetic joint: its parent's)
     P_rest: np.ndarray          # [J',3] float64 rest positions rebuilt from the new offsets and rest rotations
     Q: np.ndarray               # [J',3,3] the rest-convention rotations (identity where not applied)
     rot_rows: np.ndarray        # [J'] bool: rows whose rest-delta channels are valid and get Q
     mu: np.ndarray              # [J',17] perturbed normalisation mean
     sd: np.ndarray              # [J',17] perturbed normalisation std (minus the floor, serving convention)
-    mu0: np.ndarray             # [J',17] the rig's mean on the kept rows (what the served arrays were normalised with)
+    mu0: np.ndarray             # [J',17] the rig's mean on the served rows (what the served arrays were normalised with)
     sd0: np.ndarray             # [J',17]
     channel_valid: np.ndarray   # [J',17] bool
     sem_noise: float
     sem_drop: bool
+    reencode: bool = False      # positions / velocities are recomputed by FK (bone scaling, pooling or addition happened)
+    fps: float = 30.0
+
+    @property
+    def n_joints(self) -> int:
+        return int(self.src.shape[0])
+
+    @property
+    def served_rows(self) -> np.ndarray:
+        """[Jk] positions (in the J' order) of the kept original joints, in `keep` order."""
+        return np.where(self.src >= 0)[0]
+
+
+def _fk(parents, root_positions, G, offsets):
+    """positions [T,J,3] = FK of global rotations G [T,J,3,3] through offsets (parent rest frame), root given."""
+    T, J = G.shape[:2]
+    pos = np.empty((T, J, 3), dtype=np.float64)
+    pos[:, 0] = root_positions
+    for j in range(1, J):
+        p = int(parents[j])
+        pos[:, j] = pos[:, p] + np.einsum("tij,j->ti", G[:, p], offsets[j])
+    return pos
 
 
 def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global, offset_parent_local,
-                   channel_valid, mu, sd, contact_joints) -> SkeletonTransform:
+                   channel_valid, mu, sd, contact_joints, fps: float = 30.0, rest_norm: bool = False) -> SkeletonTransform:
     """One sample's transform. `contact_joints` [J] bool marks joints that touch the ground in the target clip
-    (protected from dropping); `mu`/`sd` [J,17] are the rig's serving statistics."""
+    (protected from dropping and pooling); `mu`/`sd` [J,17] are the rig's serving statistics; `fps` is the corpus
+    frame rate the velocity channels were encoded at; `rest_norm` says the serving mean is the rig's rest frame
+    (Ktjd17Base normalization "rest"), so a re-encoded sample gets the transformed rest pose as its position mean."""
     par = np.asarray(parents, dtype=np.int64)
     J = len(par)
     if par[0] != -1 or np.any(par[1:] >= np.arange(1, J)):
@@ -139,25 +206,51 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
     R = np.asarray(R_rest_global, dtype=np.float64)
     O = np.asarray(offset_parent_local, dtype=np.float64)
     cv = np.asarray(channel_valid, dtype=bool)
+    protected = np.asarray(contact_joints, dtype=bool).copy()
+    protected[0] = True                                   # the root also carries the heading / track channels
+    children = [[] for _ in range(J)]
+    for j in range(1, J):
+        children[par[j]].append(j)
+    reencode = False
     # ---- 1. sub-skeleton ----
     keep_mask = np.ones(J, dtype=bool)
     if cfg.drop_max_frac > 0:
-        protected = np.asarray(contact_joints, dtype=bool).copy()
-        protected[0] = True
         droppable = np.where(~protected)[0]
         n_drop = int(round(float(rng.uniform(0.0, cfg.drop_max_frac)) * len(droppable)))
         if cfg.drop_mode == "any":
             if n_drop > 0:
                 keep_mask[rng.choice(droppable, size=n_drop, replace=False)] = False
         else:
-            children = [[] for _ in range(J)]
-            for j in range(1, J):
-                children[par[j]].append(j)
             for _ in range(n_drop):                  # prune from the tips: a dropped joint never has kept children
                 leaves = [j for j in droppable if keep_mask[j] and not any(keep_mask[c] for c in children[j])]
                 if not leaves:
                     break
                 keep_mask[int(rng.choice(leaves))] = False
+    # ---- 6. chain pooling: single-child interior joints of the CONTRACTED tree (a dropped joint's children hang from its
+    #         nearest kept ancestor; codex v2 r1 P2-3), re-parented through; the child lists follow every pooled joint ----
+    if cfg.pool_frac > 0:
+        eff_par = np.full(J, -1, dtype=np.int64)          # nearest kept ancestor of every kept joint
+        kids = [[] for _ in range(J)]
+        for j in range(1, J):
+            if keep_mask[j]:
+                q = int(par[j])
+                while q >= 0 and not keep_mask[q]:
+                    q = int(par[q])
+                eff_par[j] = q
+                kids[q].append(j)
+        cands = np.asarray([j for j in range(1, J) if keep_mask[j] and not protected[j] and len(kids[j]) == 1], dtype=np.int64)
+        n_pool = int(round(float(rng.uniform(0.0, cfg.pool_frac)) * len(cands)))
+        for j in rng.permutation(cands)[:n_pool]:
+            j = int(j)
+            if len(kids[j]) != 1:                          # a neighbour's pooling changed its degree
+                continue
+            c = kids[j][0]
+            q = int(eff_par[j])
+            keep_mask[j] = False
+            eff_par[c] = q
+            kids[q][kids[q].index(j)] = c
+            kids[j] = []
+            reencode = True
     keep = np.where(keep_mask)[0]
     new_index = -np.ones(J, dtype=np.int64)
     new_index[keep] = np.arange(len(keep))
@@ -177,71 +270,181 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
                                      f"vs stored {O[j]}")
         else:
             new_off[n] = 0.0
+    # served-joint tables (J' rows): original joints first as a base, then a synthetic joint may be spliced in
+    src = keep.copy()
+    synth_pc = -np.ones((len(keep), 2), dtype=np.int64)
+    R_old = R[keep].copy()
+    cvk = cv[keep].copy()
+    mu0 = np.asarray(mu, dtype=np.float32)[keep].copy()
+    sd0 = np.asarray(sd, dtype=np.float32)[keep].copy()
+    # ---- 7. joint addition: one synthetic joint on a random bone, rigid with its parent ----
+    if cfg.add_p > 0 and len(keep) > 1 and float(rng.random()) < cfg.add_p:
+        c = int(rng.integers(1, len(keep)))                 # the child whose bone is split (new index)
+        p = int(new_par[c])
+        alpha = float(rng.uniform(0.3, 0.7))
+        off_c = new_off[c].copy()
+        ins = c                                             # the synthetic joint takes c's slot; c and later joints shift by one
+        shift = lambda idx: idx + 1 if idx >= ins else idx  # noqa: E731
+        par2 = np.array([shift(int(x)) if x >= 0 else -1 for x in new_par], dtype=np.int64)
+        par2 = np.insert(par2, ins, p)                      # synthetic parent = p
+        par2[ins + 1] = ins                                 # c (now at ins+1) hangs from the synthetic joint
+        off2 = np.insert(new_off, ins, alpha * off_c, axis=0)
+        off2[ins + 1] = (1.0 - alpha) * off_c               # same rest frame: the synthetic joint's rest rotation is p's
+        src = np.insert(src, ins, -1)
+        synth_pc = np.insert(synth_pc, ins, [int(keep[p]), int(keep[c])], axis=0)
+        R_old = np.insert(R_old, ins, R_old[p], axis=0)
+        cvk = np.insert(cvk, ins, cvk[c], axis=0); cvk[ins, 3:9] = cvk[p, 3:9]      # rotation cells hold the parent's
+        mu0 = np.insert(mu0, ins, mu0[c], axis=0); mu0[ins, 3:9] = mu0[p, 3:9]      # values: its mask and statistics
+        sd0 = np.insert(sd0, ins, sd0[c], axis=0); sd0[ins, 3:9] = sd0[p, 3:9]
+        new_par, new_off = par2, off2
+        reencode = True
+    Jn = len(src)
+    if new_par[0] != -1 or np.any(new_par[1:] >= np.arange(1, Jn)) or np.any(new_par[1:] < 0):
+        raise AssertionError("augmented parents are not in FK order")
+    cv_served = cvk.copy()                                # the mask the served rows were produced under
+    if reencode or cfg.bone_scale > 0:
+        # positions and velocities are recomputed for every row, so a cell the statistics artifact excluded as an exact
+        # constant (Ktjd17Base.static_masks) no longer holds that constant: it re-enters the model input and the loss
+        # (codex v2 r1 P1); the structural exclusions (root-only 13:17, fixed_dof rotations) are untouched
+        cvk[:, 0:3] = True
+        cvk[:, 9:12] = True
+    # ---- 5. bone-length perturbation ----
+    if cfg.bone_scale > 0:
+        new_off[1:] *= rng.uniform(1.0 - cfg.bone_scale, 1.0 + cfg.bone_scale, size=(Jn - 1, 1))
+        reencode = True
     # ---- 2. rest convention ----
-    cvk = cv[keep]
     rot_rows = cvk[:, 3:9].all(axis=1)
-    Q = np.tile(np.eye(3), (len(keep), 1, 1))
+    Q = np.tile(np.eye(3), (Jn, 1, 1))
     if cfg.rest_deg > 0:
         for n in np.where(rot_rows)[0]:
             Q[n] = _random_rotation(rng, cfg.rest_deg)
-    R_new = Q @ R[keep]
-    P_new = np.empty((len(keep), 3), dtype=np.float64)
+    for n in np.where(src < 0)[0]:                        # a synthetic joint shares its parent's rest convention: its served
+        Q[n] = Q[new_par[n]]                              # deltas are a copy of the parent's, so R_rest must be the parent's too
+    R_new = Q @ R_old
+    P_new = np.empty((Jn, 3), dtype=np.float64)
     P_new[0] = P[keep[0]]
-    for n in range(1, len(keep)):
+    for n in range(1, Jn):
         P_new[n] = P_new[new_par[n]] + R_new[new_par[n]] @ new_off[n]
     # ---- 4. statistics ----
-    mu0 = np.asarray(mu, dtype=np.float32)[keep].copy()
-    sd0 = np.asarray(sd, dtype=np.float32)[keep].copy()
-    mu_n, sd_n = mu0.copy(), sd0.copy()
+    mu_ref, sd_ref = mu0.copy(), sd0.copy()              # the new skeleton's reference statistics (de-normalisation keeps mu0 / sd0)
+    reentered = cvk & ~cv_served
+    for ch in np.unique(np.where(reentered)[1]):
+        # an excluded cell's serving scale describes a constant (per-cell: ~0); the re-entered cell takes the channel's
+        # scale on the rows that were valid (identical under the rest / scale-only normalisation, whose scale is per
+        # channel), and that reference scale is what the perturbation below shifts and stretches (codex v2 r2 P2)
+        ref = sd0[cv_served[:, ch], ch]
+        if ref.size:
+            sd_ref[reentered[:, ch], ch] = np.float32(np.median(ref))
+    if reencode and rest_norm:
+        # under the rest normalisation the mean is the rig's rest pose; the transformed skeleton's is that pose played
+        # through the new bones (identity deltas = the UNperturbed rest rotations), FK'd from the mean's own root row
+        # (Ktjd17Base._rest_raw17: the rest pose relative to its root XZ) -- exactly what apply_motion recomputes for
+        # the rest demo, which therefore still normalises to zero on the position channels
+        P_demo = _fk(new_par, mu0[0, 0:3].astype(np.float64)[None], R_old[None], new_off)[0]
+        mu_ref[:, 0:3] = P_demo.astype(np.float32)
+    mu_n, sd_n = mu_ref.copy(), sd_ref.copy()
     if cfg.stats_logsd > 0 or cfg.stats_shift > 0:
         cells = cvk.copy()
         cells[:, 13:17] = False                          # root smooth-XZ / heading: crop re-base uses the rig's stats
-        eff = sd0.astype(np.float64) + _STD_FLOOR
+        eff = sd_ref.astype(np.float64) + _STD_FLOOR
         z_mu = np.clip(rng.normal(0.0, 1.0, mu0.shape), -STATS_Z_CLIP, STATS_Z_CLIP) * cfg.stats_shift
         z_sd = np.clip(rng.normal(0.0, 1.0, sd0.shape), -STATS_Z_CLIP, STATS_Z_CLIP) * cfg.stats_logsd
-        mu64 = np.where(cells, mu0.astype(np.float64) + z_mu * eff, mu0.astype(np.float64))
-        sd64 = np.where(cells, eff * np.exp(z_sd) - _STD_FLOOR, sd0.astype(np.float64))
+        mu64 = np.where(cells, mu_ref.astype(np.float64) + z_mu * eff, mu_ref.astype(np.float64))
+        sd64 = np.where(cells, eff * np.exp(z_sd) - _STD_FLOOR, sd_ref.astype(np.float64))
         mu_n, sd_n = mu64.astype(np.float32), sd64.astype(np.float32)
         if not (np.isfinite(mu_n).all() and np.isfinite(sd_n).all() and np.all(sd_n.astype(np.float64) + _STD_FLOOR > 0)):
             raise AssertionError("statistics perturbation produced a non-finite mean or a non-positive effective scale")
     # ---- 3. descriptions ----
     sem_drop = bool(cfg.sem_drop_p > 0 and rng.random() < cfg.sem_drop_p)
-    return SkeletonTransform(keep=keep, parents=new_par, offsets=new_off, R_rest=R_new, P_rest=P_new, Q=Q,
-                             rot_rows=rot_rows, mu=mu_n.astype(np.float32), sd=sd_n.astype(np.float32),
-                             mu0=mu0, sd0=sd0, channel_valid=cvk, sem_noise=float(cfg.sem_noise),
-                             sem_drop=sem_drop)
+    return SkeletonTransform(keep=keep, src=src, synth_pc=synth_pc, parents=new_par, offsets=new_off, R_rest=R_new,
+                             R_rest_old=R_old, P_rest=P_new, Q=Q, rot_rows=rot_rows,
+                             mu=mu_n.astype(np.float32), sd=sd_n.astype(np.float32), mu0=mu0, sd0=sd0,
+                             channel_valid=cvk, sem_noise=float(cfg.sem_noise), sem_drop=sem_drop,
+                             reencode=bool(reencode), fps=float(fps))
+
+
+def _rotate_rest_deltas(raw, tr, rows_of):
+    """In place: on the rows of `raw` [T,J',17] listed by rows_of (J' indices whose Q is not the identity and whose
+    rotation cells are valid), replace the six-vector by delta Q^T; degenerate cells keep their served six-vector."""
+    rows = np.asarray([r for r in rows_of if tr.rot_rows[r] and not np.all(np.isclose(tr.Q[r], np.eye(3), atol=0.0))])
+    if rows.size == 0:
+        return
+    d6 = raw[:, rows, 3:9]                                            # [T,r,6]
+    a1, a2 = d6[..., :3], d6[..., 3:]
+    n1 = np.linalg.norm(a1, axis=-1)
+    b1 = a1 / np.maximum(n1[..., None], 1e-12)
+    n2 = np.linalg.norm(a2 - np.sum(b1 * a2, axis=-1, keepdims=True) * b1, axis=-1)
+    ok = (n1 > 1e-6) & (n2 > 1e-6)                                    # both Gram-Schmidt norms (decoder's GT eps)
+    if ok.any():                                                      # degenerate cells keep their served six-vector
+        M = decode_column_cont6d(d6[ok], strict=True)                 # [n,3,3]
+        Qt = np.broadcast_to(np.swapaxes(tr.Q[rows], -1, -2)[None], (d6.shape[0], rows.size, 3, 3))[ok]
+        d6n = d6.copy()
+        d6n[ok] = encode_column_cont6d(np.matmul(M, Qt))
+        raw[:, rows, 3:9] = d6n
 
 
 def apply_motion(x18: np.ndarray, tr: SkeletonTransform) -> np.ndarray:
     """[T,J,18] (or [J,18]) served-normalised motion -> [T,J',18] under the transform.
-    Plane 17 (heading-valid flag) is copied; channels 0:17 are de-normalised with the rig's statistics,
-    rotated (rest deltas -> delta Q^T on rows with valid rotation cells) and re-normalised with the
-    perturbed statistics (unperturbed on cells outside channel_valid, which cfm_loss projects out anyway)."""
+    Plane 17 (heading-valid flag) is copied (a synthetic joint takes its parent's); channels 0:17 are de-normalised
+    with the rig's statistics, rotated (rest deltas -> delta Q^T on rows with valid rotation cells), re-encoded by FK
+    when the transform changed the body or the tree, and re-normalised with the perturbed statistics (unperturbed
+    on cells outside channel_valid, which cfm_loss projects out anyway)."""
     squeeze = x18.ndim == 2
     x = x18[None] if squeeze else x18
-    x = np.asarray(x, dtype=np.float32)[:, tr.keep]
-    raw = x[..., :17].astype(np.float64) * (tr.sd0[None] + _STD_FLOOR) + tr.mu0[None]
-    rows = np.where(tr.rot_rows & ~np.all(np.isclose(tr.Q, np.eye(3), atol=0.0), axis=(1, 2)))[0]
-    if rows.size:
-        d6 = raw[:, rows, 3:9]                                            # [T,r,6]
+    xk = np.asarray(x, dtype=np.float32)[:, tr.keep]                                     # served kept originals
+    T = xk.shape[0]; Jn = tr.n_joints; rows = tr.served_rows
+    mu0k, sd0k = tr.mu0[rows], tr.sd0[rows]
+    raw_k = xk[..., :17].astype(np.float64) * (sd0k[None] + _STD_FLOOR) + mu0k[None]
+    raw = np.zeros((T, Jn, 17), dtype=np.float64)
+    raw[:, rows] = raw_k
+    p17 = np.zeros((T, Jn), dtype=np.float32)
+    p17[:, rows] = xk[..., 17]
+    if tr.reencode:
+        # global rotations of the served originals from their served deltas; a degenerate six-vector (zero or parallel
+        # columns) has no rotation the emitted representation could reconstruct the FK'd positions from, so it is refused
+        # rather than replaced (codex v2 r1 P2-4; the corpus has none -- runs/_aug_dev/excluded_cells_scan.json)
+        d6 = raw_k[..., 3:9]
         a1, a2 = d6[..., :3], d6[..., 3:]
         n1 = np.linalg.norm(a1, axis=-1)
         b1 = a1 / np.maximum(n1[..., None], 1e-12)
         n2 = np.linalg.norm(a2 - np.sum(b1 * a2, axis=-1, keepdims=True) * b1, axis=-1)
-        ok = (n1 > 1e-6) & (n2 > 1e-6)                                    # both Gram-Schmidt norms (decoder's GT eps)
-        if ok.any():                                                      # degenerate cells keep their served six-vector
-            M = decode_column_cont6d(d6[ok], strict=True)                 # [n,3,3]
-            Qt = np.broadcast_to(np.swapaxes(tr.Q[rows], -1, -2)[None], (d6.shape[0], rows.size, 3, 3))[ok]
-            d6n = d6.copy()
-            d6n[ok] = encode_column_cont6d(np.matmul(M, Qt))
-            raw[:, rows, 3:9] = d6n
-    out = x.copy()
+        bad = ~((n1 > 1e-6) & (n2 > 1e-6))
+        if bad.any():
+            t_bad, r_bad = np.where(bad)
+            raise ValueError(f"re-encoding refused: degenerate rotation six-vector on served joint(s) "
+                             f"{sorted(set(tr.keep[r_bad].tolist()))[:8]} at frame(s) {sorted(set(t_bad.tolist()))[:8]}")
+        delta = decode_column_cont6d(d6, strict=True)
+        G = np.zeros((T, Jn, 3, 3), dtype=np.float64)
+        G[:, rows] = np.matmul(delta, tr.R_rest_old[rows][None])
+        for j in np.where(tr.src < 0)[0]:                                                  # synthetic: rigid with its parent
+            G[:, j] = G[:, tr.parents[j]]
+        track = raw[:, 0, 13:15]                                                           # the root's smooth XZ track
+        root_world = raw[:, 0, 0:3] + np.stack([track[:, 0], np.zeros(T), track[:, 1]], axis=1)
+        pos = _fk(tr.parents, root_world, G, tr.offsets)
+        raw[..., 0:3] = pos - np.stack([track[:, 0], np.zeros(T), track[:, 1]], axis=1)[:, None]
+        vel = np.zeros_like(pos)
+        if T >= 2:
+            vel[:-1] = (pos[1:] - pos[:-1]) * tr.fps
+            vel[-1] = vel[-2]
+        raw[..., 9:12] = vel
+    _rotate_rest_deltas(raw, tr, rows)
+    for j in np.where(tr.src < 0)[0]:                                                      # synthetic rows: the parent's deltas
+        raw[:, j, 3:9] = raw[:, tr.parents[j], 3:9]
+        raw[:, j, 12] = 0.0
+        p17[:, j] = p17[:, tr.parents[j]]
+    out = np.empty((T, Jn, 18), dtype=np.float32)
     out[..., :17] = ((raw - tr.mu[None]) / (tr.sd[None] + _STD_FLOOR)).astype(np.float32)
+    out[..., 17] = p17
     return out[0] if squeeze else out
 
 
 def apply_semantics(sem: np.ndarray, tr: SkeletonTransform, rng) -> np.ndarray:
-    s = np.asarray(sem, dtype=np.float32)[tr.keep].copy()
+    sem = np.asarray(sem, dtype=np.float32)
+    s = np.empty((tr.n_joints, sem.shape[1]), dtype=np.float32)
+    s[tr.served_rows] = sem[tr.keep]
+    for j in np.where(tr.src < 0)[0]:                                                      # synthetic: mean of parent and child
+        pj, cj = tr.synth_pc[j]
+        s[j] = 0.5 * (sem[pj] + sem[cj])
     if tr.sem_drop:
         return np.zeros_like(s)
     if tr.sem_noise > 0:

@@ -40,6 +40,33 @@ def to_dev(b, dev):
                 else v) for k, v in b.items()}
 
 
+def _rig_multiplicity(a):
+    """`--rig_multiplicity "RIG:N,RIG:N"` -> {rig: N}. Applies to the TRAINING draw only; validation
+    is unbalanced in every arm and stays so. A malformed spec refuses rather than silently training
+    on the default mixture."""
+    spec = str(getattr(a, "rig_multiplicity", "") or "").strip()
+    if not spec:
+        return None
+    out = {}
+    for tok in spec.split(","):
+        tok = tok.strip()
+        if not tok:
+            raise SystemExit(f"[refuse] --rig_multiplicity {spec!r} has an empty token: expected "
+                             f"RIG:N[,RIG:N], and a spec that parses to nothing would silently train "
+                             f"the default mixture")
+        if tok.count(":") != 1:
+            raise SystemExit(f"[refuse] --rig_multiplicity token {tok!r}: expected RIG:N")
+        rig, n = tok.split(":")
+        rig = rig.strip()
+        if not rig or not n.strip().isdigit() or int(n) < 1:
+            raise SystemExit(f"[refuse] --rig_multiplicity token {tok!r}: RIG must be non-empty and N a "
+                             f"positive integer")
+        if rig in out:
+            raise SystemExit(f"[refuse] --rig_multiplicity names {rig!r} twice")
+        out[rig] = int(n)
+    return out
+
+
 def cond_of(b):
     d = dict(joint_bias=b["joint_bias"], frame_valid=b["frame_valid"],
              joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"])
@@ -152,7 +179,7 @@ class fixed_torch_rng:
 
 
 def connectivity_probe(model, b, demo_frames=DEMO_FRAMES, ktjd_lut=None, ktjd_gammas=None,
-                       obj=None):
+                       obj=None, probe_joint_sem=True):
     """P5: |dLoss/d input| per conditioning path. Zero = dead branch (v1's undetected failure).
     Magnitudes are comparable only against earlier probes of THIS run.
 
@@ -163,7 +190,12 @@ def connectivity_probe(model, b, demo_frames=DEMO_FRAMES, ktjd_lut=None, ktjd_ga
     was_training = model.training
     model.train()
     c = cond_of(b)
-    for k in ("text", "joint_sem"):
+    # `probe_joint_sem=False` is for an arm that BUILDS no joint-description pathway (the flat
+    # baseline): differentiating through a tensor the graph never touched raises. Every other arm
+    # keeps it in the list, so a per-joint model whose description branch went dead still raises
+    # here instead of silently reporting a zero (codex 2026-09-10 #1).
+    probed = ["text"] + (["joint_sem"] if probe_joint_sem else [])
+    for k in probed:
         c[k] = c[k].detach().clone().requires_grad_(True)
     if ktjd_lut is not None:
         x_src, kt = ktjd_prep(b, ktjd_lut, ktjd_gammas)
@@ -172,13 +204,15 @@ def connectivity_probe(model, b, demo_frames=DEMO_FRAMES, ktjd_lut=None, ktjd_ga
     xin = x_src.detach().clone().requires_grad_(True)
     loss = cfm_loss(model, xin, is_target=b["is_target"], valid=b["valid"],
                     **(obj or {}), **kt, **c)
-    g_x, g_t, g_s = torch.autograd.grad(loss, [xin, c["text"], c["joint_sem"]])
+    grads = torch.autograd.grad(loss, [xin] + [c[k] for k in probed])
+    g_x, g_t = grads[0], grads[1]
     model.zero_grad(set_to_none=True)
     if not was_training:
         model.eval()
-    return {"demo": float(g_x[:, :demo_frames].norm()),
-            "target": float(g_x[:, demo_frames:].norm()),
-            "text": float(g_t.norm()), "joint_sem": float(g_s.norm())}
+    out = {"demo": float(g_x[:, :demo_frames].norm()),
+           "target": float(g_x[:, demo_frames:].norm()), "text": float(g_t.norm())}
+    out["joint_sem"] = float(grads[2].norm()) if probe_joint_sem else 0.0
+    return out
 
 
 def _calib_demo_drift(proto, run_demo_rest, run_demo_frames):
@@ -327,6 +361,20 @@ def main():
     ap.add_argument("--fk_warmup_steps", type=int, default=5000,
                     help="linear ramp of gamma_fk over the first N global steps (hy273 recipe); "
                          "only read when gamma_fk > 0")
+    ap.add_argument("--epoch_draws", type=int, default=0,
+                    help="draws per training epoch (0 = the corpus size, the historical default). The "
+                         "balanced sampler draws with replacement, so an epoch is a number of draws, not "
+                         "a pass; stating it lets an arm trained on a LARGER cut keep the control's "
+                         "steps per epoch -- and therefore the control's lr decay horizon, which is "
+                         "written in epochs -- instead of silently taking more of both.")
+    ap.add_argument("--rig_multiplicity", default="",
+                    help="RIG:N[,RIG:N] -- draw a named rig as if it were N rigs under --balance rig. For a corpus "
+                         "holding one topology with many rigs' worth of clips: uniform-over-rigs gives it 1/N of the "
+                         "samples, uniform-over-clips lets it take a quarter of the batch. Empty = unchanged draws.")
+    ap.add_argument("--flat_joints", type=int, default=0,
+                    help="train the flat padded-joint baseline instead of the per-joint model: one token per FRAME "
+                         "holding every joint's channels zero-padded to this many joints, no joint descriptions, no "
+                         "skeleton attention bias, no structural features (src/models/v2/dit_flat.py)")
     ap.add_argument("--struct_feats", action="store_true",
                     help="graph-v2 knife 1: structural joint features (rest offset/bone/depth/"
                          "children/leaf) added to joint tokens")
@@ -373,6 +421,12 @@ def main():
     ap.add_argument("--aug_sem_drop_p", type=float, default=0.0, help="description embeddings: P(zero the whole table)")
     ap.add_argument("--aug_stats_logsd", type=float, default=0.0, help="statistics: log-normal std factor sigma")
     ap.add_argument("--aug_stats_shift", type=float, default=0.0, help="statistics: mean shift sigma (in stds)")
+    ap.add_argument("--aug_bone_scale", type=float, default=0.0,
+                    help="kinematics-preserving: per-bone length factor uniform in [1-s, 1+s]; positions/velocities re-encoded by FK")
+    ap.add_argument("--aug_pool_frac", type=float, default=0.0,
+                    help="kinematics-preserving: max fraction of single-child interior joints pooled away (child re-parented; FK re-encoded)")
+    ap.add_argument("--aug_add_p", type=float, default=0.0,
+                    help="kinematics-preserving: P(insert one synthetic joint on a random bone, rigid with its parent)")
     ap.add_argument("--ktjd_gamma_calib", default="configs/ktjd17_gamma_calibration_v5.json",
                     help="versioned KTJD gamma calibration artifact (energies + gammas + hashes); "
                          "ktjd17 training REFUSES to start without it (codex round-S0)")
@@ -506,7 +560,8 @@ def main():
     a = ap.parse_args()
     aug_cfg = AugConfig(p=a.aug_p, drop_max_frac=a.aug_drop_max_frac, drop_mode=a.aug_drop_mode, rest_deg=a.aug_rest_deg,
                         sem_noise=a.aug_sem_noise, sem_drop_p=a.aug_sem_drop_p,
-                        stats_logsd=a.aug_stats_logsd, stats_shift=a.aug_stats_shift)
+                        stats_logsd=a.aug_stats_logsd, stats_shift=a.aug_stats_shift,
+                        bone_scale=a.aug_bone_scale, pool_frac=a.aug_pool_frac, add_p=a.aug_add_p)
     if aug_cfg.active and a.corpus != "ktjd17":
         raise SystemExit("[refuse] --aug_* is ktjd17-only (needs static_masks and the FK skeleton fields)")
     if aug_cfg.active and a.anchor == "rest":
@@ -855,6 +910,7 @@ def main():
     ds_tr = InContextPairs(base, names["train"], names["train"], object_types=types,
                            demo_frames=a.demo_frames, target_frames=a.target_frames,
                            balance_skeletons=(a.balance == "rig"), seed=a.seed,
+                           rig_multiplicity=_rig_multiplicity(a), epoch_draws=a.epoch_draws,
                            emit_fk_fields=(a.gamma_fk > 0 or a.gamma_vel > 0 or a.gamma_lock > 0),
                            emit_graph_v2=(a.struct_feats or a.dir_bias),
                            identity_p=a.identity_p, emit_ref_text=a.ref_text,
@@ -935,7 +991,24 @@ def main():
         raise SystemExit("[refuse] --anchor rest is redundant under rest-centering (the rest "
                          "pose IS the origin now); use --anchor none, or --anchor demo")
     in_ch = 17 if a.corpus == "ktjd17" else 13
-    if a.two_stage:
+    if a.flat_joints:
+        # the adapted-baseline arm: everything outside the denoiser -- corpus, cut, split, captions,
+        # rest-pose demonstration frame, objective, schedule, budget and the frozen evaluation -- is
+        # the control's, which is what the works we are positioned against mean by a fair comparison
+        for _bad, _why in (("two_stage", "a different denoiser"), ("struct_feats", "a skeleton input"),
+                           ("dir_bias", "a skeleton input"), ("ref_text", "a per-frame text pathway")):
+            if getattr(a, _bad):
+                raise SystemExit(f"[refuse] --flat_joints with --{_bad}: the flat baseline has no place for {_why}")
+        if a.geo_bias:
+            raise SystemExit("[refuse] --flat_joints needs --no_geo_bias: there is no joint axis to bias")
+        if a.freeze_zero_joint_sem:
+            raise SystemExit("[refuse] --flat_joints with --freeze_zero_joint_sem: the flat baseline builds no "
+                             "joint-description projection to zero and freeze")
+        from src.models.v2.dit_flat import FlatMotionDiT
+        model = FlatMotionDiT(in_ch=in_ch, max_joints=a.flat_joints, dim=a.dim, depth=a.depth,
+                              n_heads=a.heads, d_text=4096, grad_ckpt=a.grad_ckpt,
+                              qk_norm=a.qk_norm).to(dev)
+    elif a.two_stage:
         from src.models.v2.dit_motion import TwoStageInContextDiT
         model = TwoStageInContextDiT(in_ch=in_ch, dim=a.dim, depth=a.depth, n_heads=a.heads,
                                      root_dim=a.root_dim, root_depth=4,
@@ -1064,7 +1137,7 @@ def main():
                 "t_sampler", "v_space", "p_drop_text", "p_drop_demo", "p_drop_both",
                 "bf16", "warmup_steps", "wd", "gamma_fk", "fk_warmup_steps",
                 "struct_feats", "dir_bias", "ktjd_root", "anchor", "identity_p",
-                "two_stage", "root_dim", "gamma_vel", "gamma_lock", "gamma_acc", "ref_text",
+                "two_stage", "flat_joints", "rig_multiplicity", "epoch_draws", "root_dim", "gamma_vel", "gamma_lock", "gamma_acc", "ref_text",
                 "demo_rest", "ktjd_percell_stats", "qk_norm",
                 # (codex 2026-08-21 (A)2) the robustness knee and the clip threshold BOTH define
                 # the trajectory: resuming with a different one produces later epochs trained
@@ -1073,7 +1146,7 @@ def main():
                 "lr_scheduler", "eta_min_ratio", "lr_decay_epochs", "grad_ckpt", "epochs",
                 "artic_min", "artic_gate_after", "artic_gate_strikes", "val_every",
                 "aug_p", "aug_drop_max_frac", "aug_drop_mode", "aug_rest_deg", "aug_sem_noise", "aug_sem_drop_p",
-                "aug_stats_logsd", "aug_stats_shift",
+                "aug_stats_logsd", "aug_stats_shift", "aug_bone_scale", "aug_pool_frac", "aug_add_p",
                 # simplified-baseline knobs (codex baseline r1 #2): both define the arm
                 "geo_bias", "freeze_zero_joint_sem")
         core = ("dim", "depth", "heads", "batch", "lr", "seed", "data_root", "splits_dir",
@@ -1454,7 +1527,8 @@ def main():
                                     obj=dict(t_sampler=a.t_sampler, v_space=a.v_space,
                                              sigma_min=a.sigma_min, huber_delta=a.huber_delta),
                                     ktjd_lut=ktjd_lut,
-                                    ktjd_gammas=ktjd_gammas)
+                                    ktjd_gammas=ktjd_gammas,
+                                    probe_joint_sem=not a.flat_joints)
         base.random_caption = rc_saved
         fk_str = (f" | fk={vfk / max(vn, 1):.4f} fkdist={vfkd / max(vn, 1):.3f}bl"
                   if a.gamma_fk > 0 else "")
