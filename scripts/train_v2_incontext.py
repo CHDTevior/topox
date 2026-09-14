@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.distributed as dist
+import contextlib
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 
@@ -293,6 +294,10 @@ def main():
     ap.add_argument("--heads", type=int, default=8)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--batch", type=int, default=8)
+    ap.add_argument("--grad_accum", type=int, default=1,
+                    help="micro-batches of --batch per optimizer step (gradient accumulation). Each micro-batch is "
+                         "normalised on its own by cfm_loss, so R ranks x B x accum A weights every cell exactly as "
+                         "R*A ranks x B do; the lr schedule, warmup, FK ramp, spike guard and resync count optimizer steps")
     ap.add_argument("--epochs", type=int, default=400)
     ap.add_argument("--num_workers", type=int, default=4)
     ap.add_argument("--val_every", type=int, default=5)
@@ -584,6 +589,8 @@ def main():
         raise SystemExit(f"--ckpt_snapshot_keep must be >= 1 when snapshots are enabled "
                          f"(0 retains everything, negatives delete the file just written), got "
                          f"{a.ckpt_snapshot_keep}")
+    if a.grad_accum < 1:
+        raise SystemExit(f"[refuse] --grad_accum must be >= 1, got {a.grad_accum}")
     if not (np.isfinite(a.grad_spike_reject) and a.grad_spike_reject >= 0.0):
         raise SystemExit(f"[refuse] --grad_spike_reject must be finite and >= 0, got "
                          f"{a.grad_spike_reject}")
@@ -1143,7 +1150,7 @@ def main():
                 # the trajectory: resuming with a different one produces later epochs trained
                 # under settings nothing in the lineage records.
                 "huber_delta", "sigma_min", "grad_clip", "exclude_clips", "ktjd_gamma_calib",
-                "lr_scheduler", "eta_min_ratio", "lr_decay_epochs", "grad_ckpt", "epochs",
+                "lr_scheduler", "eta_min_ratio", "lr_decay_epochs", "grad_ckpt", "epochs", "grad_accum",
                 "artic_min", "artic_gate_after", "artic_gate_strikes", "val_every",
                 "aug_p", "aug_drop_max_frac", "aug_drop_mode", "aug_rest_deg", "aug_sem_noise", "aug_sem_drop_p",
                 "aug_stats_logsd", "aug_stats_shift", "aug_bone_scale", "aug_pool_frac", "aug_add_p",
@@ -1404,13 +1411,14 @@ def main():
                  "ktjd_pins": ktjd_pins} if a.corpus == "ktjd17" else {}),
              **({"world_size": int(os.environ["WORLD_SIZE"])} if ddp else {})},
             indent=2))
+        _accum_note = f" (x{a.grad_accum} micro-batches of B{a.batch} per step)" if a.grad_accum > 1 else ""
         if ddp:
             print(f"[train] {n_par/1e6:.2f}M params | T={a.demo_frames}+{a.target_frames} | "
                   f"B{a.batch}x{os.environ['WORLD_SIZE']} lr{a.lr} | "
-                  f"{len(dl_tr)} steps/epoch/rank", flush=True)
+                  f"{len(dl_tr) // a.grad_accum} steps/epoch/rank{_accum_note}", flush=True)
         else:
             print(f"[train] {n_par/1e6:.2f}M params | T={a.demo_frames}+{a.target_frames} | "
-                  f"B{a.batch} lr{a.lr} | {len(dl_tr)} steps/epoch", flush=True)
+                  f"B{a.batch} lr{a.lr} | {len(dl_tr) // a.grad_accum} steps/epoch{_accum_note}", flush=True)
 
     # ---------------- loop ----------------
     def apply_cfg_drops(b):
@@ -1645,7 +1653,9 @@ def main():
     # the two agree without a world-size factor. Fixed by --epochs: changing the epoch budget
     # mid-run would silently reshape the decay, which is why --epochs is resume-critical.
     _decay_ep = a.lr_decay_epochs if a.lr_decay_epochs > 0 else a.epochs
-    total_opt_steps = max(1, _decay_ep * len(dl_tr))
+    if len(dl_tr) < a.grad_accum:
+        raise SystemExit(f"[refuse] --grad_accum {a.grad_accum} exceeds the {len(dl_tr)} micro-batches of an epoch")
+    total_opt_steps = max(1, _decay_ep * (len(dl_tr) // a.grad_accum))   # optimizer steps, not micro-batches
     if is_main:
         print(f"[train] lr schedule: {a.lr_scheduler} | warmup {a.warmup_steps} -> "
               f"{total_opt_steps} decay steps ({_decay_ep} ep of {a.epochs})"
@@ -1660,6 +1670,7 @@ def main():
             dl_gen.manual_seed(a.seed + 7777 + ep)
         model.train(); t0, tot, n = time.time(), 0.0, 0
         g_sum, g_max = 0.0, 0.0
+        acc_i, acc_loss, window_bad = 0, 0.0, False   # gradient accumulation: micro-batches of the current step window, their mean loss, rejected?
         for b in dl_tr:
             b = to_dev(b, dev)
             # The anchor is BASE GEOMETRY, not a condition: UMO's source-centered base is
@@ -1711,29 +1722,61 @@ def main():
                 kt_kw.update(anchor_kw)          # built pre-drop, see the note above
             else:
                 x_in, kt_kw = b["x"], dict(gammas=KIMODO_GAMMAS)
-            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=a.bf16):
-                loss = cfm_loss(model, x_in, is_target=b["is_target"], valid=b["valid"],
-                                t_sampler=a.t_sampler, v_space=a.v_space, sigma_min=a.sigma_min, huber_delta=a.huber_delta,
-                                **kt_kw, **fk_kw, **cond_of(b))
-            bad = (~torch.isfinite(loss.detach())).float()
-            if ddp:
-                # The skip decision must be COLLECTIVE: one rank skipping backward while its peers
-                # run it deadlocks the DDP reducer at the next bucket sync. MAX-reduce the flag so
-                # every rank skips together whenever any rank saw a non-finite loss.
-                dist.all_reduce(bad, op=dist.ReduceOp.MAX)
-            if bad.item() > 0:
-                # STABILITY GUARD: skip the step loudly; a silent NaN would poison the weights and
-                # every ckpt after it. Abort the run if it becomes a pattern.
-                nonfinite += 1
-                opt.zero_grad(set_to_none=True)
-                if is_main:
-                    print(f"[WARN] non-finite loss at g{gstep} ep{ep} (#{nonfinite}) -- step "
-                          f"skipped on ALL ranks", flush=True)
-                if nonfinite >= 50:
-                    raise SystemExit("[FATAL] 50 non-finite losses -- training unstable, aborting")
-                gstep += 1
+            # GRADIENT ACCUMULATION (2026-09-14, held-out study: 2 ranks x B16 x accum 2 must weight every cell as the
+            # baseline's 4 ranks x B16 do). cfm_loss normalises each micro-batch on its own and DDP averages over
+            # ranks, so summing loss / accum over the micro-batches of a step gives the same per-cell weighting as
+            # accum x more ranks. A step is a FIXED window of a.grad_accum micro-batches: a window in which any
+            # micro-batch produced a non-finite loss is rejected as a whole, its remaining micro-batches are consumed
+            # without compute, and the attempted-step clock gstep advances once at the window boundary -- the same
+            # budget of attempted steps per epoch as accum x more ranks (codex accum r1 P2-2). Every decision at the
+            # window end (non-finite grad, spike, clip, step, resync, logging) is taken once per optimizer step.
+            last_micro = acc_i == a.grad_accum - 1
+            if window_bad:                                   # consuming the rest of a rejected window: no compute
+                acc_i += 1
+                if last_micro:
+                    acc_i, acc_loss, window_bad = 0, 0.0, False
+                    gstep += 1
                 continue
-            opt.zero_grad(set_to_none=True); loss.backward()
+            if acc_i == 0:
+                opt.zero_grad(set_to_none=True)
+            # DDP arms its reducer in the FORWARD, so no_sync has to cover forward and backward together (r1 P2-1);
+            # only the window's last micro-batch synchronises.
+            with (model.no_sync() if (ddp and not last_micro) else contextlib.nullcontext()):
+                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=a.bf16):
+                    loss = cfm_loss(model, x_in, is_target=b["is_target"], valid=b["valid"],
+                                    t_sampler=a.t_sampler, v_space=a.v_space, sigma_min=a.sigma_min, huber_delta=a.huber_delta,
+                                    **kt_kw, **fk_kw, **cond_of(b))
+                bad = (~torch.isfinite(loss.detach())).float()
+                if ddp:
+                    # The skip decision must be COLLECTIVE: one rank skipping backward while its peers
+                    # run it deadlocks the DDP reducer at the next bucket sync. MAX-reduce the flag so
+                    # every rank skips together whenever any rank saw a non-finite loss.
+                    dist.all_reduce(bad, op=dist.ReduceOp.MAX)
+                if bad.item() > 0:
+                    # STABILITY GUARD: skip the step loudly; a silent NaN would poison the weights and
+                    # every ckpt after it. Abort the run if it becomes a pattern.
+                    nonfinite += 1
+                    if ddp and last_micro and a.grad_accum > 1:
+                        # the synchronised forward armed the reducer: give it the backward it expects, then discard
+                        loss.backward()
+                    opt.zero_grad(set_to_none=True)
+                    window_bad = True                         # the micro-batches already accumulated go with it
+                    if is_main:
+                        print(f"[WARN] non-finite loss at g{gstep} ep{ep} (#{nonfinite}) -- step "
+                              f"skipped on ALL ranks", flush=True)
+                    if nonfinite >= 50:
+                        raise SystemExit("[FATAL] 50 non-finite losses -- training unstable, aborting")
+                    acc_i += 1
+                    if last_micro:
+                        acc_i, acc_loss, window_bad = 0, 0.0, False
+                        gstep += 1
+                    continue
+                (loss / a.grad_accum if a.grad_accum > 1 else loss).backward()
+            acc_loss += float(loss.detach()) / a.grad_accum
+            if not last_micro:
+                acc_i += 1
+                continue
+            acc_i, step_loss, acc_loss = 0, acc_loss, 0.0
             gn = torch.nn.utils.clip_grad_norm_(model.parameters(), a.grad_clip)
             # Gradient overflow can be non-finite even when the loss was finite (bf16 backward).
             # The decision must again be COLLECTIVE under DDP.
@@ -1793,10 +1836,10 @@ def main():
                         dist.broadcast(_p.data, src=0)
             gnf = float(gn)
             g_sum += gnf; g_max = max(g_max, gnf)
-            tot += float(loss.detach()); n += 1
+            tot += step_loss; n += 1
             gstep += 1
             if is_main and gstep % 200 == 0:
-                print(f"[g{gstep}] ep{ep} loss={float(loss.detach()):.4f} grad={gnf:.3f} "
+                print(f"[g{gstep}] ep{ep} loss={step_loss:.4f} grad={gnf:.3f} "
                       f"lr={opt.param_groups[0]['lr']:.2e}", flush=True)
             if a.val_every_steps > 0 and gstep % a.val_every_steps == 0:
                 run_validation(ep, at_epoch_end=False)
@@ -1832,6 +1875,11 @@ def main():
             gmax_t = torch.tensor([g_max], device=dev)
             dist.all_reduce(gmax_t, op=dist.ReduceOp.MAX)
             tot, n, g_sum, g_max = float(agg[0]), int(agg[1]), float(agg[2]), float(gmax_t[0])
+        if acc_i > 0:                      # a trailing partial accumulation never becomes a step (deterministic step count)
+            opt.zero_grad(set_to_none=True)
+            if is_main and ep == start_ep:
+                print(f"[train] {acc_i} trailing micro-batch(es) per epoch are dropped (epoch = {len(dl_tr) // a.grad_accum} steps)", flush=True)
+            acc_i, acc_loss, window_bad = 0, 0.0, False
         if is_main:
             print(f"=== epoch {ep} done in {time.time()-t0:.1f}s | train_flow={tot/max(n,1):.5f} "
                   f"| grad mean={g_sum/max(n,1):.3f} max={g_max:.3f} ===", flush=True)

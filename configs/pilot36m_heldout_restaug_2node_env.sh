@@ -5,13 +5,17 @@
 # three kinematics-preserving operations (bone length +-10 %, chain pooling, one synthetic joint), the latter re-encoded
 # by forward kinematics so the served sample stays FK-consistent. This file SOURCES the baseline arm's config and
 # overrides only what must differ (feedback_gate_must_share_the_launch_config): the node pair (flamingo01 + blossom03,
-# two H200 each, so BATCH 32 per rank keeps the baseline's global batch 128 = 2 x 4 x 16 at the same LR), the port,
-# OUT, the AUG_* values and the calibration measured under them.
+# two H200 each), the port, OUT, the AUG_* values and the calibration measured under them. The pair has 4 ranks where
+# the baseline has 8, so each rank takes TWO micro-batches of the baseline's B16 per optimizer step (--grad_accum 2):
+# cfm_loss normalises each micro-batch on its own and DDP averages over ranks, so the per-cell weighting, the global
+# batch (128), the optimizer steps per epoch (437) and the LR schedule are the baseline's exactly (codex aug r4 P2:
+# 4 x B32 would have weighted the grouped loss differently).
 _hoa_here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 _hoa_out=${OUT:-}; _hoa_port=${RDZV_PORT:-}        # capture the caller's overrides BEFORE the source (it exports both)
 _hoa_ja=${JOB_A:-}; _hoa_jb=${JOB_B:-}; _hoa_host=${RDZV_HOST:-}   # likewise the allocation ids and master address that _resume.sh rediscovers
 # the pair's geometry must be exported BEFORE the chain is sourced: the rest config honours ${GPUS_PER:-4} ${BATCH:-16} ${CPUS:-16}
-export GPUS_PER=2 BATCH=32 CPUS=8
+export GPUS_PER=2 BATCH=16 CPUS=8
+export GRAD_ACCUM=2                             # micro-batches per optimizer step (see above); the launcher passes --grad_accum
 # shellcheck source=pilot36m_heldout_rest_2node_env.sh
 source "$_hoa_here/pilot36m_heldout_rest_2node_env.sh"
 export OUT=${_hoa_out:-runs/v2_noik_pilot36m_heldout_restaug}
@@ -38,9 +42,10 @@ export AUG_BONE_SCALE=${AUG_BONE_SCALE:-0.1}
 export AUG_POOL_FRAC=${AUG_POOL_FRAC:-0.3}
 export AUG_ADD_P=${AUG_ADD_P:-0.5}
 
-# The calibration MUST have been measured under (REP_NORM=rest, this cut, this AugConfig, batch 32): the trainer compares
-# protocol.augmentation with its own AugConfig.protocol() and protocol.batch with --batch.
-export CALIB=${HELDOUT_RESTAUG_CALIB:-configs/pilot_animal_heldout_restaug_gamma_calibration_b32_v1.json}
+# The calibration MUST have been measured under (REP_NORM=rest, this cut, this AugConfig, batch 16 = the micro-batch the
+# loss normalises over): the trainer compares protocol.augmentation with its own AugConfig.protocol() and protocol.batch
+# with --batch; accumulation does not enter the protocol.
+export CALIB=${HELDOUT_RESTAUG_CALIB:-configs/pilot_animal_heldout_restaug_gamma_calibration_b16_v1.json}
 
 # defining flags are never droppable; EXTRA_APPEND adds to them
 export EXTRA="--rep_norm rest --aug_p $AUG_P --aug_drop_max_frac $AUG_DROP_MAX_FRAC --aug_drop_mode $AUG_DROP_MODE --aug_rest_deg $AUG_REST_DEG --aug_sem_noise $AUG_SEM_NOISE --aug_sem_drop_p $AUG_SEM_DROP_P --aug_stats_logsd $AUG_STATS_LOGSD --aug_stats_shift $AUG_STATS_SHIFT --aug_bone_scale $AUG_BONE_SCALE --aug_pool_frac $AUG_POOL_FRAC --aug_add_p $AUG_ADD_P ${EXTRA_APPEND:-}"

@@ -47,6 +47,7 @@ OUT=${OUT:?output dir}
 EPOCHS=${EPOCHS:-500}
 LR=${LR:?Goyal-scaled for global batch = BATCH x 2 x GPUS_PER}
 BATCH=${BATCH:-8}
+GRAD_ACCUM=${GRAD_ACCUM:-1}   # micro-batches of BATCH per optimizer step (the config sets it; 1 = no accumulation)
 # These H200 allocs carry 8 CPUs each. Requesting more does not queue -- srun retries forever
 # with "step creation temporarily disabled", which looks exactly like a hung launch (cost me a
 # 28-minute phantom calibration on 2026-08-21). Keep the request inside the alloc.
@@ -114,7 +115,7 @@ NCCL_HCA=${NCCL_IB_HCA:-mlx5_1}
 SMOKE=${SMOKE:-0}
 EXTRA=${EXTRA:-}
 case "$EXTRA" in *\'*|*\"*) echo "[orch] PREFLIGHT FAIL: EXTRA must not contain quotes"; exit 1;; esac
-for dup in --out --epochs --lr --batch --resume --corpus --ktjd_root --joint_sem \
+for dup in --out --epochs --lr --batch --grad_accum --resume --corpus --ktjd_root --joint_sem \
            --caption_cache --texts_json \
            --ktjd_percell_stats --ktjd_gamma_calib --exclude_clips --huber_delta \
            --dim --depth --lr_scheduler --lr_decay_epochs --eta_min_ratio --warmup_steps \
@@ -179,12 +180,14 @@ SMOKE_ARGS=""
 # with replacement, so a smoke that kept the real value would run the real number of steps (578, not two) over
 # --limit_train_clips clips: the budget the smoke exists to bound (codex 2026-09-10 r2 P2-3). SMOKE_ARGS is
 # placed AFTER $EXTRA on the command line, so this occurrence is the one argparse keeps.
-[ "$SMOKE" = 1 ] && SMOKE_ARGS="--epochs 1 --val_every 1000 --ckpt_every 1000 --limit_train_clips $(( BATCH * GPUS_PER * 2 * 2 )) --epoch_draws $(( BATCH * GPUS_PER * 2 * 2 ))"
+# x GRAD_ACCUM: with accumulation an optimizer step consumes GRAD_ACCUM micro-batches per rank, and the smoke must still
+# take two steps so the accumulation window resets at least once (codex accum r1 P2-3)
+[ "$SMOKE" = 1 ] && SMOKE_ARGS="--epochs 1 --val_every 1000 --ckpt_every 1000 --limit_train_clips $(( BATCH * GPUS_PER * 2 * 2 * GRAD_ACCUM )) --epoch_draws $(( BATCH * GPUS_PER * 2 * 2 * GRAD_ACCUM ))"
 RES_ARG=""; [ -n "$RESUME" ] && RES_ARG="--resume $RESUME"
 
 echo "[orch] $(date -u +%FT%TZ) master=$MASTER_NODE($JOB_A) worker=$WORKER_NODE($JOB_B)"
 echo "[orch] rdzv=$RDZV_HOST:$RDZV_PORT nccl=$NCCL_IFACE/$NCCL_HCA (intra-node P2P/SHM ON)"
-echo "[orch] world=$((2*GPUS_PER)) batch=$BATCH/rank -> global $((2*GPUS_PER*BATCH)) lr=$LR epochs=$EPOCHS"
+echo "[orch] world=$((2*GPUS_PER)) batch=$BATCH/rank x accum $GRAD_ACCUM -> global $((2*GPUS_PER*BATCH*GRAD_ACCUM)) lr=$LR epochs=$EPOCHS"
 echo "[orch] out=$OUT resume=${RESUME:-<none>} smoke=$SMOKE"
 echo "[orch] root=$KTJD_ROOT"
 echo "[orch] percell=$PERCELL calib=$CALIB"
@@ -231,7 +234,7 @@ run_rank() {  # $1 jobid  $2 node_rank
       --lr_scheduler $LR_SCHED --lr_decay_epochs $LR_DECAY_EPOCHS --eta_min_ratio $ETA_MIN_RATIO \
       $([ "$GRAD_CKPT" = 1 ] && echo --grad_ckpt) $([ "$COMPILE" = 1 ] && echo --compile) \
       $([ "$QK_NORM" = 1 ] && echo --qk_norm) \
-      --out $OUT --epochs $EPOCHS --lr $LR --batch $BATCH $RES_ARG $SMOKE_ARGS" \
+      --out $OUT --epochs $EPOCHS --lr $LR --batch $BATCH --grad_accum $GRAD_ACCUM $RES_ARG $SMOKE_ARGS" \
     2>&1 | stdbuf -oL sed "s/^/[r$2] /"
 }
 

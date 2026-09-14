@@ -43,8 +43,8 @@ srun --jobid="${CALIB_JOBID:?alloc id for the calibration}" --overlap -N1 -n1 \
      --gres=gpu:"${CALIB_GRES:-2}" --mem=64G --cpus-per-task=8 \
   /usr/bin/env python scripts/_gpu_gate_exec.py "${GPU_IDX:-0}" \
     scripts/_measure_ktjd17_gamma_calibration_view.py \
-  > runs/_heldout/_calib/restaug_b32_v1.log 2>&1
+  > runs/_heldout/_calib/restaug_b16_v1.log 2>&1
 rc=$?
 echo "[calib] rc=$rc"
-[ -s "$CALIB_OUT" ] && echo "[calib] wrote $CALIB_OUT" || echo "[calib] NO ARTIFACT -- see runs/_heldout/_calib/restaug_b32_v1.log"
+[ -s "$CALIB_OUT" ] && echo "[calib] wrote $CALIB_OUT" || echo "[calib] NO ARTIFACT -- see runs/_heldout/_calib/restaug_b16_v1.log"
 exit $rc
