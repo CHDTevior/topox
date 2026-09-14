@@ -40,9 +40,14 @@ class Ktjd17T2MEvalDataset(torch.utils.data.Dataset):
         self.base = base
         self.Tt = int(max_frames)
         names = ktjd17_split_names(base.root, exclude=exclude)
-        if split not in names:
-            raise ValueError(f"split {split!r} not in corpus (has {sorted(names)})")
-        wanted = names[split]
+        if split == "all" and "all" not in names:
+            # every accepted clip the cut leaves, whatever its manifest split: the held-out-rig cohort (2026-09-14) is
+            # scored on all clips of rigs the model never saw, train- and val-split alike
+            wanted = names["train"] | names["val"]
+        else:
+            if split not in names:
+                raise ValueError(f"split {split!r} not in corpus (has {sorted(names)})")
+            wanted = names[split]
         self._idx, self._official = [], {}
         for i, r in enumerate(base._rows):
             cid = str(r["clip_id"])

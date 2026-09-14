@@ -47,6 +47,25 @@ def parse_args():
                     help="enable TF32 tensor-core matmul and cuDNN TF32 (user 2026-09-07: fastest path, small numeric change accepted). "
                          "Without it the process keeps PyTorch's defaults (matmul TF32 off, cuDNN TF32 on). Both flags are recorded in "
                          "protocol.runtime and --merge refuses shards whose runtime differs, so --merge must be run with the same flag")
+    ap.add_argument("--eval_exclude", default=None,
+                    help="score this checkpoint on the cohort THIS exclusion artifact defines instead of the one it "
+                         "trained under. The frozen protocol is 3,899 animal validation clips; a checkpoint trained on "
+                         "a different cut (the animal+human arm trains on all 312 rigs) has a different validation "
+                         "split and could not otherwise be compared with the arms in the paper. Only the exclusion may "
+                         "differ: the corpus root, its generation, its manifest and every pin the checkpoint's own "
+                         "cut reproduces are still checked, the cohort is recorded in the report and in every shard's "
+                         "metadata, and shards generated under different cohorts refuse to merge. It does not "
+                         "authenticate the motion or skeleton bytes, which nothing in this pipeline does.")
+    ap.add_argument("--eval_split", choices=("val", "all"), default="val",
+                    help="which clips of the (cohort) cut are the targets: 'val' = the manifest's validation split (the frozen "
+                         "protocol, 3,899 clips); 'all' = every clip the cut leaves, train- and val-split alike -- for a "
+                         "cohort of rigs the checkpoint never trained on (the held-out-rig study, 2026-09-14), where every "
+                         "clip is unseen. Requires --eval_exclude; the target count is then that cohort's and is recorded "
+                         "as protocol_val_n in every shard and the report, so shards of different cohorts refuse to merge.")
+    ap.add_argument("--strict_acceptance", action="store_true",
+                    help="score R-precision against the caption's own clip only, the way the standard protocol "
+                         "does, instead of also accepting the clips the corpus marks as equivalent. Scoring only: "
+                         "the samples, the plan and the pools are untouched.")
     ap.add_argument("--encode_batch", type=int, default=64)
     ap.add_argument("--pool", type=int, default=64)   # protocol pin (user 2026-09-07: 主表暂定用 64; was 32 until then)
     # Exact multi-GPU split (2026-09-03): the 302M model needs ~7.3 h for the 3,899-clip val on one
@@ -59,7 +78,7 @@ def parse_args():
     ap.add_argument("--shard", type=int, default=0, help="which shard THIS process generates (0-based)")
     ap.add_argument("--save_gen", default=None,
                     help="write this shard's generated samples + metadata to an .npz and exit (no scoring)")
-    ap.add_argument("--protocol_variant", default=None, choices=[None, "steps", "pool"],
+    ap.add_argument("--protocol_variant", default=None, choices=[None, "steps", "pool", "seed"],
                     help="EXPLICIT departure from the frozen protocol: 'steps' allows --steps != 20 (a sampling-cost sweep). "
                          "Every report and shard from such a run is stamped protocol.variant='steps' and must never be "
                          "placed in a table with frozen-protocol numbers without saying so (user 2026-09-06: efficiency "
@@ -94,13 +113,22 @@ def parse_args():
         # with a pool that differs from the pin and fits the protocol set.
         if a.pool == 64:
             raise SystemExit("[refuse] --protocol_variant pool requires --pool != 64; the frozen protocol needs no variant flag")
-        if a.pool < 2 or a.pool > PROTOCOL_VAL_N:
-            raise SystemExit(f"[refuse] pool={a.pool}: a retrieval pool needs 2..{PROTOCOL_VAL_N} candidates")
-        if a.steps != 20:
-            raise SystemExit("[refuse] one protocol variant at a time: a pool-size sweep scores frozen-protocol (20-step) samples")
+        if a.pool < 2:
+            raise SystemExit(f"[refuse] pool={a.pool}: a retrieval pool needs at least 2 candidates")
+        if a.steps != 20 or a.seed != 42:
+            raise SystemExit("[refuse] one protocol variant at a time: a pool-size sweep scores frozen-protocol (20-step, seed-42) samples")
         if not a.merge:
             raise SystemExit("[refuse] --protocol_variant pool re-scores saved frozen-protocol shards (--merge); it never generates")
-    if a.seed != 42:
+    if a.protocol_variant == "seed":
+        # A REPETITION of the frozen protocol at another sampling seed, for the confidence interval the retrieval
+        # protocol of Guo et al. asks for. It generates a different sample set, so it is stamped as a variant and
+        # never merges with, or sits unlabelled beside, the seed-42 numbers; everything else -- steps, guidance,
+        # pool, plan, evaluator -- is the frozen protocol.
+        if a.seed == 42:
+            raise SystemExit("[refuse] --protocol_variant seed requires --seed != 42; the frozen protocol needs no variant flag")
+        if a.steps != 20 or a.pool != 64:
+            raise SystemExit("[refuse] one protocol variant at a time: a seed repetition runs the frozen 20 steps at pool 64")
+    elif a.seed != 42:
         raise SystemExit(f"[refuse] protocol pin is seed=42 (generation noise and pool shuffling); got {a.seed}. No variant covers "
                          "the seed: a different seed is a different sample set and cannot sit next to frozen-protocol numbers")
     if a.steps < 1:
@@ -115,10 +143,20 @@ def parse_args():
     if a.nshards > 1 and not a.save_gen:
         raise SystemExit("[refuse] a shard generates a partial val set and can only be scored after --merge; "
                          "pass --save_gen to store it")
+    if a.eval_split == "all" and not a.eval_exclude:
+        raise SystemExit("[refuse] --eval_split all is for a cohort the checkpoint never trained on; name it with --eval_exclude")
+    if a.eval_split == "all" and a.score_subset:
+        raise SystemExit("[refuse] --score_subset (the clean validation subset) is defined on the manifest's validation split only; "
+                         "a held-out cohort (--eval_split all) has no clean-subset artifact")
     return a
 
 
 PROTOCOL_VAL_N = 3899   # frozen val size; a different corpus cut must re-pin on purpose
+EXPECTED_N = PROTOCOL_VAL_N   # what a full set of generated clips must count: the pin, or under --eval_split all the cohort's size
+
+# The pins that the CUT decides, and the only ones --eval_exclude may move: the exclusion artifact, and the
+# caption payload digest, which is taken over the served rows and so changes with every clip the cut adds.
+COHORT_DETERMINED_PINS = {"exclusion", "caption_payload_sha256"}
 
 # Generation-code fingerprints of ALREADY SAVED shard sets that this script may still score. Every entry must be
 # audited: the diff between that state and the current files must not change what generate_all / the sampler / the
@@ -127,6 +165,71 @@ PROTOCOL_VAL_N = 3899   # frozen val size; a different corpus cut must re-pin on
 # entry). Merge records which fingerprint a shard set carries so a report always names the generation code it came from
 # (codex 2026-09-06 P1-1; exception wording codex 2026-09-07 r2 P3).
 LEGACY_SOURCE_FINGERPRINTS = {
+    "52844c100322a89edf7de8f6e2a64d6e7ecad5e5c4cc260b6eee010bc8efd213":
+        "the state of 2026-09-14 after the incontext_pairs.py augmentation-call edit named in the a197efc9 / 71b13210 "
+        "entries and before this script's --eval_split edit; no shard carries it. Only that edit of this script separates "
+        "it from the live state, and it changes no frozen-protocol sample.",
+    "ae9ce7fb71d4d31d845bb0d719f074817897f591449abc28d12b485ff91b134f":
+        "the FLAT sibling of the entry below: the same pre-seed-edit state with src/models/v2/dit_flat.py in "
+        "the hashed file list, which is how the adapted baseline's arm fingerprints. Like it, it reaches this "
+        "registry through scoring_source_fingerprint rather than through any shard -- the three strict reports "
+        "of the flat arm (runs/_attrib/mdmflat_ep{050,075,100}_strict.json, the last row of the "
+        "ablation table) record it -- and like it, the seed edit that separates it from the live state touched "
+        "argument parsing only (codex 2026-09-12 reconstructed both hashes and confirmed the projection, "
+        "encoding, FID and acceptance code byte-identical). No shard carries it.",
+    "4872588bc2865cb1e7bd142ae1bf3fa1fa2c72f0a078c4f585d5905a0ee497f6":
+        "the state this script was in when the strict re-scores of the paper's tables were written, i.e. before "
+        "the --protocol_variant seed edit of 2026-09-11. It reaches the registry through "
+        "scoring_source_fingerprint rather than through any shard: 42 reports record it there, including "
+        "runs/v2_noik_run12_896_r1acc/gen_eval_ep289_pool64_strict.json, and "
+        "scripts/_eval_nonparametric_baselines_ktjd17.py refuses a report whose scoring code is neither live nor "
+        "audited. The seed edit added argument parsing and a refusal; the projection, encoding, FID and acceptance "
+        "code it scores with are unchanged (codex 2026-09-12, which reconstructed this hash and executed that gate "
+        "against the real report, refusing before the entry and accepting after). No shard carries it.",
+    "a197efc9dd2baab1191813a4a98aeb9c7a6d581779c6f6aa868849f6b2e09d0e":
+        "the state that generated the seed repetitions of Table 1 (2026-09-12). Registered while those shards were still "
+        "current, so that a later edit of this script cannot strand them (codex 2026-09-11); at registration it differed "
+        "from the live fingerprint only inside this registry. Since 2026-09-14 the live state differs from it in two "
+        "hashed files: this script (the --eval_split edit: argument parsing, the target-set choice -- identical under the "
+        "default 'val' -- and metadata) and src/data/incontext_pairs.py (the augmentation call site: two keyword "
+        "arguments to make_transform and the joint count read from the transform, len(tr.keep) -> tr.n_joints -- code "
+        "that runs only when augmentation is enabled, which the eval dataset never does; rig_multiplicity / epoch_draws "
+        "were already in that state). Frozen-protocol generation for the checkpoints those shards score is unchanged. "
+        "Shards: runs/_final_geneval/seedstudy (303M ep289 at seeds 7/13/23/31/42) and runs/_final_geneval/seedstudy36m "
+        "(36M ep399 at the same five), 32 shards in all.",
+    "d88c9f20a8d3aa0a8289e10d8880234386a37cd5c857c9c3f24c3ed618489b64":
+        "state before the three default-off dataset edits of 2026-09-10/11 for the animal+human arm: the per-rig draw "
+        "multiplicity and the explicit epoch length in src/data/incontext_pairs.py, and the exclusion provenance of a "
+        "zero-clip cut in src/data/ktjd17_incontext.py. With all three absent -- every arm scored before them -- "
+        "self.draw_types is the rig list itself and _pick indexes it with the same RNG call, __len__ is len(self.index), "
+        "and a cut that drops clips (every cut used so far) takes the branch it always took. SERVED-ITEM SNAPSHOT on the "
+        "live 311-rig animal cut, pre vs post: 489 fields over 24 items and 3 collated batches of 8, ZERO differing "
+        "(runs/_human/_probe/served_items_{pre,post}.npz, served_items_equivalence.json, probe "
+        "runs/_human/_probe/served_items_equivalence.py). Shards: every per-joint pass up to and including "
+        "runs/_final_geneval/attrib2.",
+    "af7efebcaa51bdb17e647481dfd5a14d2619506cda662ad36beaf6d43f22204f":
+        "the same state for the FLAT arm: the identical file set plus src/models/v2/dit_flat.py, whose bytes have not "
+        "changed since (an earlier note here claimed a docstring edit; codex 2026-09-10 r1 reconstructed this hash from "
+        "the current dit_flat.py, so the difference from the live fingerprint is the dataset edits described above and "
+        "nothing in the flat denoiser). Same served-item snapshot applies. Shards: runs/_final_geneval/mdmflat.",
+    "5987b14ba2291f4934fb4ef0b4d7f1cab81ee55b78269afe5aa9a282536d20da":
+        "state of 2026-09-10 between the adapted-baseline hook and the fix that made "
+        "src/models/v2/dit_flat.py fingerprint only the arm that loads it. It differs from the "
+        "current state in that one file, which no per-joint checkpoint touches: load_gen reaches it "
+        "only when the checkpoint carries flat_joints. Generation plan, sampler, model and datasets "
+        "identical. Shards: runs/_final_geneval/attrib/nocalib_ep0075 shards 2 and 3.",
+    "71b13210c8585c8f7f5ca49b388d96a25c82779e3c2e82efffedd61a6071980e":
+        "the generation state at commit 603d51d (2026-09-10 01:28 +0100); the tf32probe shards "
+        "(runs/_final_geneval/tf32probe/*/shard0.npz) carry it. Between it and the live state three hashed files changed: "
+        "(i) this script -- the 2026-09-11/12 edits (--protocol_variant seed, the --eval_exclude cohort override, the "
+        "flat arm's fingerprint, strict acceptance scoring) and the 2026-09-14 --eval_split edit, all argument parsing, "
+        "scoring or metadata, none of them the sampler or the plan under the frozen protocol; (ii) "
+        "src/data/incontext_pairs.py -- rig_multiplicity / epoch_draws constructor arguments (2026-09-11/12; the eval "
+        "dataset passes neither) and the 2026-09-14 augmentation call site (two keyword arguments and len(tr.keep) -> "
+        "tr.n_joints, reached only with augmentation on, which the eval dataset never enables); (iii) "
+        "src/data/ktjd17_incontext.py -- provenance_exclusion is recorded for a cut that drops zero clips (codex "
+        "2026-09-10 r1 P2-3), which changes the provenance digest only for such a cut and no arm's cut is one. "
+        "Frozen-protocol generation for the tf32probe checkpoints is unchanged.",
     "b09b82e020f9088ab24b6fa5093516c0dc42fe23343231ba2a465198919951fc":
         "state of the 2026-09-08 representation-view hook, before the rest-normalisation branch of src/data/ktjd17_incontext.py "
         "(a new normalization='rest' code path; percell/scale_only checkpoints serve byte-identical items) and before the "
@@ -187,6 +290,14 @@ def load_gen_model(ck, dev):
         raise SystemExit(f"[refuse] gen ckpt corpus={ca.get('corpus')!r}; this eval is KTJD-17 only")
     if bool(ca.get("two_stage", False)):
         raise SystemExit("[refuse] two_stage ckpts are not wired here")
+    if int(ca.get("flat_joints", 0) or 0):
+        from src.models.v2.dit_flat import FlatMotionDiT
+        model = FlatMotionDiT(in_ch=17, max_joints=int(ca["flat_joints"]), dim=ca["dim"],
+                              depth=ca["depth"], n_heads=ca["heads"], d_text=4096,
+                              qk_norm=bool(ca.get("qk_norm", False))).to(dev)
+        model.load_state_dict(ck["model"])
+        model.eval()
+        return model, ca
     model = InContextMotionDiT(
         in_ch=17, dim=ca["dim"], depth=ca["depth"], n_heads=ca["heads"],
         d_text=4096, d_joint_sem=4096,
@@ -233,7 +344,8 @@ def generate_all(model, ca, base, names, dev, a):
               emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)))
     if PK["demo_rest"] and PK["demo_frames"] != 1:
         raise SystemExit("[refuse] demo_rest ckpt with demo_frames != 1")
-    ds = InContextPairs(base, names["val"], names["train"], object_types=None,
+    tg = eval_targets(names, a)
+    ds = InContextPairs(base, tg, demo_names(names, tg, a), object_types=None,
                         balance_skeletons=False, seed=a.seed, **PK)
     anc_mode = str(ca.get("anchor", "none"))
     rest_lut = {}
@@ -296,15 +408,28 @@ def generate_all(model, ca, base, names, dev, a):
             print(f"[gen-eval] generated {n_done}/{n_mine}", flush=True)
     if len(gen_by_clip) != n_mine:
         raise SystemExit(f"[refuse] generated {len(gen_by_clip)} != this shard's targets {n_mine}")
-    if a.nshards == 1 and len(gen_by_clip) != PROTOCOL_VAL_N:
-        raise SystemExit(f"[refuse] protocol val is {PROTOCOL_VAL_N}, generated {len(gen_by_clip)}")
+    if a.nshards == 1 and len(gen_by_clip) != EXPECTED_N:
+        raise SystemExit(f"[refuse] protocol val is {EXPECTED_N}, generated {len(gen_by_clip)}")
     print(f"[gen-eval] generated {len(gen_by_clip)} clips", flush=True)
     return gen_by_clip
 
 
+def eval_targets(names, a):
+    """the clips generated for: the cut's val split (frozen protocol) or, under --eval_split all, every clip it leaves"""
+    return (names["val"] | names["train"]) if a.eval_split == "all" else names["val"]
+
+
+def demo_names(names, targets, a):
+    """the demo pool: the cut's train split (frozen protocol); under --eval_split all the targets ARE the cut, so the pool is
+    the same set object (InContextPairs' self-demo bucket: the rest-frame demo never reads a clip from it, and a motion
+    demo would come from the same never-trained-on cohort)"""
+    return targets if a.eval_split == "all" else names["train"]
+
+
 def make_pairs(ds_args, base, names, a):
     ca = ds_args
-    return InContextPairs(base, names["val"], names["train"], object_types=None, balance_skeletons=False, seed=a.seed,
+    tg = eval_targets(names, a)
+    return InContextPairs(base, tg, demo_names(names, tg, a), object_types=None, balance_skeletons=False, seed=a.seed,
                           demo_rest=bool(ca.get("demo_rest", False)), emit_ref_text=bool(ca.get("ref_text", False)),
                           demo_frames=int(ca.get("demo_frames", 1)), target_frames=int(ca["target_frames"]),
                           emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)))
@@ -334,7 +459,7 @@ def generation_plan(ds, base, a):
             "shard_clips_sha256": {k: hashlib.sha256("\n".join(v).encode()).hexdigest() for k, v in shard_clips.items()}}
 
 
-def source_fingerprint(anchor="none"):
+def source_fingerprint(anchor="none", flat=False):
     """sha256 over the code that turns (ckpt, data, seed) into samples: this script, the sampler/model, the
     pair dataset and the corpus adapter -- and the trainer module whenever the checkpoint's anchor mode makes
     generate_all() call its ktjd_anchor() (codex 2026-09-03 r2; anchor=none checkpoints never touch it)."""
@@ -343,6 +468,11 @@ def source_fingerprint(anchor="none"):
     files = ["scripts/_eval_v2_gen_in_evalspace.py", "src/models/v2/dit_motion.py",
              "src/data/incontext_pairs.py", "src/data/ktjd17_incontext.py",
              "src/data/ktjd17_anytop13.py"]     # the representation-view inverse is scoring code (codex 2026-09-08 r2 #2)
+    if flat:
+        # the adapted baseline's denoiser is sampling code FOR THAT ARM ONLY. Listing it
+        # unconditionally made an edit to it invalidate the in-flight shards of a per-joint arm that
+        # never loads it -- which is exactly what happened to nocalib ep75 on 2026-09-10.
+        files.append("src/models/v2/dit_flat.py")
     if str(anchor) != "none":
         files.append("scripts/train_v2_incontext.py")
     h = hashlib.sha256()
@@ -366,11 +496,22 @@ def shard_meta(a, ca, gen_sha, base, plan):
                                      sort_keys=True, default=str).encode()).hexdigest()
     return {"gen_ckpt_sha256": gen_sha, "gen_ckpt": a.gen_ckpt, "seed": a.seed, "steps": a.steps,
             "cfg_text": a.cfg_text, "gen_batch": a.gen_batch, "nshards": a.nshards, "shard": a.shard,
-            "ktjd_root": str(ca["ktjd_root"]), "exclude_clips": str(ca.get("exclude_clips") or ""),
+            "ktjd_root": str(ca["ktjd_root"]),
+            "exclude_clips": str(a.eval_exclude or ca.get("exclude_clips") or ""),
+            "gen_ckpt_exclude_clips": str(ca.get("exclude_clips") or ""),
+            # present only when the override is in force: a shard written without the flag must stay byte-identical
+            # to what this script wrote before the flag existed (codex 2026-09-11 r5)
+            **({"cohort_override": True} if (a.eval_exclude and
+                                             str(a.eval_exclude) != str(ca.get("exclude_clips") or "")) else {}),
             "base_provenance_sha256": prov, "plan_sha256": plan["plan_sha256"],
             "shard_clips_sha256": plan["shard_clips_sha256"][a.shard], "shard_n_clips": len(plan["shard_clips"][a.shard]),
-            "n_val_rigs": len(plan["rigs"]), "protocol_val_n": PROTOCOL_VAL_N,
-            "source_fingerprint": source_fingerprint(ca.get("anchor", "none")), "runtime": runtime_fingerprint(),
+            "n_val_rigs": len(plan["rigs"]), "protocol_val_n": EXPECTED_N,
+            # present only under --eval_split all: a val-split shard stays byte-identical to what this script wrote before
+            **({"eval_split": "all"} if a.eval_split == "all" else {}),
+            **({"cohort_caption_payload_sha256": str(a.cohort_pin)} if getattr(a, "cohort_pin", None) else {}),
+            "source_fingerprint": source_fingerprint(ca.get("anchor", "none"),
+                                                     flat=bool(ca.get("flat_joints", 0))),
+            "runtime": runtime_fingerprint(),
             "protocol_variant": a.protocol_variant,
             "rank_env": os.environ.get("RANK"),
             "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"}
@@ -397,7 +538,8 @@ def merge_shards(paths, want_meta, plan, expect_shape=None):
     gen_by_clip: dict[str, np.ndarray] = {}
     seen_shards, nshards, loaded, plan_sets = set(), None, [], None
     invariant = ("gen_ckpt_sha256", "seed", "steps", "cfg_text", "gen_batch", "ktjd_root", "exclude_clips",
-                 "base_provenance_sha256", "plan_sha256", "n_val_rigs", "protocol_val_n", "protocol_variant")
+                 "base_provenance_sha256", "plan_sha256", "n_val_rigs", "protocol_val_n", "protocol_variant", "eval_split",
+                 "cohort_caption_payload_sha256")
     # the pool variant changes scoring only: the shards it scores were generated under the frozen protocol (variant None)
     want_meta = {**want_meta, "protocol_variant": None} if want_meta.get("protocol_variant") == "pool" else want_meta
     fp_seen = set()
@@ -484,8 +626,8 @@ def merge_shards(paths, want_meta, plan, expect_shape=None):
             print(f"[gen-eval] merged shard {k_}/{nshards} from {p} ({len(got)} clips, {meta.get('device')}, sha {fsha[:12]})", flush=True)
     if seen_shards != set(range(nshards or 0)):
         raise SystemExit(f"[refuse] shards present {sorted(seen_shards)} != required {list(range(nshards or 0))}")
-    if len(gen_by_clip) != PROTOCOL_VAL_N:
-        raise SystemExit(f"[refuse] merged shards hold {len(gen_by_clip)} clips, protocol val is {PROTOCOL_VAL_N}")
+    if len(gen_by_clip) != EXPECTED_N:
+        raise SystemExit(f"[refuse] merged shards hold {len(gen_by_clip)} clips, protocol val is {EXPECTED_N}")
     return gen_by_clip, nshards, loaded
 
 
@@ -581,7 +723,12 @@ def main():
           f"sha256={gen_sha[:16]}) cfg_text={a.cfg_text} steps={a.steps}", flush=True)
 
     root = ca["ktjd_root"]
-    excl = ca.get("exclude_clips") or None
+    train_excl = ca.get("exclude_clips") or None
+    excl = a.eval_exclude or train_excl
+    cohort_override = bool(a.eval_exclude) and str(a.eval_exclude) != str(train_excl or "")
+    if cohort_override:
+        print(f"[gen-eval] COHORT OVERRIDE: scoring on {a.eval_exclude} (the checkpoint trained under "
+              f"{train_excl}). Everything except the exclusion stays pinned to the checkpoint.", flush=True)
     base = Ktjd17Base(root, caption_emb_cache=ca["caption_cache"],
                       joint_semantics=ca["joint_sem"], texts_json=ca["texts_json"],
                       percell_stats=ca.get("ktjd_percell_stats",
@@ -590,6 +737,64 @@ def main():
     pins_ck = ck.get("ktjd_pins") or {}
     live = {**base.provenance, "exclusion": base.provenance_exclusion}
     drift = sorted(k for k, v in pins_ck.items() if k in live and live[k] != v)
+    if cohort_override and drift and set(drift) <= COHORT_DETERMINED_PINS and "exclusion" in drift:
+        # The two pins a CUT decides: the exclusion artifact itself, and the caption payload digest, which
+        # covers the served rows and therefore every clip the cut adds or removes (codex 2026-09-10 r2 P1-1:
+        # allowing only "exclusion" made the mixed-to-animal evaluation this flag exists for refuse outright).
+        # Everything else the pins cover -- corpus generation, gains, schema, texts, joint semantics, per-cell
+        # statistics, target parameterisation -- must still match exactly.
+        #
+        # What the pins of a frozen PARENT corpus do not carry is the manifest: that key is written only for
+        # derived views, and adding it here would break every existing checkpoint, whose resume compares pins
+        # in both directions (codex r2 P1-2). The manifest is verified instead through the calibration artifact
+        # the checkpoint already pins by sha, which records the manifest bytes and the training clip ids the run
+        # was gated on -- so a corpus whose manifest was edited under the same path cannot be scored here.
+        #
+        # WHAT THIS DOES NOT REACH, so that nothing here reads as a guarantee it cannot give: the motion arrays
+        # and the skeleton files themselves carry no trusted hash anywhere in this pipeline, so an edited joint
+        # offset or an edited frame passes these checks exactly as it passes the ordinary no-override path
+        # (codex 2026-09-10 r4, demonstrated on both). That hole is the pipeline's, not the override's, and
+        # closing it needs a payload-hash inventory of the corpus, which does not exist yet.
+        cal_path = ca.get("ktjd_gamma_calib")
+        cal_pin = pins_ck.get("gamma_calib_sha256")
+        if not cal_path or not cal_pin:
+            raise SystemExit("[refuse] --eval_exclude needs the checkpoint's calibration artifact to verify the "
+                             "manifest, and this checkpoint pins none (ktjd_gamma_calib / gamma_calib_sha256)")
+        cal_bytes = Path(cal_path).read_bytes()
+        cal_have = hashlib.sha256(cal_bytes).hexdigest()
+        if cal_have != cal_pin:
+            raise SystemExit(f"[refuse] {cal_path} hashes {cal_have[:16]}, the checkpoint pins {str(cal_pin)[:16]}")
+        cal_manifest = (json.loads(cal_bytes).get("hashes") or {}).get("manifest_sha256")
+        live_manifest = hashlib.sha256((Path(root) / "manifests" / "clips.jsonl").read_bytes()).hexdigest()
+        if not cal_manifest or cal_manifest != live_manifest:
+            raise SystemExit(f"[refuse] the corpus manifest hashes {live_manifest[:16]}, the checkpoint's "
+                             f"calibration was measured against {str(cal_manifest)[:16]}")
+        cal_train_ids = (json.loads(cal_bytes).get("hashes") or {}).get("train_ids_sha256")
+        # "exclusion drifted" does not by itself prove that only MEMBERSHIP changed: exclusion provenance
+        # carries the artifact's path, so a second artifact at another path would let an edited caption cache
+        # ride out on the waiver of caption_payload_sha256 (codex 2026-09-10 r3 P1-1, demonstrated on a
+        # doctored embedding). So rebuild the checkpoint's OWN cut and require that it reproduces every pin it
+        # was written with -- under that cut nothing is waived, and an edited payload has nowhere to hide --
+        # and require the training clip ids to be the ones the calibration was measured on.
+        train_base = Ktjd17Base(root, caption_emb_cache=ca["caption_cache"],
+                                joint_semantics=ca["joint_sem"], texts_json=ca["texts_json"],
+                                percell_stats=ca.get("ktjd_percell_stats",
+                                                     "data/ktjd17_percell_stats_v1.npz"),
+                                exclude_clips=train_excl, normalization=str(ca.get("rep_norm", "percell")))
+        train_live = {**train_base.provenance, "exclusion": train_base.provenance_exclusion}
+        back = sorted(k for k, v in pins_ck.items() if k in train_live and train_live[k] != v)
+        if back:
+            raise SystemExit(f"[refuse] under its OWN cut ({train_excl}) this checkpoint no longer reproduces "
+                             f"its pins: {back} -- the corpus behind the cohort override is not the one it trained on")
+        train_ids_now = hashlib.sha256(
+            "\n".join(sorted(ktjd17_split_names(root, exclude=train_excl)["train"])).encode()).hexdigest()
+        if not cal_train_ids or cal_train_ids != train_ids_now:
+            raise SystemExit(f"[refuse] the training split now hashes {train_ids_now[:16]}, the checkpoint's "
+                             f"calibration was measured on {str(cal_train_ids)[:16]}")
+        print(f"[gen-eval] cohort override: pins {drift} differ by request; the checkpoint's own cut "
+              f"reproduces every pin, manifest {live_manifest[:12]} and training ids {train_ids_now[:12]} "
+              f"verified through {cal_path}", flush=True)
+        drift = []
     if drift:
         raise SystemExit(f"[refuse] data drift vs gen-ckpt pins: {drift}")
     if "representation" in live and pins_ck.get("representation") != live["representation"]:
@@ -597,6 +802,31 @@ def main():
         raise SystemExit(f"[refuse] the live data is representation view {live['representation']!r} but the checkpoint pins "
                          f"{pins_ck.get('representation')!r}")
     names = ktjd17_split_names(root, exclude=excl)
+    if a.eval_split == "all":
+        global EXPECTED_N
+        EXPECTED_N = len(names["val"] | names["train"])
+        print(f"[gen-eval] --eval_split all: the cohort's {EXPECTED_N} clips ({len(names['val'])} val + "
+              f"{len(names['train'])} train of the cut) are the targets; protocol_val_n is pinned to that count", flush=True)
+    if a.protocol_variant == "pool" and a.pool > EXPECTED_N:
+        raise SystemExit(f"[refuse] pool={a.pool} exceeds the {EXPECTED_N} clips being scored")
+    # A cohort artifact may pin the caption payload it was defined over (codex eval r1 P2-1): the checkpoint's own-cut checks
+    # authenticate none of the cohort's rows, and shard provenance binds only what generation first read. A held-out cohort
+    # (--eval_split all) must carry the pin; any artifact that carries one is held to it, at generation and at merge.
+    cohort_pin = None
+    if a.eval_split == "all" and not cohort_override:
+        raise SystemExit(f"[refuse] --eval_split all needs a cohort the checkpoint never trained on; {a.eval_exclude} is its "
+                         f"own training cut (58,943-clip evaluation of trained-on data is not a held-out measurement)")
+    if cohort_override:
+        cohort_def = json.loads(Path(a.eval_exclude).read_text())
+        cohort_pin = cohort_def.get("caption_payload_sha256")
+        if a.eval_split == "all" and not cohort_pin:
+            raise SystemExit(f"[refuse] the cohort artifact {a.eval_exclude} carries no caption_payload_sha256 pin")
+        if cohort_pin and str(live.get("caption_payload_sha256")) != str(cohort_pin):
+            raise SystemExit(f"[refuse] the cohort's caption payload {str(live.get('caption_payload_sha256'))[:16]} differs from the "
+                             f"pin {str(cohort_pin)[:16]} in {a.eval_exclude}")
+        if cohort_pin:
+            print(f"[gen-eval] cohort caption payload {str(cohort_pin)[:16]} verified against {a.eval_exclude}", flush=True)
+    a.cohort_pin = cohort_pin
 
     # process-per-GPU sharding assumes the rank-0 RNG stream of InContextPairs ([seed, rank]); a
     # rank-setting launcher would silently pick other demos per shard (codex 2026-09-03 P0-2)
@@ -661,10 +891,10 @@ def main():
                            joint_semantics=ca["joint_sem"], texts_json=ca["texts_json"],
                            percell_stats=eval_stats,
                            exclude_clips=excl, normalization="percell")
-    eval_ds = Ktjd17T2MEvalDataset(base_eval, "val", max_frames=240, exclude=excl)
-    if len(eval_ds) != PROTOCOL_VAL_N:
-        raise SystemExit(f"[refuse] eval val has {len(eval_ds)} clips, protocol pins "
-                         f"{PROTOCOL_VAL_N}")
+    eval_ds = Ktjd17T2MEvalDataset(base_eval, "all" if a.eval_split == "all" else "val", max_frames=240, exclude=excl)
+    if len(eval_ds) != EXPECTED_N:
+        raise SystemExit(f"[refuse] eval {a.eval_split} has {len(eval_ds)} clips, protocol pins "
+                         f"{EXPECTED_N}")
     keep = None; subset_rec = None
     if a.score_subset:
         raw = Path(a.score_subset).read_bytes(); sub = json.loads(raw)
@@ -761,6 +991,11 @@ def main():
     # re-scoring (the evaluator-validation controls) can prove it scored the same clips in the same order (codex controls r5 P1)
     eval_order_sha = hashlib.sha256("\n".join(str(m) for m in meta["motion_id"]).encode()).hexdigest()
     report = {"protocol": {"val_n": n, "pool": a.pool, "cfg_text": a.cfg_text, "subset": subset_rec,
+                           "strict_acceptance": bool(a.strict_acceptance),
+                           "cohort_exclude_clips": str(excl or ""),
+                           "gen_ckpt_exclude_clips": str(train_excl or ""),
+                           "cohort_override": bool(cohort_override),
+                           "eval_split": a.eval_split, "eval_n": EXPECTED_N,
                            "eval_order_sha256": eval_order_sha,
                            "variant": a.protocol_variant,
                            "gen_normalization": base.normalization,
@@ -772,8 +1007,32 @@ def main():
                            "eval_ckpt": a.eval_ckpt, "eval_ckpt_sha256": eval_sha,
                            "note": "PZ-only/16ch/T=240; pools chunk dataset order like "
                                    "_eval_evaluator_sanity.py"}}
+    if a.eval_split == "all":
+        # the composition of the pools this cohort is scored in (codex eval r1 P3-6): pools are consecutive chunks of the
+        # evaluation order, so a rig with fewer clips than a pool shares pools, and a caption that appears twice in a pool
+        # caps strict R@1 for both of its queries (identical text embeddings cannot be told apart)
+        from collections import Counter
+        clip2rig_e = {str(r["clip_id"]): str(r["rig_id"]) for r in base_eval._rows}
+        P = a.pool; npool_c = n // P
+        pools_rigs = Counter(); dup_q = 0; dup_groups = 0
+        for k in range(npool_c):
+            sl = slice(k * P, (k + 1) * P)
+            pools_rigs[len({clip2rig_e[str(m)] for m in meta["motion_id"][sl]})] += 1
+            cc = Counter(meta["caption_text"][sl])
+            dup_q += sum(v for v in cc.values() if v > 1)          # queries that share their caption with another clip of the pool
+            dup_groups += sum(1 for v in cc.values() if v > 1)     # each such group can still score ONE correct query (codex eval r2 P2-1)
+        tree = (json.loads(Path(a.eval_exclude).read_text()).get("rigs") or {})
+        by_rig = Counter(clip2rig_e[str(m)] for m in meta["motion_id"])
+        report["cohort"] = {"n_clips": int(n), "n_scored_in_pools": int(npool_c * P), "n_dropped_remainder": int(n - npool_c * P),
+                            "pools_by_rig_count": {str(k): int(v) for k, v in sorted(pools_rigs.items())},
+                            "queries_with_identical_caption_in_pool": int(dup_q), "identical_caption_groups_in_pools": int(dup_groups),
+                            "strict_r1_ceiling_from_identical_captions": float(1.0 - (dup_q - dup_groups) / max(1, npool_c * P)),
+                            "rigs": {r: {"n_clips": int(c), "tree": tree.get(r, "unknown")} for r, c in sorted(by_rig.items())}}
+        print(f"[gen-eval] cohort: {npool_c} pools of {P} over {n} clips ({n - npool_c * P} dropped); pools by rig count "
+              f"{dict(pools_rigs)}; {dup_q} queries share a caption with another clip of their pool "
+              f"(strict R@1 ceiling {report['cohort']['strict_r1_ceiling_from_identical_captions']:.4f})", flush=True)
     for tag, me in (("text_to_gen", me_gen), ("text_to_gt_ceiling", me_gt)):
-        rr, npool = avg_over_pools(te, me, meta, a.pool, masked=True, shuffled=False, gen=gpool)
+        rr, npool = avg_over_pools(te, me, meta, a.pool, masked=not a.strict_acceptance, shuffled=False, gen=gpool)
         used = npool * a.pool
         report[tag] = {"rprec": rr, "n_pools": npool, "n_used": used}
         print(f"[gen-eval] {tag:<19} R@1={rr[1]:.3f} R@2={rr[2]:.3f} R@3={rr[3]:.3f} "
