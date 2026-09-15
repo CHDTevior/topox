@@ -248,7 +248,7 @@ def fk_ktjd_consistency_loss(pred_norm, mean, std, std_floor, parents, offsets, 
 
 
 def ktjd_dynamics_losses(pred_norm, x1_norm, mean, std, std_floor, offsets, n_joints, frame_mask,
-                         contact_on=None, want_diag=True):
+                         contact_on=None, want_diag=True, lock_denominator=None):
     """UMO's anti-degenerate pair, ported to KTJD-17 (2026-08-20 frozen-pose fix).
 
     UMO/HY273 carries FOUR terms Eq.1 does not, two of which exist specifically to make a frozen
@@ -272,7 +272,11 @@ def ktjd_dynamics_losses(pred_norm, x1_norm, mean, std, std_floor, offsets, n_jo
 
     pred_norm/x1_norm [B,T,J,17]; mean/std [B,J,>=17]; offsets [B,J,3] rest bone offsets;
     n_joints [B]; frame_mask [B,T] real target frames; contact_on [B,T,J] bool (GT contact) or
-    None to skip foot_lock. Returns (vel_term, lock_term, diag_articulation_ratio, n_windows); the
+    None to skip foot_lock. lock_denominator [B] float or None: a sample whose contact pairs were
+    PRUNED by the skeleton augmentation (ktjd17_augment mode one_of) carries its PRE-pruning pair
+    count, and its foot_lock mean divides by that count instead of the surviving pairs, so a pruned
+    pair removes its demand without re-weighting the survivors (codex 2026-09-15 unimate r6/r7);
+    0 or None = the surviving pairs, byte-identical to before. Returns (vel_term, lock_term, diag_articulation_ratio, n_windows); the
     count is how many windows contributed a ratio, so the caller can average without zero-imputing
     static-GT batches. The diagnostic is
     the predicted POSE-RELATIVE (root-subtracted) articulation speed over GT's, computed only over
@@ -330,8 +334,11 @@ def ktjd_dynamics_losses(pred_norm, x1_norm, mean, std, std_floor, offsets, n_jo
             if contact_on is not None:
                 c = contact_on[b].index_select(0, idx)[:, :Jb]             # [F,J] bool
                 pair = c[1:] & c[:-1]
-                if bool(pair.any()):
-                    lock_t = lock_t + (dp ** 2 * pair[..., None]).sum() / pair.sum().clamp_min(1)
+                den = None
+                if lock_denominator is not None and float(lock_denominator[b]) > 0:
+                    den = lock_denominator[b].to(dp.device).float()        # the pre-pruning pair count (see the docstring)
+                if den is not None or bool(pair.any()):
+                    lock_t = lock_t + (dp ** 2 * pair[..., None]).sum() / (den if den is not None else pair.sum().clamp_min(1))
                     nl += 1
         # Return the COUNT alongside the mean (codex round-S3): a batch whose GT does not
         # articulate produces NO ratio, and folding its 0.0 into a running mean zero-imputes it

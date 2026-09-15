@@ -90,6 +90,9 @@ def fk_pack_of(b):
     if "R_rest_global" in b:
         pack["kind"] = "ktjd17"
         pack["R_rest_global"] = b["R_rest_global"]
+    if "lock_denominator" in b:
+        # skeleton augmentation mode one_of: the pre-pruning contact-pair count of an augmented sample (0 = not augmented)
+        pack["lock_denominator"] = b["lock_denominator"]
     return pack
 
 
@@ -214,6 +217,22 @@ def connectivity_probe(model, b, demo_frames=DEMO_FRAMES, ktjd_lut=None, ktjd_ga
            "target": float(g_x[:, demo_frames:].norm()), "text": float(g_t.norm())}
     out["joint_sem"] = float(grads[2].norm()) if probe_joint_sem else 0.0
     return out
+
+
+def calib_arm_model_drift(calib: dict, want: dict, require_uniform: bool):
+    """The uniform arm's artifact was measured ON A MODEL: it must be THIS arm's model, recorded with all four conditioning
+    fields, or the mechanism check and the acceleration diagnostic certify a denoiser that still has the ingredients the arm
+    removed (codex baseline r4 #2). Returns the refusal text, or None. Only the uniform arm compares: a calibrated arm is
+    bound to its artifact by the pinned sha and by the calibration runner's own check, and some arms share another arm's
+    artifact on purpose (the flat arm trains on the nodesc control's weights; codex 2026-09-15 unimate r4 P1-2), while
+    artifacts older than the conditioning fields record the architecture only (codex unimate r3 P1)."""
+    if not require_uniform:
+        return None
+    arm = (calib.get("protocol", {}).get("verify", {}) or {}).get("arm_model") or {}
+    got = {k: arm.get(k) for k in want}
+    if got != want:
+        return f"was measured on a model with {got}, this run builds {want} -- re-measure it with the matching ARM_* conditioning"
+    return None
 
 
 def _calib_demo_drift(proto, run_demo_rest, run_demo_frames):
@@ -432,6 +451,10 @@ def main():
                     help="kinematics-preserving: max fraction of single-child interior joints pooled away (child re-parented; FK re-encoded)")
     ap.add_argument("--aug_add_p", type=float, default=0.0,
                     help="kinematics-preserving: P(insert one synthetic joint on a random bone, rigid with its parent)")
+    ap.add_argument("--aug_mode", choices=("joint", "one_of"), default="joint",
+                    help="'joint': every enabled --aug_* perturbation on every augmented sample; 'one_of': UniMate's rule -- one of "
+                         "add / remove / pool / scale per augmented sample with UniMate's own rates (src.data.ktjd17_augment.ONE_OF); "
+                         "needs --aug_drop_mode tips and --aug_bone_scale > 0, every other --aug_* 0")
     ap.add_argument("--ktjd_gamma_calib", default="configs/ktjd17_gamma_calibration_v5.json",
                     help="versioned KTJD gamma calibration artifact (energies + gammas + hashes); "
                          "ktjd17 training REFUSES to start without it (codex round-S0)")
@@ -566,7 +589,7 @@ def main():
     aug_cfg = AugConfig(p=a.aug_p, drop_max_frac=a.aug_drop_max_frac, drop_mode=a.aug_drop_mode, rest_deg=a.aug_rest_deg,
                         sem_noise=a.aug_sem_noise, sem_drop_p=a.aug_sem_drop_p,
                         stats_logsd=a.aug_stats_logsd, stats_shift=a.aug_stats_shift,
-                        bone_scale=a.aug_bone_scale, pool_frac=a.aug_pool_frac, add_p=a.aug_add_p)
+                        bone_scale=a.aug_bone_scale, pool_frac=a.aug_pool_frac, add_p=a.aug_add_p, mode=a.aug_mode)
     if aug_cfg.active and a.corpus != "ktjd17":
         raise SystemExit("[refuse] --aug_* is ktjd17-only (needs static_masks and the FK skeleton fields)")
     if aug_cfg.active and a.anchor == "rest":
@@ -725,7 +748,8 @@ def main():
         # resolve() outside the repo root (codex 2026-09-02 round 4)
         _REPO = Path(__file__).resolve().parents[1]
         _CALIB_SCRIPTS = {(_REPO / x).resolve() for x in ("scripts/_measure_ktjd17_gamma_calibration.py",
-                                                          "scripts/_measure_ktjd17_gamma_calibration_view.py")}
+                                                          "scripts/_measure_ktjd17_gamma_calibration_view.py",
+                                                          "scripts/_measure_ktjd17_gamma_calibration_view_v2.py")}
         _rel = str(calib["hashes"].get("code_script", "scripts/_measure_ktjd17_gamma_calibration.py"))
         _calib_script = _REPO / _rel
         if (Path(_rel).is_absolute() or ".." in Path(_rel).parts        # no escape-and-return paths
@@ -836,15 +860,18 @@ def main():
             if str(calib.get("protocol", {}).get("gamma_solve")) != "uniform":
                 raise SystemExit(f"[refuse] --require_uniform_gammas: {a.ktjd_gamma_calib} records gamma_solve="
                                  f"{calib.get('protocol', {}).get('gamma_solve')!r}, not 'uniform'")
-            # the artifact's evidence was measured ON A MODEL: for this arm it must be THIS arm's model, or the mechanism check
-            # and the acceleration diagnostic certify a denoiser that still has the ingredients we removed (codex baseline r4 #2)
-            _arm = (calib.get("protocol", {}).get("verify", {}) or {}).get("arm_model", {}) or {}
-            _want = {"struct_feats": bool(a.struct_feats), "dir_bias": bool(a.dir_bias), "geo_bias": bool(a.geo_bias),
-                     "freeze_zero_joint_sem": bool(a.freeze_zero_joint_sem)}
-            _got = {k: _arm.get(k) for k in _want}
-            if _got != _want:
-                raise SystemExit(f"[refuse] --require_uniform_gammas: {a.ktjd_gamma_calib} was measured on a model with "
-                                 f"{_got}, this run builds {_want} -- re-measure it with the matching ARM_* conditioning")
+        elif "gamma_solve" in calib.get("protocol", {}) and str(calib["protocol"]["gamma_solve"]) != "kimodo":
+            # the calibrated arms train with the Kimodo-implied shares; an artifact measured with GAMMA_SOLVE=uniform
+            # (all-one gammas) would otherwise train a different objective under the same flags (codex 2026-09-15
+            # unimate r1 P1: an inherited GAMMA_SOLVE reaches the measurer). Artifacts older than the field were all
+            # measured before the uniform option existed.
+            raise SystemExit(f"[refuse] {a.ktjd_gamma_calib} records gamma_solve={calib['protocol']['gamma_solve']!r}; "
+                             "a calibrated arm needs 'kimodo' (the uniform arm passes --require_uniform_gammas)")
+        _drift = calib_arm_model_drift(calib, {"struct_feats": bool(a.struct_feats), "dir_bias": bool(a.dir_bias),
+                                               "geo_bias": bool(a.geo_bias), "freeze_zero_joint_sem": bool(a.freeze_zero_joint_sem)},
+                                       bool(a.require_uniform_gammas))
+        if _drift:
+            raise SystemExit(f"[refuse] {a.ktjd_gamma_calib} {_drift}")
         calib_huber = float(calib.get("protocol", {}).get("huber_delta", 0.0))
         if abs(calib_huber - a.huber_delta) > 1e-9:
             raise SystemExit(f"[refuse] gamma calibration measured the objective at huber_delta="
@@ -1153,7 +1180,7 @@ def main():
                 "lr_scheduler", "eta_min_ratio", "lr_decay_epochs", "grad_ckpt", "epochs", "grad_accum",
                 "artic_min", "artic_gate_after", "artic_gate_strikes", "val_every",
                 "aug_p", "aug_drop_max_frac", "aug_drop_mode", "aug_rest_deg", "aug_sem_noise", "aug_sem_drop_p",
-                "aug_stats_logsd", "aug_stats_shift", "aug_bone_scale", "aug_pool_frac", "aug_add_p",
+                "aug_stats_logsd", "aug_stats_shift", "aug_bone_scale", "aug_pool_frac", "aug_add_p", "aug_mode",
                 # simplified-baseline knobs (codex baseline r1 #2): both define the arm
                 "geo_bias", "freeze_zero_joint_sem")
         core = ("dim", "depth", "heads", "batch", "lr", "seed", "data_root", "splits_dir",

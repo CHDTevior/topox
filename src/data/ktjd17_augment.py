@@ -65,6 +65,54 @@ AUG_VERSION_KIN = "ktjd17_skel_aug_v2"  # + bone_scale / pool_frac / add_p (FK r
 STATS_Z_CLIP = 3.0            # standard-normal draws of the statistics perturbation are clipped to +-3 sigma
 STATS_LOGSD_MAX = 1.0         # exp(+-3) at most: the effective scale stays within [e^-3, e^3] of the rig's
 STATS_SHIFT_MAX = 3.0
+AUG_VERSION_ONE_OF = "ktjd17_skel_aug_v3.6_one_of"   # UniMate's rule: ONE kinematic operation per augmented sample; v3.1 =
+#                                                       UniMate's rotation semantics for pool / add (ONE_OF_ROTATION_RULE);
+#                                                       v3.2 = the rotation cells of recomposed rows re-enter (ONE_OF_REENTRY);
+#                                                       v3.3 / v3.4 = contact flags pruned on the recomposed rows (ONE_OF_CONTACT);
+#                                                       v3.5 = the foot-lock term keeps the pre-pruning pair count (ONE_OF_LOCK_DEN);
+#                                                       v3.6 = the recomposed rows' contact cells re-enter too (ONE_OF_REENTRY)
+ONE_OF_CONTACT = "pruned_on_recomposed_rows_where_displacement_grows"   # apply_motion, pool / add only: a served contact flag on a
+#                                                       RECOMPOSED row (the synthetic joint's subtree, rows below a pooled joint)
+#                                                       is cleared at frame t where the joint's re-encoded forward displacement
+#                                                       exceeds its original one by more than ONE_OF_CONTACT_ABS mean bone
+#                                                       lengths: a joint the recomposition swung is no longer a locked target
+#                                                       of the foot-lock term. Every other flag is carried over: the scale op
+#                                                       moves the joints by amounts the bone factors set (empirically its lock
+#                                                       stays near the clip's own, the test's scale reproducer), and pruning it
+#                                                       removed the planted feet and raised the term's mean (codex-r6). The
+#                                                       corpus flags are not reproducible from the served channels (codex-r5
+#                                                       diagnostic: 34% of cells disagree with the schema's height / speed rule),
+#                                                       so they are never re-derived.
+ONE_OF_CONTACT_ABS = 0.05      # in mean bone lengths per frame (1.5 bone lengths per second at 30 fps): a deleted or duplicated
+#                                articulation swings a foot by several times that per frame, a bone-scale wobble by far less
+ONE_OF_LOCK_DEN = "pre_pruning_pairs"   # the dataset serves the window's pre-pruning contact-pair count (lock_denominator) and the
+#                                         foot-lock term (fk_torch.ktjd_dynamics_losses) divides by it, so pruning a pair removes its
+#                                         demand without re-weighting the surviving pairs (codex-r6 / r7)
+ONE_OF_REENTRY = "rotation_and_contact_cells_of_recomposed_rows"   # make_transform: a rotation or contact cell excluded as a
+#                                                       constant on a row whose rest-delta is recomposed becomes valid with the
+#                                                       channel's serving scale (its rotation is recomposed, its contact flag may
+#                                                       be pruned; a cell the trainer projects to its constant would undo either)
+ONE_OF_ROTATION_RULE = "unimate_local_slots"          # apply_motion: a pooled joint's articulation deleted, the added joint
+#                                                       duplicates its parent's parent-relative delta (their slot copies);
+#                                                       recorded so an artifact measured under the earlier rule cannot match
+# UniMate's own constants (outside_docs/UniMate/unimate/dataset/mixture/{dataset.py,augmentations.py}): leaves removed at a
+# rate uniform in [0.05, 0.15] of the leaves, at most 3; single-child joints pooled at a rate uniform in [0.1, 0.3], at least
+# 1; both picks weighted by bone_length^-0.5 (shorter bones first); one joint added at alpha ~ U(0.3, 0.7) along a random
+# bone plus a bone-aligned ellipsoid displacement (truncated half-normal radius, sigma 0.5 of the axial semi-axis = the bone
+# length; lateral semi-axes 0.5 of it); every bone scaled by U[1-s, 1+s]. The op is drawn uniformly from the four; the
+# "no-op" candidate of UniMate's five-way draw is the dataset's 1-p. Recorded in the protocol so a calibration or a
+# checkpoint binds them.
+ONE_OF = dict(remove_rate=[0.05, 0.15], remove_cap=3, pool_rate=[0.1, 0.3], pool_min=1, select_alpha=0.5,
+              add_alpha=[0.3, 0.7], add_sigma=0.5, add_lateral=0.5)
+ONE_OF_OPS = ("add", "remove", "pool", "scale")
+# what this port keeps of OUR representation on top of UniMate's rule (recorded in the protocol so the arm binds them):
+# the root and the target clip's contact joints are never removed or pooled; under the rest normalisation the position
+# mean of a re-encoded sample is the transformed rest pose (the rest demo keeps normalising to zero; UniMate keeps the
+# source rows' statistics); the world-velocity channels are re-encoded from the FK'd positions (UniMate leaves its
+# velocity channels untouched); the added joint's rest rotation, mask and statistics follow apply_motion's synthetic-row
+# rule.
+ONE_OF_DEVIATIONS = ["protected_root_and_contact_joints", "rest_norm_mean_is_transformed_rest", "velocity_reencoded",
+                     "contact_pruned_on_recomposed_rows", "synthetic_row_rule"]
 
 
 @dataclass(frozen=True)
@@ -81,12 +129,17 @@ class AugConfig:
     bone_scale: float = 0.0      # kinematics-preserving: per-bone length factor uniform in [1-bone_scale, 1+bone_scale]
     pool_frac: float = 0.0       # kinematics-preserving: fraction of single-child interior joints pooled away, uniform in [0, max]
     add_p: float = 0.0           # kinematics-preserving: probability of inserting one synthetic joint on a random bone
+    mode: str = "joint"          # "joint": every enabled perturbation on every augmented sample; "one_of": UniMate's rule --
+    #                              one of add / remove / pool / scale per augmented sample with UniMate's rates (ONE_OF),
+    #                              bone_scale the magnitude of scale, drop_mode "tips", every other field 0
 
     def __post_init__(self):
         if self.drop_mode not in ("any", "tips"):
             raise ValueError(f"AugConfig.drop_mode must be 'any' or 'tips', got {self.drop_mode!r}")
+        if self.mode not in ("joint", "one_of"):
+            raise ValueError(f"AugConfig.mode must be 'joint' or 'one_of', got {self.mode!r}")
         for k, v in asdict(self).items():
-            if k == "drop_mode":
+            if k in ("drop_mode", "mode"):
                 continue
             if not np.isfinite(v) or v < 0:
                 raise ValueError(f"AugConfig.{k} must be finite and >= 0, got {v!r}")
@@ -100,6 +153,16 @@ class AugConfig:
         if self.p > 0 and not any((self.drop_max_frac, self.rest_deg, self.sem_noise, self.sem_drop_p,
                                    self.stats_logsd, self.stats_shift, self.bone_scale, self.pool_frac, self.add_p)):
             raise ValueError("AugConfig.p > 0 but every perturbation is 0 -- nothing to apply")
+        if self.mode == "one_of":
+            if self.drop_mode != "tips":
+                raise ValueError("AugConfig.mode 'one_of' removes leaves only (UniMate): drop_mode must be 'tips'")
+            if self.bone_scale <= 0:
+                raise ValueError("AugConfig.mode 'one_of' needs bone_scale > 0 (the magnitude of its scale operation)")
+            if any((self.drop_max_frac, self.rest_deg, self.sem_noise, self.sem_drop_p, self.stats_logsd, self.stats_shift,
+                    self.pool_frac, self.add_p)):
+                raise ValueError("AugConfig.mode 'one_of' draws one of add / remove / pool / scale per sample with UniMate's "
+                                 "own rates (ONE_OF); drop_max_frac, pool_frac, add_p and the rest / statistics / "
+                                 "description fields must be 0")
 
     @property
     def active(self) -> bool:
@@ -112,6 +175,12 @@ class AugConfig:
         if not self.active:
             return None
         d = asdict(self)
+        mode = d.pop("mode")                              # absent from the v1 / v2 records (their checkpoints keep matching)
+        if mode == "one_of":
+            return {"version": AUG_VERSION_ONE_OF, "mode": mode, "p": d["p"], "drop_mode": d["drop_mode"],
+                    "bone_scale": d["bone_scale"], "ops": list(ONE_OF_OPS), **ONE_OF, "rotation_rule": ONE_OF_ROTATION_RULE,
+                    "reentry": ONE_OF_REENTRY, "contact": ONE_OF_CONTACT, "contact_abs_bl": ONE_OF_CONTACT_ABS,
+                    "lock_denominator": ONE_OF_LOCK_DEN, "deviations": list(ONE_OF_DEVIATIONS)}
         kin = {k: d.pop(k) for k in ("bone_scale", "pool_frac", "add_p")}
         if any(kin.values()):
             return {"version": AUG_VERSION_KIN, **d, **kin, "stats_z_clip": STATS_Z_CLIP}
@@ -149,6 +218,46 @@ def _random_rotation(rng, max_deg: float) -> np.ndarray:
     return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * (K @ K)
 
 
+def _weighted_pick(rng, cands: np.ndarray, offsets: np.ndarray, n: int) -> list[int]:
+    """UniMate's bone_length_weighted_sample: `n` of `cands` without replacement, weight bone_length^-select_alpha
+    (shorter bones first); `offsets[j]` is joint j's rest bone to its parent."""
+    cands = np.asarray(cands, dtype=np.int64)
+    n = min(int(n), len(cands))
+    if n <= 0:
+        return []
+    bl = np.maximum(np.linalg.norm(offsets[cands], axis=-1), 1e-8)
+    w = bl ** (-float(ONE_OF["select_alpha"]))
+    return [int(j) for j in rng.choice(cands, size=n, replace=False, p=w / w.sum())]
+
+
+def _ellipsoid_displacement(rng, bone_offset: np.ndarray, sigma: float, lateral_ratio: float) -> np.ndarray:
+    """UniMate's sample_ellipsoid_gaussian: a displacement inside the bone-aligned ellipsoid (axial semi-axis = the bone
+    length, lateral semi-axes = lateral_ratio of it), a uniform direction on the sphere times a truncated half-normal
+    radius (sigma, cut at 1)."""
+    L = float(np.linalg.norm(bone_offset))
+    if L < 1e-8:
+        return np.zeros(3)
+    while True:
+        d = rng.uniform(-1.0, 1.0, size=3)
+        nd = float(np.linalg.norm(d))
+        if 0 < nd <= 1:
+            d /= nd
+            break
+    while True:
+        r = abs(float(rng.normal(0.0, sigma)))
+        if r <= 1:
+            break
+    scaled = (r * d) * np.array([L, L * lateral_ratio, L * lateral_ratio])
+    e1 = bone_offset / L
+    ref = np.array([0.0, 1.0, 0.0])
+    if abs(float(np.dot(e1, ref))) > 0.9:
+        ref = np.array([1.0, 0.0, 0.0])
+    e2 = np.cross(e1, ref)
+    e2 /= np.linalg.norm(e2)
+    e3 = np.cross(e1, e2)
+    return np.column_stack([e1, e2, e3]) @ scaled
+
+
 @dataclass
 class SkeletonTransform:
     keep: np.ndarray            # [Jk] original indices of the kept ORIGINAL joints, ascending (keep[0] == 0)
@@ -170,6 +279,16 @@ class SkeletonTransform:
     sem_drop: bool
     reencode: bool = False      # positions / velocities are recomputed by FK (bone scaling, pooling or addition happened)
     fps: float = 30.0
+    op: str | None = None       # mode "one_of": the operation drawn for this sample (add / remove / pool / scale)
+    unimate_rot: bool = False   # mode "one_of" pool / add: UniMate's rotation semantics -- apply_motion recomposes the served
+    #                             rest-deltas through the new tree from every ORIGINAL joint's parent-relative delta (a pooled
+    #                             joint's articulation is deleted, the added joint duplicates its parent's); needs the original
+    #                             tree and the rig's statistics on every original row
+    recomposed: np.ndarray | None = None   # [J'] bool (unimate_rot only): rows whose rest-delta the recomposition changes -- the
+    #                                        synthetic joint and its subtree, rows with a pooled original ancestor
+    par0: np.ndarray | None = None      # [J] original parents (unimate_rot only)
+    mu_all: np.ndarray | None = None    # [J,17] the rig's serving statistics on every original joint (unimate_rot only)
+    sd_all: np.ndarray | None = None
 
     @property
     def n_joints(self) -> int:
@@ -197,7 +316,10 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
     """One sample's transform. `contact_joints` [J] bool marks joints that touch the ground in the target clip
     (protected from dropping and pooling); `mu`/`sd` [J,17] are the rig's serving statistics; `fps` is the corpus
     frame rate the velocity channels were encoded at; `rest_norm` says the serving mean is the rig's rest frame
-    (Ktjd17Base normalization "rest"), so a re-encoded sample gets the transformed rest pose as its position mean."""
+    (Ktjd17Base normalization "rest"), so a re-encoded sample gets the transformed rest pose as its position mean.
+    Mode "one_of" draws ONE of add / remove / pool / scale (UniMate's rule and rates, ONE_OF) instead of applying every
+    enabled perturbation; the draw is recorded in the transform's `op`. In that mode a re-encoded sample keeps a served
+    contact flag only where the joint moves no more than it did (apply_motion, ONE_OF_CONTACT; codex 2026-09-15 unimate r5 P1)."""
     par = np.asarray(parents, dtype=np.int64)
     J = len(par)
     if par[0] != -1 or np.any(par[1:] >= np.arange(1, J)):
@@ -212,6 +334,8 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
     for j in range(1, J):
         children[par[j]].append(j)
     reencode = False
+    op = ONE_OF_OPS[int(rng.integers(len(ONE_OF_OPS)))] if cfg.mode == "one_of" else None   # UniMate: one op per sample
+    do_scale = cfg.bone_scale > 0 and (op is None or op == "scale")
     # ---- 1. sub-skeleton ----
     keep_mask = np.ones(J, dtype=bool)
     if cfg.drop_max_frac > 0:
@@ -226,9 +350,16 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
                 if not leaves:
                     break
                 keep_mask[int(rng.choice(leaves))] = False
+    elif op == "remove":
+        # UniMate's apply_joint_removal: the CURRENT leaves only (no chain is eaten from the tip), a rate uniform in
+        # remove_rate of them, at most remove_cap, shorter bones first; the root and the contact joints stay protected
+        leaves0 = np.asarray([j for j in range(1, J) if not protected[j] and len(children[j]) == 0], dtype=np.int64)
+        n_rm = min(int(round(len(leaves0) * float(rng.uniform(*ONE_OF["remove_rate"])))), int(ONE_OF["remove_cap"]))
+        for j in _weighted_pick(rng, leaves0, O, n_rm):
+            keep_mask[j] = False
     # ---- 6. chain pooling: single-child interior joints of the CONTRACTED tree (a dropped joint's children hang from its
     #         nearest kept ancestor; codex v2 r1 P2-3), re-parented through; the child lists follow every pooled joint ----
-    if cfg.pool_frac > 0:
+    if cfg.pool_frac > 0 or op == "pool":
         eff_par = np.full(J, -1, dtype=np.int64)          # nearest kept ancestor of every kept joint
         kids = [[] for _ in range(J)]
         for j in range(1, J):
@@ -239,8 +370,15 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
                 eff_par[j] = q
                 kids[q].append(j)
         cands = np.asarray([j for j in range(1, J) if keep_mask[j] and not protected[j] and len(kids[j]) == 1], dtype=np.int64)
-        n_pool = int(round(float(rng.uniform(0.0, cfg.pool_frac)) * len(cands)))
-        for j in rng.permutation(cands)[:n_pool]:
+        if op == "pool":
+            # UniMate's apply_skeleton_pooling: a rate uniform in pool_rate of the candidates, at least pool_min, shorter
+            # bones first (a candidate's parent is kept -- only leaves were removed -- so O[j] is its bone)
+            n_pool = max(int(ONE_OF["pool_min"]), int(len(cands) * float(rng.uniform(*ONE_OF["pool_rate"])))) if len(cands) else 0
+            picked = _weighted_pick(rng, cands, O, n_pool)
+        else:
+            n_pool = int(round(float(rng.uniform(0.0, cfg.pool_frac)) * len(cands)))
+            picked = rng.permutation(cands)[:n_pool]
+        for j in picked:
             j = int(j)
             if len(kids[j]) != 1:                          # a neighbour's pooling changed its degree
                 continue
@@ -277,8 +415,9 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
     cvk = cv[keep].copy()
     mu0 = np.asarray(mu, dtype=np.float32)[keep].copy()
     sd0 = np.asarray(sd, dtype=np.float32)[keep].copy()
-    # ---- 7. joint addition: one synthetic joint on a random bone, rigid with its parent ----
-    if cfg.add_p > 0 and len(keep) > 1 and float(rng.random()) < cfg.add_p:
+    # ---- 7. joint addition: one synthetic joint on a random bone (joint mode: rigid with its parent; one_of: UniMate's
+    #         insertion, whose rotation rule apply_motion applies through unimate_rot) ----
+    if (cfg.add_p > 0 and len(keep) > 1 and float(rng.random()) < cfg.add_p) or (op == "add" and len(keep) > 1):
         c = int(rng.integers(1, len(keep)))                 # the child whose bone is split (new index)
         p = int(new_par[c])
         alpha = float(rng.uniform(0.3, 0.7))
@@ -288,8 +427,18 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
         par2 = np.array([shift(int(x)) if x >= 0 else -1 for x in new_par], dtype=np.int64)
         par2 = np.insert(par2, ins, p)                      # synthetic parent = p
         par2[ins + 1] = ins                                 # c (now at ins+1) hangs from the synthetic joint
-        off2 = np.insert(new_off, ins, alpha * off_c, axis=0)
-        off2[ins + 1] = (1.0 - alpha) * off_c               # same rest frame: the synthetic joint's rest rotation is p's
+        if op == "add":
+            # UniMate's apply_joint_addition_ellipsoid: the split point is pushed off the bone axis, inside the ellipsoid,
+            # and the two offsets still sum to the bone. The rotation rule is UniMate's as well (apply_motion, unimate_rot):
+            # their insertion copies the parent's rotation slot into the new joint, which in their parent-local layout
+            # duplicates the parent's local rotation at the new joint (their docstring says "identity local rotation";
+            # the code does not do that), so the chain below bends -- codex 2026-09-15 unimate r2 P1-2
+            off_new = alpha * off_c + _ellipsoid_displacement(rng, off_c, float(ONE_OF["add_sigma"]), float(ONE_OF["add_lateral"]))
+            off_rem = off_c - off_new
+        else:
+            off_new, off_rem = alpha * off_c, (1.0 - alpha) * off_c
+        off2 = np.insert(new_off, ins, off_new, axis=0)
+        off2[ins + 1] = off_rem                             # same rest frame: the synthetic joint's rest rotation is p's
         src = np.insert(src, ins, -1)
         synth_pc = np.insert(synth_pc, ins, [int(keep[p]), int(keep[c])], axis=0)
         R_old = np.insert(R_old, ins, R_old[p], axis=0)
@@ -302,14 +451,35 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
     if new_par[0] != -1 or np.any(new_par[1:] >= np.arange(1, Jn)) or np.any(new_par[1:] < 0):
         raise AssertionError("augmented parents are not in FK order")
     cv_served = cvk.copy()                                # the mask the served rows were produced under
-    if reencode or cfg.bone_scale > 0:
+    if reencode or do_scale:
         # positions and velocities are recomputed for every row, so a cell the statistics artifact excluded as an exact
         # constant (Ktjd17Base.static_masks) no longer holds that constant: it re-enters the model input and the loss
         # (codex v2 r1 P1); the structural exclusions (root-only 13:17, fixed_dof rotations) are untouched
         cvk[:, 0:3] = True
         cvk[:, 9:12] = True
+    recomposed = None
+    if op in ("add", "pool") and reencode:
+        # UniMate's rotation semantics (apply_motion, unimate_rot) recompose the rest-deltas of every row whose chain lost a
+        # joint (below a pooled one) or gained one (the synthetic joint and its subtree). A rotation cell the statistics
+        # artifact excluded as an exact constant on such a row -- the parent's mask copied onto the synthetic row, a constant
+        # root cell -- no longer holds that constant, so it re-enters the model input and the loss with the channel's serving
+        # scale, exactly like the position / velocity cells above (codex 2026-09-15 unimate r4 P1-1: a synthetic joint under
+        # a root with an excluded rotation cell decoded to the constant after the trainer's mask projection, 0.065 bl FK gap)
+        recomposed = np.zeros(Jn, dtype=bool)
+        for n in range(Jn):
+            if src[n] < 0:
+                recomposed[n] = True
+            else:
+                q = int(par[src[n]])
+                while q >= 0 and keep_mask[q]:
+                    q = int(par[q])
+                recomposed[n] = q >= 0                                   # an original ancestor was pooled away
+            if not recomposed[n] and new_par[n] >= 0 and recomposed[new_par[n]]:
+                recomposed[n] = True                                     # the synthetic joint's subtree
+        cvk[recomposed, 3:9] = True
+        cvk[recomposed, 12] = True                      # the pruned flag must survive the trainer's projection (codex r8)
     # ---- 5. bone-length perturbation ----
-    if cfg.bone_scale > 0:
+    if do_scale:
         new_off[1:] *= rng.uniform(1.0 - cfg.bone_scale, 1.0 + cfg.bone_scale, size=(Jn - 1, 1))
         reencode = True
     # ---- 2. rest convention ----
@@ -356,11 +526,15 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
             raise AssertionError("statistics perturbation produced a non-finite mean or a non-positive effective scale")
     # ---- 3. descriptions ----
     sem_drop = bool(cfg.sem_drop_p > 0 and rng.random() < cfg.sem_drop_p)
+    unimate_rot = op in ("add", "pool") and bool(reencode)          # a pool draw that pooled nothing leaves the sample as is
     return SkeletonTransform(keep=keep, src=src, synth_pc=synth_pc, parents=new_par, offsets=new_off, R_rest=R_new,
                              R_rest_old=R_old, P_rest=P_new, Q=Q, rot_rows=rot_rows,
                              mu=mu_n.astype(np.float32), sd=sd_n.astype(np.float32), mu0=mu0, sd0=sd0,
                              channel_valid=cvk, sem_noise=float(cfg.sem_noise), sem_drop=sem_drop,
-                             reencode=bool(reencode), fps=float(fps))
+                             reencode=bool(reencode), fps=float(fps), op=op, unimate_rot=unimate_rot,
+                             recomposed=(recomposed.copy() if unimate_rot else None), par0=(par.copy() if unimate_rot else None),
+                             mu_all=(np.asarray(mu, dtype=np.float32).copy() if unimate_rot else None),
+                             sd_all=(np.asarray(sd, dtype=np.float32).copy() if unimate_rot else None))
 
 
 def _rotate_rest_deltas(raw, tr, rows_of):
@@ -383,14 +557,38 @@ def _rotate_rest_deltas(raw, tr, rows_of):
         raw[:, rows, 3:9] = d6n
 
 
+def _refuse_degenerate(d6: np.ndarray, joint_ids) -> None:
+    """[T,n,6] six-vectors: ValueError naming the joints whose Gram-Schmidt norms vanish (the decoder's GT eps). A degenerate
+    six-vector (zero or parallel columns) has no rotation the emitted representation could reconstruct the FK'd positions
+    from, so it is refused rather than replaced (codex v2 r1 P2-4; the corpus has none -- runs/_aug_dev/excluded_cells_scan.json)."""
+    a1, a2 = d6[..., :3], d6[..., 3:]
+    n1 = np.linalg.norm(a1, axis=-1)
+    b1 = a1 / np.maximum(n1[..., None], 1e-12)
+    n2 = np.linalg.norm(a2 - np.sum(b1 * a2, axis=-1, keepdims=True) * b1, axis=-1)
+    bad = ~((n1 > 1e-6) & (n2 > 1e-6))
+    if bad.any():
+        t_bad, r_bad = np.where(bad)
+        raise ValueError(f"re-encoding refused: degenerate rotation six-vector on served joint(s) "
+                         f"{sorted(set(np.asarray(joint_ids)[r_bad].tolist()))[:8]} at frame(s) {sorted(set(t_bad.tolist()))[:8]}")
+
+
 def apply_motion(x18: np.ndarray, tr: SkeletonTransform) -> np.ndarray:
-    """[T,J,18] (or [J,18]) served-normalised motion -> [T,J',18] under the transform.
+    """[T,J,18] (or [J,18]) served-normalised motion -> [T,J',18] under the transform (apply_motion_with_contact without
+    the pre-pruning contact flags)."""
+    return apply_motion_with_contact(x18, tr)[0]
+
+
+def apply_motion_with_contact(x18: np.ndarray, tr: SkeletonTransform):
+    """[T,J,18] (or [J,18]) served-normalised motion -> ([T,J',18] under the transform, the served contact flags [T,J'] bool
+    BEFORE the one_of pruning (synthetic rows False) or None when nothing is pruned -- the dataset counts the window's
+    pre-pruning pairs from them for the foot-lock term's denominator, ONE_OF_LOCK_DEN).
     Plane 17 (heading-valid flag) is copied (a synthetic joint takes its parent's); channels 0:17 are de-normalised
     with the rig's statistics, rotated (rest deltas -> delta Q^T on rows with valid rotation cells), re-encoded by FK
     when the transform changed the body or the tree, and re-normalised with the perturbed statistics (unperturbed
     on cells outside channel_valid, which cfm_loss projects out anyway)."""
     squeeze = x18.ndim == 2
     x = x18[None] if squeeze else x18
+    contact_before = None
     xk = np.asarray(x, dtype=np.float32)[:, tr.keep]                                     # served kept originals
     T = xk.shape[0]; Jn = tr.n_joints; rows = tr.served_rows
     mu0k, sd0k = tr.mu0[rows], tr.sd0[rows]
@@ -400,24 +598,40 @@ def apply_motion(x18: np.ndarray, tr: SkeletonTransform) -> np.ndarray:
     p17 = np.zeros((T, Jn), dtype=np.float32)
     p17[:, rows] = xk[..., 17]
     if tr.reencode:
-        # global rotations of the served originals from their served deltas; a degenerate six-vector (zero or parallel
-        # columns) has no rotation the emitted representation could reconstruct the FK'd positions from, so it is refused
-        # rather than replaced (codex v2 r1 P2-4; the corpus has none -- runs/_aug_dev/excluded_cells_scan.json)
-        d6 = raw_k[..., 3:9]
-        a1, a2 = d6[..., :3], d6[..., 3:]
-        n1 = np.linalg.norm(a1, axis=-1)
-        b1 = a1 / np.maximum(n1[..., None], 1e-12)
-        n2 = np.linalg.norm(a2 - np.sum(b1 * a2, axis=-1, keepdims=True) * b1, axis=-1)
-        bad = ~((n1 > 1e-6) & (n2 > 1e-6))
-        if bad.any():
-            t_bad, r_bad = np.where(bad)
-            raise ValueError(f"re-encoding refused: degenerate rotation six-vector on served joint(s) "
-                             f"{sorted(set(tr.keep[r_bad].tolist()))[:8]} at frame(s) {sorted(set(t_bad.tolist()))[:8]}")
-        delta = decode_column_cont6d(d6, strict=True)
-        G = np.zeros((T, Jn, 3, 3), dtype=np.float64)
-        G[:, rows] = np.matmul(delta, tr.R_rest_old[rows][None])
-        for j in np.where(tr.src < 0)[0]:                                                  # synthetic: rigid with its parent
-            G[:, j] = G[:, tr.parents[j]]
+        if tr.unimate_rot:
+            # UniMate's rotation semantics (mode one_of, pool / add). Every ORIGINAL joint's served rest-delta is read (a
+            # pooled joint's included, through the rig's statistics) and turned into its parent-relative delta
+            # Pi_k = Delta_par(k)^T Delta_k (Pi_root = Delta_root; identity at rest). The served rows are recomposed through
+            # the NEW tree in FK order, Delta'_row = Delta'_newparent Pi_src(row): a pooled joint's articulation is skipped
+            # (UniMate's collapse deletes the local rotation) and the added joint takes its parent's own parent-relative
+            # delta (UniMate's insertion copies the parent's rotation slot, which in their parent-local layout duplicates
+            # the parent's local rotation at the new joint). With identity rest rotations this is exactly UniMate's
+            # local-rotation FK (codex 2026-09-15 unimate r2 P1-1 / P1-2).
+            d6_all = (np.asarray(x, dtype=np.float32)[..., 3:9].astype(np.float64) * (tr.sd_all[None, :, 3:9] + _STD_FLOOR)
+                      + tr.mu_all[None, :, 3:9])
+            _refuse_degenerate(d6_all, np.arange(d6_all.shape[1]))
+            D = decode_column_cont6d(d6_all, strict=True)                                  # [T,J,3,3] every original joint
+            Pi = np.empty_like(D)
+            for k in range(D.shape[1]):
+                pk = int(tr.par0[k])
+                Pi[:, k] = D[:, k] if pk < 0 else np.matmul(np.swapaxes(D[:, pk], -1, -2), D[:, k])
+            Dn = np.empty((T, Jn, 3, 3), dtype=np.float64)
+            for row in range(Jn):                                                          # FK order: parents precede children
+                k = int(tr.src[row])
+                Pi_row = Pi[:, k] if k >= 0 else Pi[:, int(tr.synth_pc[row, 0])]
+                q = int(tr.parents[row])
+                Dn[:, row] = Pi_row if q < 0 else np.matmul(Dn[:, q], Pi_row)
+            raw[..., 3:9] = encode_column_cont6d(Dn)                                       # every served row, synthetic included
+            G = np.matmul(Dn, tr.R_rest_old[None])
+        else:
+            # global rotations of the served originals from their served deltas
+            d6 = raw_k[..., 3:9]
+            _refuse_degenerate(d6, tr.keep)
+            delta = decode_column_cont6d(d6, strict=True)
+            G = np.zeros((T, Jn, 3, 3), dtype=np.float64)
+            G[:, rows] = np.matmul(delta, tr.R_rest_old[rows][None])
+            for j in np.where(tr.src < 0)[0]:                                              # synthetic: rigid with its parent
+                G[:, j] = G[:, tr.parents[j]]
         track = raw[:, 0, 13:15]                                                           # the root's smooth XZ track
         root_world = raw[:, 0, 0:3] + np.stack([track[:, 0], np.zeros(T), track[:, 1]], axis=1)
         pos = _fk(tr.parents, root_world, G, tr.offsets)
@@ -427,15 +641,36 @@ def apply_motion(x18: np.ndarray, tr: SkeletonTransform) -> np.ndarray:
             vel[:-1] = (pos[1:] - pos[:-1]) * tr.fps
             vel[-1] = vel[-2]
         raw[..., 9:12] = vel
+        if tr.unimate_rot and T >= 2:
+            # mode one_of, pool / add: a served contact flag on a RECOMPOSED row survives only where the joint's re-encoded
+            # forward displacement exceeds its original one by at most ONE_OF_CONTACT_ABS mean bone lengths; a joint the
+            # recomposition swung is no longer a locked target of the foot-lock term (codex 2026-09-15 unimate r5 P1: a stale
+            # flag under a re-articulated chain demanded motion and stillness at once). The flag at frame t governs the pair
+            # (t, t+1), so it is judged on the forward displacement; the last frame keeps its served flag; every other row,
+            # and every row of the scale op, keeps its served flags (codex r6: pruning the barely-moving planted feet of a
+            # scaled skeleton raised the term's mean). Joint mode keeps every served flag (the trained arms).
+            rr = np.where((tr.src >= 0) & tr.recomposed)[0]                                             # recomposed originals
+            kk = np.searchsorted(rows, rr)                                                              # their kept-order index
+            w0 = raw_k[:, kk, 0:3] + np.stack([track[:, 0], np.zeros(T), track[:, 1]], axis=1)[:, None]  # originals, world
+            d_old = np.linalg.norm(w0[1:] - w0[:-1], axis=-1)                                           # [T-1,r]
+            d_new = np.linalg.norm(pos[1:, rr] - pos[:-1, rr], axis=-1)
+            bl = float(np.linalg.norm(tr.offsets[1:], axis=-1).mean()) if Jn > 1 else 1.0
+            contact_before = raw[..., 12] > 0.5                                                       # synthetic rows: still 0
+            con = raw[:, rr, 12] > 0.5
+            con[:-1] &= d_new <= d_old + ONE_OF_CONTACT_ABS * bl
+            raw[:, rr, 12] = con.astype(np.float64)
     _rotate_rest_deltas(raw, tr, rows)
     for j in np.where(tr.src < 0)[0]:                                                      # synthetic rows: the parent's deltas
-        raw[:, j, 3:9] = raw[:, tr.parents[j], 3:9]
+        if not tr.unimate_rot:                                                             # (one_of: recomposed above)
+            raw[:, j, 3:9] = raw[:, tr.parents[j], 3:9]
         raw[:, j, 12] = 0.0
         p17[:, j] = p17[:, tr.parents[j]]
     out = np.empty((T, Jn, 18), dtype=np.float32)
     out[..., :17] = ((raw - tr.mu[None]) / (tr.sd[None] + _STD_FLOOR)).astype(np.float32)
     out[..., 17] = p17
-    return out[0] if squeeze else out
+    if squeeze:
+        return out[0], (contact_before[0] if contact_before is not None else None)
+    return out, contact_before
 
 
 def apply_semantics(sem: np.ndarray, tr: SkeletonTransform, rng) -> np.ndarray:

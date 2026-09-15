@@ -394,8 +394,9 @@ class InContextPairs(Dataset):
                                  f"augmentation must be off for in-context pairs")
 
         tr = None
+        t_con_before = None
         if self.aug is not None and float(rng.random()) < self.aug.p:
-            from src.data.ktjd17_augment import make_transform, apply_motion
+            from src.data.ktjd17_augment import make_transform, apply_motion, apply_motion_with_contact
             cv0 = np.asarray(self.base.static_masks(ot)["channel_valid"], dtype=bool)[:J0]
             mu0 = np.asarray(t_item["anytop_mean"], dtype=np.float32)[:J0, :17]
             sd0 = np.asarray(t_item["anytop_std"], dtype=np.float32)[:J0, :17]
@@ -409,7 +410,7 @@ class InContextPairs(Dataset):
                                 channel_valid=cv0, mu=mu0, sd=sd0, contact_joints=contact,
                                 fps=30.0,                                   # the corpus rate (validate_schema pins fps_target 30)
                                 rest_norm=(self.base.normalization == "rest"))
-            t_x = apply_motion(t_x, tr)
+            t_x, t_con_before = apply_motion_with_contact(t_x, tr)
             if not self.demo_rest:
                 d_x = apply_motion(d_x, tr)
             J = tr.n_joints
@@ -443,6 +444,20 @@ class InContextPairs(Dataset):
             d_crop = self._postcrop(d_crop, d_valid, ot)
             t_crop = self._postcrop(t_crop, t_valid, ot)
 
+        lock_den = 0.0
+        if t_con_before is not None:
+            # skeleton augmentation mode one_of (ktjd17_augment): the contact flags of the recomposed rows were pruned on the
+            # FULL clip, where the flag at frame t is judged on the displacement t -> t+1. The served window is the clip's head,
+            # so when the clip was truncated its last frame was judged on a frame the model never sees: that frame keeps its
+            # served flag. The foot-lock term of an augmented sample divides by the window's PRE-pruning pair count
+            # (lock_denominator, fk_torch.ktjd_dynamics_losses), so a pruned pair removes its demand without re-weighting the
+            # surviving pairs (codex 2026-09-15 unimate r6 / r7).
+            n_served = int(t_valid.sum())
+            cb = t_con_before[:n_served]                                                   # [n,J'] bool
+            if n_served < t_T:
+                on = cb[n_served - 1].astype(np.float32)
+                t_crop[n_served - 1, :, 12] = (on - tr.mu[:, 12]) / (tr.sd[:, 12] + _STD_FLOOR)
+            lock_den = float((cb[1:] & cb[:-1]).sum())
         x = np.concatenate([d_crop, t_crop], axis=0)
         # is_target marks REAL target frames only: padding must not receive the mask token, and
         # must not be counted as a legitimate zero target (that is the direct route to a model
@@ -464,6 +479,7 @@ class InContextPairs(Dataset):
             "motion_id": str(t_item.get("motion_id", tgt_idx)),
             "demo_id": str(demo_idx),
             "n_joints": J,
+            "lock_denominator": lock_den,
         }
         # TARGET caption -> the global AdaLN text condition (unchanged).
         if t_item.get("caption_emb") is not None:
@@ -568,6 +584,8 @@ def collate(batch):
         "object_type": [b["object_type"] for b in batch],
         "motion_id": [b["motion_id"] for b in batch],
         "demo_id": [b["demo_id"] for b in batch],
+        # the pre-pruning contact-pair count of a one_of-augmented sample, 0 otherwise (fk_torch.ktjd_dynamics_losses)
+        "lock_denominator": torch.tensor([float(b.get("lock_denominator", 0.0)) for b in batch]),
     }
     if has_sem:
         out["joint_sem"] = sem

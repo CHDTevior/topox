@@ -773,7 +773,8 @@ def cfm_loss(model, x1, *, is_target, valid=None, gammas=None, return_parts=Fals
             contact_on=((x1[..., 12] * (fk_pack["anytop_std"][:, None, :, 12] + fk_pack["std_floor"])
                          + fk_pack["anytop_mean"][:, None, :, 12]) > 0.5)
             if gamma_lock > 0.0 else None,
-            want_diag=return_parts)
+            want_diag=return_parts,
+            lock_denominator=fk_pack.get("lock_denominator"))   # augmented samples: the pre-pruning pair count (fk_torch)
         loss = loss + gamma_vel * vel_term + gamma_lock * lock_term
         if return_parts:
             parts = dict(parts)
