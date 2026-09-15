@@ -103,6 +103,9 @@ DEMO_REST=${DEMO_REST:?1 or 0 -- rest-pose demo}
 DEMO_FRAMES=${DEMO_FRAMES:?demo frame count}
 STRUCT_FEATS=${STRUCT_FEATS:?1 or 0 -- graph-v2 structural features}
 DIR_BIAS=${DIR_BIAS:?1 or 0 -- graph-v2 directional bias}
+SPEC_ROPE=${SPEC_ROPE:-0}          # 1: UniMate's spectral joint RoPE replaces the joint-slot table (--spec_rope --spec_rope_k)
+SPEC_ROPE_K=${SPEC_ROPE_K:-8}
+case "$SPEC_ROPE" in 0|1) ;; *) echo "[orch] SPEC_ROPE must be exactly 0 or 1, got '$SPEC_ROPE'"; exit 1 ;; esac
 RANDOM_CAPTION=${RANDOM_CAPTION:?1 or 0 -- caption rotation}
 ANCHOR=${ANCHOR:?none|rest|demo}
 P_DROP_TEXT=${P_DROP_TEXT:?CFG text-drop probability}
@@ -121,7 +124,7 @@ for dup in --out --epochs --lr --batch --grad_accum --resume --corpus --ktjd_roo
            --dim --depth --lr_scheduler --lr_decay_epochs --eta_min_ratio --warmup_steps \
            --wd --grad_clip --grad_spike_reject --param_resync_steps --sigma_min --grad_ckpt --compile \
            --heads --bf16 --v_space --gamma_fk --fk_warmup_steps --gamma_vel --gamma_lock --gamma_acc --qk_norm \
-           --demo_rest --demo_frames --struct_feats --dir_bias --random_caption --anchor \
+           --demo_rest --demo_frames --struct_feats --dir_bias --spec_rope --spec_rope_k --random_caption --anchor \
            --p_drop_text --p_drop_demo --p_drop_both --t_sampler; do
   case " $EXTRA " in *" $dup "*|*" $dup="*) echo "[orch] PREFLIGHT FAIL: EXTRA must not set $dup"; exit 1;; esac
 done
@@ -197,7 +200,7 @@ echo "[orch] arch dim=$DIM depth=$DEPTH grad_ckpt=$GRAD_CKPT compile=$COMPILE qk
 echo "[orch] sched=$LR_SCHED decay_ep=$LR_DECAY_EPOCHS eta_min=$ETA_MIN_RATIO warmup=$WARMUP"
 echo "[orch] wd=$WD grad_clip=$GRAD_CLIP spike_reject=$GRAD_SPIKE sigma_min=$SIGMA_MIN v_space=$V_SPACE bf16=$BF16"
 echo "[orch] gamma fk=$GAMMA_FK/warm$FK_WARMUP vel=$GAMMA_VEL lock=$GAMMA_LOCK acc=$GAMMA_ACC t_sampler=$T_SAMPLER"
-echo "[orch] demo_rest=$DEMO_REST frames=$DEMO_FRAMES struct=$STRUCT_FEATS dir_bias=$DIR_BIAS"
+echo "[orch] demo_rest=$DEMO_REST frames=$DEMO_FRAMES struct=$STRUCT_FEATS dir_bias=$DIR_BIAS spec_rope=$SPEC_ROPE/K$SPEC_ROPE_K"
 echo "[orch] heads=$HEADS anchor=$ANCHOR rand_cap=$RANDOM_CAPTION drops=$P_DROP_TEXT/$P_DROP_DEMO/$P_DROP_BOTH"
 for f in "$PERCELL" "$CALIB" "$CUT" "$JOINT_SEM"; do
   [ -f "$f" ] || { echo "[orch] PREFLIGHT FAIL: missing artifact $f"; exit 1; }
@@ -230,6 +233,7 @@ run_rank() {  # $1 jobid  $2 node_rank
       $([ "$BF16" = 1 ] && echo --bf16) $([ "$V_SPACE" = 1 ] && echo --v_space) \
       $([ "$DEMO_REST" = 1 ] && echo --demo_rest) \
       $([ "$STRUCT_FEATS" = 1 ] && echo --struct_feats) $([ "$DIR_BIAS" = 1 ] && echo --dir_bias) \
+      $([ "$SPEC_ROPE" = 1 ] && echo --spec_rope --spec_rope_k $SPEC_ROPE_K) \
       $([ "$RANDOM_CAPTION" = 1 ] && echo --random_caption) \
       --lr_scheduler $LR_SCHED --lr_decay_epochs $LR_DECAY_EPOCHS --eta_min_ratio $ETA_MIN_RATIO \
       $([ "$GRAD_CKPT" = 1 ] && echo --grad_ckpt) $([ "$COMPILE" = 1 ] && echo --compile) \

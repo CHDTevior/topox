@@ -37,6 +37,7 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint  # activation checkpointing (grad_ckpt)
 import torch.nn.functional as F
+from src.models.v2.spec_rope import SpectralJointRoPE, apply_rotary_pos_emb
 
 
 def timestep_embedding(t: torch.Tensor, dim: int, max_period: float = 10000.0) -> torch.Tensor:
@@ -76,9 +77,10 @@ class Attention(nn.Module):
             self.q_norm = nn.RMSNorm(self.dh, eps=1e-6)
             self.k_norm = nn.RMSNorm(self.dh, eps=1e-6)
 
-    def forward(self, x, attn_bias=None, key_pad=None):
+    def forward(self, x, attn_bias=None, key_pad=None, rope=None):
         """x [..., N, D] (any leading batch dims); attn_bias broadcastable to [..., H, N, N];
-        key_pad [..., N] True=valid, broadcastable likewise.
+        key_pad [..., N] True=valid, broadcastable likewise. rope: optional (cos, sin), each broadcastable to
+        q / k [..., H, N, dh] -- the spectral joint RoPE, applied AFTER the q/k normalisation as UniMate does.
 
         NOTHING is expanded or cloned (codex 01a01b1a fix A): the old path materialised the bias
         at [B*T, H, N, N] three times over (repeat_interleave + .clone() + key-mask add) --
@@ -92,6 +94,8 @@ class Attention(nn.Module):
         q, k, v = (t.transpose(-3, -2) for t in qkv.movedim(-3, 0))   # each [..., H, N, dh]
         if self.qk_norm:
             q, k = self.q_norm(q), self.k_norm(k)
+        if rope is not None:
+            q, k = apply_rotary_pos_emb(q, k, rope[0], rope[1])
         bias = attn_bias
         if key_pad is not None:                       # [..., N] True = valid
             m = torch.zeros(*key_pad.shape[:-1], 1, 1, N, device=x.device, dtype=q.dtype)
@@ -134,8 +138,9 @@ class Block(nn.Module):
             for k in (2, 5, 8):
                 self.ada[-1].bias[k * dim:(k + 1) * dim].fill_(1.0)
 
-    def forward(self, x, c, joint_bias=None, frame_valid=None, joint_valid=None):
-        # x [B,T,J,D]
+    def forward(self, x, c, joint_bias=None, frame_valid=None, joint_valid=None, rope_cos=None, rope_sin=None):
+        # x [B,T,J,D]; rope_cos / rope_sin [B,1,1,J,dh] (spectral joint RoPE) reach the spatial attention only --
+        # two positional tensors, not a tuple, so the activation-checkpoint call below can pass them through
         B, T, J, D = x.shape
         p = self.ada(c)                                    # [B, 9D]
         (st, sc, sg, st2, sc2, sg2, mt, mc, mg) = p.chunk(9, dim=-1)
@@ -159,7 +164,7 @@ class Block(nn.Module):
             jb = jb[:, None, None] if jb.dim() == 3 else jb[:, None]   # -> [B,1,1|H,J,J]
         jv = None if jb is not None else \
             (joint_valid[:, None] if joint_valid is not None else None)  # only if no bias given
-        y = self.s_attn(y, attn_bias=jb, key_pad=jv)
+        y = self.s_attn(y, attn_bias=jb, key_pad=jv, rope=(rope_cos, rope_sin) if rope_cos is not None else None)
         x = x + e(sg2) * y
 
         x = x + e(mg) * self.mlp(modulate(self.n3(x), e(mt), e(mc)))
@@ -176,7 +181,8 @@ class InContextMotionDiT(nn.Module):
 
     def __init__(self, in_ch=13, dim=256, depth=6, n_heads=8, d_text=4096, d_blueprint=16,
                  d_joint_sem=4096, mlp_ratio=4.0, use_struct_feats=False, use_dir_bias=False,
-                 local_root_dim=0, use_ref_text=False, grad_ckpt=False, qk_norm=False, use_geo_bias=True):
+                 local_root_dim=0, use_ref_text=False, grad_ckpt=False, qk_norm=False, use_geo_bias=True,
+                 use_spec_rope=False, spec_rope_k=8):
         super().__init__()
         # Activation checkpointing recomputes each block's activations in the backward pass
         # instead of storing them: ~60-70% less activation memory for ~30% more compute. It is
@@ -194,6 +200,10 @@ class InContextMotionDiT(nn.Module):
         self.use_struct_feats = bool(use_struct_feats)
         self.use_dir_bias = bool(use_dir_bias)
         self.use_geo_bias = bool(use_geo_bias)
+        # UniMate's spectral joint RoPE (src/models/v2/spec_rope.py; user 2026-09-15 "照 UniMate: 谱 RoPE 替掉 j_pos"): the
+        # joint-slot table j_pos is NOT created (nor added) when it is on; the SignNet module is built LAST (see below).
+        self.use_spec_rope = bool(use_spec_rope)
+        self.spec_rope_k = int(spec_rope_k)
         if not self.use_geo_bias:
             # simplified-baseline arm (user 2026-09-08; codex baseline r1 #1): the spatial attention keeps NO skeleton-graph prior.
             # The flag travels with the checkpoint as a buffer, so a consumer that rebuilds the model without use_geo_bias=False
@@ -215,8 +225,13 @@ class InContextMotionDiT(nn.Module):
         # optional, so without an index embedding the model cannot address individual joints at all.
         # Same failure as the missing temporal position: fine when copying the input, useless when
         # generating from noise.
-        self.j_pos = nn.Parameter(torch.zeros(1, 1, self.max_J, dim))
-        nn.init.normal_(self.t_pos, std=0.02); nn.init.normal_(self.j_pos, std=0.02)
+        # With use_spec_rope the slot table is replaced by the spectral RoPE: the same normal draw still happens (into a
+        # tensor that is then dropped) so the backbone parameters after this point are bit-identical under one seed
+        # whichever way the flag is set (the causal-pairing discipline of the graph-v2 modules, codex 01a01b1a fix B).
+        j_pos = torch.zeros(1, 1, self.max_J, dim)
+        nn.init.normal_(self.t_pos, std=0.02); nn.init.normal_(j_pos, std=0.02)
+        if not self.use_spec_rope:
+            self.j_pos = nn.Parameter(j_pos)
         self.joint_sem = nn.Linear(d_joint_sem, dim)              # per-joint identity (LLM2Vec)
         self.t_mlp = nn.Sequential(nn.Linear(dim, dim * 4), nn.SiLU(), nn.Linear(dim * 4, dim))
         self.text_mlp = nn.Sequential(nn.LayerNorm(d_text), nn.Linear(d_text, dim), nn.SiLU(),
@@ -285,17 +300,40 @@ class InContextMotionDiT(nn.Module):
             self.local_root_mlp = nn.Linear(local_root_dim, dim)
             nn.init.zeros_(self.local_root_mlp.weight)
             nn.init.zeros_(self.local_root_mlp.bias)
+        # Spectral joint RoPE, LAST (its phi / rho draws come after every backbone tensor). UniMate's own init: default
+        # Linear init for phi and rho, rho's last layer normal(0.02) / zero bias -- small angles at step 0, not zero, as in
+        # their code; NOT zero-initialised, so this arm is not the exact baseline function at init (the baseline's j_pos
+        # is gone anyway). Its parameters are the checkpoint's marker: a consumer that rebuilds the model without the flag
+        # fails strict loading (unexpected spec_rope.* keys, missing j_pos) instead of silently restoring a slot table.
+        self.spec_rope = None
+        if self.use_spec_rope:
+            self.spec_rope = SpectralJointRoPE(head_dim=dim // n_heads, num_eigvecs=self.spec_rope_k)
     def forward(self, x, t, *, is_target, joint_sem=None, text=None, blueprint=None,
                 joint_bias=None, frame_valid=None, joint_valid=None,
-                struct_feats=None, updown=None, local_root=None, demo_text=None):
+                struct_feats=None, updown=None, local_root=None, demo_text=None, spectral_feats=None):
         """x [B,T,J,C] ; t [B] in [0,1] ; is_target [B,T] bool.
         struct_feats [B,J,8] / updown [B,J,J,2] are graph-v2 inputs; both ignored (and refused)
         unless the matching use_* flag built the module.
+        spectral_feats [B,J,K] are the rig's Laplacian eigenvectors (src/data/skeleton_spectral.py); required by and
+        only accepted with use_spec_rope (a mismatch either way is refused).
         local_root [B,T,4] is the two-stage bridge input (Kimodo's local-root representation);
         it is refused unless local_root_dim built the module."""
         B, T, J, _ = x.shape
         h = self.x_in(x)
-        h = h + self.t_pos[:, :T] + self.j_pos[:, :, :J]                        # temporal + joint position
+        h = h + self.t_pos[:, :T]                                               # temporal position
+        rope_cos = rope_sin = None
+        if self.use_spec_rope:
+            if spectral_feats is None:
+                raise ValueError("model built with use_spec_rope=True but batch has no spectral_feats -- dataset must "
+                                 "be built with emit_spectral=K")
+            if spectral_feats.shape[-1] != self.spec_rope_k:
+                raise ValueError(f"spectral_feats has K={spectral_feats.shape[-1]}, model built with spec_rope_k={self.spec_rope_k}")
+            cos, sin = self.spec_rope.cos_sin(spectral_feats)                   # [B,J,dh] each, once per forward
+            rope_cos, rope_sin = cos[:, None, None], sin[:, None, None]         # [B,1,1,J,dh]: over T and H
+        else:
+            if spectral_feats is not None:
+                raise ValueError("spectral_feats passed but the model was built with use_spec_rope=False")
+            h = h + self.j_pos[:, :, :J]                                        # joint position (slot table)
         h = h + is_target[..., None, None].to(h.dtype) * self.mask_token       # flag frames to generate
         if self.use_ref_text and demo_text is not None:
             tgt_v = self.ref_text_mlp(text if text is not None else torch.zeros_like(demo_text))
@@ -339,10 +377,10 @@ class InContextMotionDiT(nn.Module):
                 # use_reentrant=False: the reentrant variant does not play well with DDP's
                 # bucketed backward and silently drops the grads of unused parameters.
                 h = torch.utils.checkpoint.checkpoint(
-                    blk, h, c, joint_bias, frame_valid, joint_valid, use_reentrant=False)
+                    blk, h, c, joint_bias, frame_valid, joint_valid, rope_cos, rope_sin, use_reentrant=False)
             else:
                 h = blk(h, c, joint_bias=joint_bias, frame_valid=frame_valid,
-                        joint_valid=joint_valid)
+                        joint_valid=joint_valid, rope_cos=rope_cos, rope_sin=rope_sin)
         shift, scale = self.ada_out(c).chunk(2, dim=-1)
         h = modulate(self.n_out(h), shift[:, None, None], scale[:, None, None])
         return self.out(h)

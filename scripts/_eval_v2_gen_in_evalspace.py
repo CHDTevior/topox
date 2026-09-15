@@ -305,7 +305,8 @@ def load_gen_model(ck, dev):
         use_dir_bias=bool(ca.get("dir_bias", False)),
         qk_norm=bool(ca.get("qk_norm", False)),
         use_ref_text=bool(ca.get("ref_text", False)),
-        use_geo_bias=bool(ca.get("geo_bias", True))).to(dev)
+        use_geo_bias=bool(ca.get("geo_bias", True)),
+        use_spec_rope=bool(ca.get("spec_rope", False)), spec_rope_k=int(ca.get("spec_rope_k", 8))).to(dev)
     model.load_state_dict(ck["model"])
     model.eval()
     return model, ca
@@ -341,7 +342,8 @@ def generate_all(model, ca, base, names, dev, a):
               emit_ref_text=bool(ca.get("ref_text", False)),
               demo_frames=int(ca.get("demo_frames", 1)),
               target_frames=int(ca["target_frames"]),
-              emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)))
+              emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)),
+              emit_spectral=(int(ca.get("spec_rope_k", 8)) if bool(ca.get("spec_rope", False)) else 0))
     if PK["demo_rest"] and PK["demo_frames"] != 1:
         raise SystemExit("[refuse] demo_rest ckpt with demo_frames != 1")
     tg = eval_targets(names, a)
@@ -376,7 +378,7 @@ def generate_all(model, ca, base, names, dev, a):
             b = {k: (v.to(dev) if torch.is_tensor(v) else v)
                  for k, v in collate(items).items()}
             x_in = b["x"][..., :17].contiguous()
-            g2kw = {k: b[k] for k in ("struct_feats", "updown") if k in b}
+            g2kw = {k: b[k] for k in ("struct_feats", "updown", "spectral_feats") if k in b}
             cv = torch.zeros(x_in.shape[0], x_in.shape[2], 17, dtype=torch.bool, device=dev)
             cv[:, :cvj.shape[0]] = cvj
             g2kw["channel_valid"] = cv
@@ -432,7 +434,8 @@ def make_pairs(ds_args, base, names, a):
     return InContextPairs(base, tg, demo_names(names, tg, a), object_types=None, balance_skeletons=False, seed=a.seed,
                           demo_rest=bool(ca.get("demo_rest", False)), emit_ref_text=bool(ca.get("ref_text", False)),
                           demo_frames=int(ca.get("demo_frames", 1)), target_frames=int(ca["target_frames"]),
-                          emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)))
+                          emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)),
+                          emit_spectral=(int(ca.get("spec_rope_k", 8)) if bool(ca.get("spec_rope", False)) else 0))
 
 
 def generation_plan(ds, base, a):
@@ -459,10 +462,12 @@ def generation_plan(ds, base, a):
             "shard_clips_sha256": {k: hashlib.sha256("\n".join(v).encode()).hexdigest() for k, v in shard_clips.items()}}
 
 
-def source_fingerprint(anchor="none", flat=False):
+def source_fingerprint(anchor="none", flat=False, spec_rope=False):
     """sha256 over the code that turns (ckpt, data, seed) into samples: this script, the sampler/model, the
     pair dataset and the corpus adapter -- and the trainer module whenever the checkpoint's anchor mode makes
-    generate_all() call its ktjd_anchor() (codex 2026-09-03 r2; anchor=none checkpoints never touch it)."""
+    generate_all() call its ktjd_anchor() (codex 2026-09-03 r2; anchor=none checkpoints never touch it), and the
+    spectral-RoPE files for a checkpoint that samples through them (codex 2026-09-15 specrope r1 P2; conditional for the
+    same reason as dit_flat.py below)."""
     import hashlib
     repo = Path(__file__).resolve().parents[1]
     files = ["scripts/_eval_v2_gen_in_evalspace.py", "src/models/v2/dit_motion.py",
@@ -475,6 +480,8 @@ def source_fingerprint(anchor="none", flat=False):
         files.append("src/models/v2/dit_flat.py")
     if str(anchor) != "none":
         files.append("scripts/train_v2_incontext.py")
+    if spec_rope:
+        files += ["src/models/v2/spec_rope.py", "src/data/skeleton_spectral.py"]
     h = hashlib.sha256()
     for rel in files:
         h.update(rel.encode()); h.update((repo / rel).read_bytes())
@@ -510,7 +517,8 @@ def shard_meta(a, ca, gen_sha, base, plan):
             **({"eval_split": "all"} if a.eval_split == "all" else {}),
             **({"cohort_caption_payload_sha256": str(a.cohort_pin)} if getattr(a, "cohort_pin", None) else {}),
             "source_fingerprint": source_fingerprint(ca.get("anchor", "none"),
-                                                     flat=bool(ca.get("flat_joints", 0))),
+                                                     flat=bool(ca.get("flat_joints", 0)),
+                                                     spec_rope=bool(ca.get("spec_rope", False))),
             "runtime": runtime_fingerprint(),
             "protocol_variant": a.protocol_variant,
             "rank_env": os.environ.get("RANK"),

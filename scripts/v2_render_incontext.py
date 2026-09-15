@@ -297,7 +297,8 @@ def main():
                use_dir_bias=bool(ca.get("dir_bias", False)),
                qk_norm=bool(ca.get("qk_norm", False)),
                use_ref_text=bool(ca.get("ref_text", False)),
-               use_geo_bias=bool(ca.get("geo_bias", True)))
+               use_geo_bias=bool(ca.get("geo_bias", True)),
+               use_spec_rope=bool(ca.get("spec_rope", False)), spec_rope_k=int(ca.get("spec_rope_k", 8)))
     if bool(ca.get("two_stage", False)):
         from src.models.v2.dit_motion import TwoStageInContextDiT
         model = TwoStageInContextDiT(root_dim=int(ca.get("root_dim", 192)), root_depth=4,
@@ -393,7 +394,8 @@ def main():
         print("[render] ckpt trained with --demo_rest: 1-frame rest demo", flush=True)
     PK = dict(demo_rest=ck_rest, emit_ref_text=bool(ca.get("ref_text", False)),
               demo_frames=a.demo_frames, target_frames=a.target_frames,
-              emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)))
+              emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)),
+              emit_spectral=(int(ca.get("spec_rope_k", 8)) if bool(ca.get("spec_rope", False)) else 0))
     dsA = InContextPairs(base, names["val"], names["train"], object_types=tb,
                          balance_skeletons=False, seed=a.seed, **PK)
     # the merged no-IK corpus ships only train/val; a missing held bucket renders nothing for B
@@ -475,7 +477,7 @@ def main():
 
         torch.manual_seed(a.seed)
         with torch.no_grad():
-            g2kw = {k: b[k] for k in ("struct_feats", "updown") if k in b}
+            g2kw = {k: b[k] for k in ("struct_feats", "updown", "spectral_feats") if k in b}
             if a.corpus == "ktjd17":
                 cvj = torch.from_numpy(base.static_masks(rig)["channel_valid"]).to(dev)
                 cv = torch.zeros(1, b["x"].shape[2], 17, dtype=torch.bool, device=dev)

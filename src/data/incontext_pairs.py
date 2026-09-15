@@ -167,7 +167,7 @@ class InContextPairs(Dataset):
                  object_types=None, demo_frames=DEMO_FRAMES, target_frames=TARGET_FRAMES,
                  balance_skeletons=True, seed=0, emit_fk_fields=False, emit_graph_v2=False,
                  rig_multiplicity=None, epoch_draws=None,
-                 identity_p=0.0, emit_ref_text=False, demo_rest=False, augment=None):
+                 identity_p=0.0, emit_ref_text=False, demo_rest=False, augment=None, emit_spectral=0):
         self.base = base
         # skeleton-robustness augmentation (src/data/ktjd17_augment.py, user 2026-09-07): per-sample
         # sub-skeleton / rest-convention / description-noise / statistics perturbations, applied to the
@@ -189,6 +189,11 @@ class InContextPairs(Dataset):
         # flag-gating contract: off = byte-identical batches.
         self.emit_graph_v2 = bool(emit_graph_v2)
         self._g2cache = {}
+        # spectral joint RoPE (2026-09-15): the K smallest non-trivial Laplacian eigenvectors of the SERVED tree,
+        # [J,K] per item (src/data/skeleton_spectral.py, UniMate's compute_laplacian_eigenvectors), cached per rig
+        # like the graph-v2 statics; an augmented item's tree is its own. 0 = off, byte-identical batches.
+        self.emit_spectral = int(emit_spectral)
+        self._speccache = {}
         # UMO SOURCE_IDENTITY analogue (manifest_dataset.py:289-304 mechanism): with prob p the
         # target IS the demo clip (different windows of the same clip) and the caption embedding
         # is ZEROED -- teaches "the demo/anchor carries content" without the (demo+text-demo)
@@ -548,6 +553,15 @@ class InContextPairs(Dataset):
             feats, ud = self._g2cache[ot]
             out["struct_feats"] = torch.from_numpy(feats)
             out["updown"] = torch.from_numpy(ud)
+        if self.emit_spectral > 0:
+            from src.data.skeleton_spectral import laplacian_eigenvectors
+            if tr is not None:
+                out["spectral_feats"] = torch.from_numpy(laplacian_eigenvectors(tr.parents, self.emit_spectral)[0])
+            else:
+                if ot not in self._speccache:
+                    self._speccache[ot] = laplacian_eigenvectors(
+                        np.asarray(t_item["parent_indices"][:J], dtype=np.int64), self.emit_spectral)[0]
+                out["spectral_feats"] = torch.from_numpy(self._speccache[ot])
         return out
 
 
@@ -627,5 +641,12 @@ def collate(batch):
             sf[k, :J] = b["struct_feats"]
             ud[k, :J, :J] = b["updown"]
         out.update(struct_feats=sf, updown=ud)
+    if "spectral_feats" in batch[0]:
+        # spectral RoPE coordinates padded to Jm with zeros: a padded joint gets the SignNet's angle for the zero vector
+        # (one constant rotation), and PAD_BIAS already removes it from every softmax
+        sp = torch.zeros(B, Jm, batch[0]["spectral_feats"].shape[1])
+        for k, b in enumerate(batch):
+            sp[k, :b["n_joints"]] = b["spectral_feats"]
+        out["spectral_feats"] = sp
     out["valid"] = out["frame_valid"][:, :, None] & joint_valid[:, None, :]      # [B,T,Jm]
     return out

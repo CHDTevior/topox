@@ -3,7 +3,8 @@
 sourced (the arm's config): the complete augmentation protocol record must equal AugConfig(...).protocol() built from the
 AUG_* variables (the trainer compares the whole record; codex 2026-09-15 unimate r5 P2: a partial comparison accepted an
 artifact measured under an earlier augmentation rule), the model record must be the arm's (DIM / DEPTH / HEADS / QK_NORM /
-STRUCT_FEATS / DIR_BIAS / ARM_GEO_BIAS / ARM_FREEZE_ZERO_JOINT_SEM), the mechanism check must have run VERIFY_STEPS steps,
+STRUCT_FEATS / DIR_BIAS / ARM_GEO_BIAS / ARM_FREEZE_ZERO_JOINT_SEM / ARM_SPEC_ROPE / ARM_SPEC_ROPE_K -- the two spectral-RoPE
+variables default to the measurer's own "0" / "8" when unset), the mechanism check must have run VERIFY_STEPS steps,
 the solve must be the pinned GAMMA_SOLVE with non-uniform gammas, and the producer must be the allowlisted script named
 by EXPECT_CODE_SCRIPT. usage: python scripts/_calib_artifact_check.py <artifact.json>  (exit 1 = refused)"""
 import json, os, sys
@@ -24,7 +25,8 @@ def main(path: str) -> int:
     want_aug = cfg.protocol()
     want_model = {"dim": int(e["DIM"]), "depth": int(e["DEPTH"]), "heads": int(e["HEADS"]), "qk_norm": e["QK_NORM"] == "1",
                   "struct_feats": e["STRUCT_FEATS"] == "1", "dir_bias": e["DIR_BIAS"] == "1",
-                  "geo_bias": e["ARM_GEO_BIAS"] == "1", "freeze_zero_joint_sem": e["ARM_FREEZE_ZERO_JOINT_SEM"] == "1"}
+                  "geo_bias": e["ARM_GEO_BIAS"] == "1", "freeze_zero_joint_sem": e["ARM_FREEZE_ZERO_JOINT_SEM"] == "1",
+                  "spec_rope": e.get("ARM_SPEC_ROPE", "0") == "1", "spec_rope_k": int(e.get("ARM_SPEC_ROPE_K", "8"))}
     want_solve, want_steps, want_script = e["GAMMA_SOLVE"], int(e["VERIFY_STEPS"]), e["EXPECT_CODE_SCRIPT"]
     bad = []
     if pr.get("augmentation") != want_aug: bad.append(f"augmentation={pr.get('augmentation')!r} != {want_aug!r}")

@@ -84,7 +84,7 @@ from src.data.ktjd17_incontext import Ktjd17Base, ktjd17_split_names            
 from src.data.ktjd17_augment import AugConfig                                            # noqa: E402
 from src.models.v2.dit_motion import (InContextMotionDiT, cfm_loss,                       # noqa: E402
                                       _GROUP_SPEC_KTJD17, KTJD17_MASK_POLICY)
-from scripts.train_v2_incontext import ktjd_channel_lut, ktjd_prep, cond_of, to_dev       # noqa: E402
+from scripts.train_v2_incontext import ktjd_channel_lut, ktjd_prep, cond_of, to_dev, calib_code_sha256, SPEC_ROPE_CODE_FILES   # noqa: E402
 
 OUT = Path(os.environ.get("CALIB_OUT", "configs/pzh312_gamma_calibration_v5.json"))
 # Kimodo Eq.1 families -> KTJD groups, with the Eq.1-implied share profile (gamma^2-normalized:
@@ -166,7 +166,10 @@ ARM = dict(dim=int(os.environ.get("ARM_DIM", "384")), depth=int(os.environ.get("
            struct_feats=os.environ.get("ARM_STRUCT_FEATS", "1") == "1",
            dir_bias=os.environ.get("ARM_DIR_BIAS", "1") == "1",
            geo_bias=os.environ.get("ARM_GEO_BIAS", "1") == "1",
-           freeze_zero_joint_sem=os.environ.get("ARM_FREEZE_ZERO_JOINT_SEM", "0") == "1")
+           freeze_zero_joint_sem=os.environ.get("ARM_FREEZE_ZERO_JOINT_SEM", "0") == "1",
+           # spectral joint RoPE arm (2026-09-15): the slot table replaced by UniMate's SignNet RoPE with K eigenvectors
+           spec_rope=os.environ.get("ARM_SPEC_ROPE", "0") == "1",
+           spec_rope_k=int(os.environ.get("ARM_SPEC_ROPE_K", "8")))
 
 
 def main():
@@ -182,7 +185,7 @@ def main():
     names = ktjd17_split_names(R, exclude=EXCLUDE)
     ds = InContextPairs(base, names["train"], names["train"], balance_skeletons=False, seed=0,
                         emit_graph_v2=True, demo_rest=bool(DEMO_REST), demo_frames=DEMO_FRAMES,
-                        augment=AUG)
+                        augment=AUG, emit_spectral=(ARM["spec_rope_k"] if ARM["spec_rope"] else 0))
     lut = ktjd_channel_lut(base)
 
     # ---- tiling assertion: per rig, the 9 groups cover channel_valid cells EXACTLY once ----
@@ -301,7 +304,8 @@ def main():
     model = InContextMotionDiT(in_ch=17, dim=ARM["dim"], depth=ARM["depth"],
                                n_heads=ARM["heads"], d_text=4096, d_joint_sem=4096,
                                use_struct_feats=ARM["struct_feats"], use_dir_bias=ARM["dir_bias"],
-                               use_geo_bias=ARM["geo_bias"], grad_ckpt=True, qk_norm=ARM["qk_norm"]).to(dev).train()
+                               use_geo_bias=ARM["geo_bias"], grad_ckpt=True, qk_norm=ARM["qk_norm"],
+                               use_spec_rope=ARM["spec_rope"], spec_rope_k=ARM["spec_rope_k"]).to(dev).train()
     if ARM["freeze_zero_joint_sem"]:
         with torch.no_grad():
             model.joint_sem.weight.zero_(); model.joint_sem.bias.zero_()
@@ -471,9 +475,11 @@ def main():
     print("[verify] PASS (mechanism): measured shares match the batch-wise gamma^2*E_err prediction within "
           "25% for all groups")
 
-    code_sha = hashlib.sha256(
-        Path("src/models/v2/dit_motion.py").read_bytes()
-        + Path(__file__).read_bytes()).hexdigest()
+    # the trainer's formula (scripts/train_v2_incontext.py calib_code_sha256): dit_motion.py + this script, plus the
+    # spectral-RoPE files when the arm uses them (codex 2026-09-15 specrope r1 P2)
+    code_sha = calib_code_sha256(Path(".").resolve(), Path(__file__), ARM["spec_rope"])
+    code_files = ["src/models/v2/dit_motion.py", os.path.relpath(Path(__file__).resolve(), Path(".").resolve())] \
+        + (list(SPEC_ROPE_CODE_FILES) if ARM["spec_rope"] else [])
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text(json.dumps({
         "version": "pzh312_v1",
@@ -546,6 +552,7 @@ def main():
                    "schema_sha256": base.provenance["schema_sha256"],
                    "joint_sem_sha256": base.provenance["joint_sem_sha256"],
                    "code_sha256": code_sha,
+                   "code_files": code_files,       # what code_sha256 covers, in order (informational; the trainer recomputes)
                    "code_script": "scripts/_measure_ktjd17_gamma_calibration_view_v2.py",
                    # training-view binding (codex 2026-09-02): the cut, the exact train clip set and
                    # the manifest this cohort came from -- the trainer compares all three

@@ -73,7 +73,7 @@ def cond_of(b):
              joint_valid=b["joint_valid"], text=b["text"], joint_sem=b["joint_sem"])
     if "demo_text" in b:                     # F5 reference-transcript analogue
         d["demo_text"] = b["demo_text"]
-    for k in ("struct_feats", "updown"):     # graph-v2, present only when the dataset emits them
+    for k in ("struct_feats", "updown", "spectral_feats"):   # graph-v2 / spectral RoPE, present only when the dataset emits them
         if k in b:
             d[k] = b[k]
     return d
@@ -220,19 +220,46 @@ def connectivity_probe(model, b, demo_frames=DEMO_FRAMES, ktjd_lut=None, ktjd_ga
 
 
 def calib_arm_model_drift(calib: dict, want: dict, require_uniform: bool):
-    """The uniform arm's artifact was measured ON A MODEL: it must be THIS arm's model, recorded with all four conditioning
-    fields, or the mechanism check and the acceleration diagnostic certify a denoiser that still has the ingredients the arm
-    removed (codex baseline r4 #2). Returns the refusal text, or None. Only the uniform arm compares: a calibrated arm is
-    bound to its artifact by the pinned sha and by the calibration runner's own check, and some arms share another arm's
-    artifact on purpose (the flat arm trains on the nodesc control's weights; codex 2026-09-15 unimate r4 P1-2), while
-    artifacts older than the conditioning fields record the architecture only (codex unimate r3 P1)."""
+    """The artifact was measured ON A MODEL. Two bindings, returned as the refusal text or None:
+    - the spectral-RoPE fields (spec_rope / spec_rope_k) bind EVERY arm: a slot-table artifact must never certify a
+      spectral-RoPE run or vice versa, and the code hash cannot tell the two apart (codex 2026-09-15 specrope r1 P1). An
+      artifact written before the fields existed was measured on a model without the spectral RoPE -- absence means
+      exactly that (the _calib_demo_drift convention).
+    - the four conditioning fields (struct_feats / dir_bias / geo_bias / freeze_zero_joint_sem) bind the UNIFORM arm only,
+      strictly (all four recorded): the mechanism check and the acceleration diagnostic must not certify a denoiser that
+      still has the ingredients the arm removed (codex baseline r4 #2). A calibrated arm is bound to its artifact by the
+      pinned sha and by the calibration runner's own check, and some arms share another arm's artifact on purpose (the
+      flat arm trains on the nodesc control's weights; codex 2026-09-15 unimate r4 P1-2), while artifacts older than the
+      conditioning fields record the architecture only (codex unimate r3 P1)."""
+    arm = (calib.get("protocol", {}).get("verify", {}) or {}).get("arm_model") or {}
+    legacy = {"spec_rope": False, "spec_rope_k": 8}
+    spec_want = {k: want[k] for k in legacy if k in want}
+    spec_got = {k: arm.get(k, legacy[k]) for k in spec_want}
+    if spec_got != spec_want:
+        return (f"was measured on a model with {spec_got}, this run builds {spec_want} -- re-measure it with the matching "
+                f"ARM_SPEC_ROPE / ARM_SPEC_ROPE_K")
     if not require_uniform:
         return None
-    arm = (calib.get("protocol", {}).get("verify", {}) or {}).get("arm_model") or {}
-    got = {k: arm.get(k) for k in want}
-    if got != want:
-        return f"was measured on a model with {got}, this run builds {want} -- re-measure it with the matching ARM_* conditioning"
+    rest_want = {k: v for k, v in want.items() if k not in legacy}
+    got = {k: arm.get(k) for k in rest_want}
+    if got != rest_want:
+        return f"was measured on a model with {got}, this run builds {rest_want} -- re-measure it with the matching ARM_* conditioning"
     return None
+
+
+# the spectral-RoPE implementation is loss / model code for that arm only: hashed into the calibration binding when the
+# arm uses it, left out otherwise so every older artifact keeps matching (codex 2026-09-15 specrope r1 P2)
+SPEC_ROPE_CODE_FILES = ("src/models/v2/spec_rope.py", "src/data/skeleton_spectral.py")
+
+
+def calib_code_sha256(repo: Path, calib_script: Path, spec_rope: bool) -> str:
+    """sha256 over dit_motion.py + the measuring script (+ the spectral-RoPE files when the arm uses them) -- the ONE
+    formula both the trainer's binding check and the v2 measurer's record use."""
+    blob = (repo / "src" / "models" / "v2" / "dit_motion.py").read_bytes() + Path(calib_script).read_bytes()
+    if spec_rope:
+        for rel in SPEC_ROPE_CODE_FILES:
+            blob += (repo / rel).read_bytes()
+    return hashlib.sha256(blob).hexdigest()
 
 
 def _calib_demo_drift(proto, run_demo_rest, run_demo_frames):
@@ -405,6 +432,11 @@ def main():
     ap.add_argument("--dir_bias", action="store_true",
                     help="graph-v2 knife 2: learnable per-head directional (up/down LCA hop) "
                          "attention bias added to the fixed -geodesic scalar")
+    ap.add_argument("--spec_rope", action="store_true",
+                    help="UniMate's spectral joint RoPE (src/models/v2/spec_rope.py): a sign-invariant SignNet maps the rig's K "
+                         "smallest non-trivial Laplacian eigenvectors to rotation angles that rotate q/k of the spatial attention; "
+                         "REPLACES the learned joint-slot table j_pos (the checkpoint carries spec_rope.* and no j_pos)")
+    ap.add_argument("--spec_rope_k", type=int, default=8, help="spectral RoPE: eigenvector count K (UniMate max_freqs 8)")
     ap.add_argument("--ktjd_root", default="dataset/ktjd17_truebones",
                     help="ktjd17 corpus root (only read when --corpus ktjd17)")
     ap.add_argument("--anchor", choices=("none", "rest", "demo"), default="none",
@@ -758,11 +790,10 @@ def main():
                 or _REPO not in _calib_script.resolve().parents):
             raise SystemExit(f"[refuse] gamma calibration names a measuring script outside the repo allowlist: "
                              f"{_rel!r}")
-        _dit_src = _REPO / "src" / "models" / "v2" / "dit_motion.py"
-        code_now = hashlib.sha256(_dit_src.read_bytes() + _calib_script.read_bytes()).hexdigest()
+        code_now = calib_code_sha256(_REPO, _calib_script, bool(a.spec_rope))
         if str(calib["hashes"].get("code_sha256")) != code_now and not a.allow_calib_code_drift:
             raise SystemExit("[refuse] gamma calibration was measured against different loss code "
-                             "(dit_motion.py / the calibration script changed since). Recalibrate, "
+                             "(dit_motion.py / the calibration script / the spectral-RoPE files changed since). Recalibrate, "
                              "or pass --allow_calib_code_drift with a reason if the change provably "
                              "cannot affect group shares.")
         for hk in ("gains_sha256", "schema_sha256"):
@@ -868,7 +899,8 @@ def main():
             raise SystemExit(f"[refuse] {a.ktjd_gamma_calib} records gamma_solve={calib['protocol']['gamma_solve']!r}; "
                              "a calibrated arm needs 'kimodo' (the uniform arm passes --require_uniform_gammas)")
         _drift = calib_arm_model_drift(calib, {"struct_feats": bool(a.struct_feats), "dir_bias": bool(a.dir_bias),
-                                               "geo_bias": bool(a.geo_bias), "freeze_zero_joint_sem": bool(a.freeze_zero_joint_sem)},
+                                               "geo_bias": bool(a.geo_bias), "freeze_zero_joint_sem": bool(a.freeze_zero_joint_sem),
+                                               "spec_rope": bool(a.spec_rope), "spec_rope_k": int(a.spec_rope_k)},
                                        bool(a.require_uniform_gammas))
         if _drift:
             raise SystemExit(f"[refuse] {a.ktjd_gamma_calib} {_drift}")
@@ -947,6 +979,7 @@ def main():
                            rig_multiplicity=_rig_multiplicity(a), epoch_draws=a.epoch_draws,
                            emit_fk_fields=(a.gamma_fk > 0 or a.gamma_vel > 0 or a.gamma_lock > 0),
                            emit_graph_v2=(a.struct_feats or a.dir_bias),
+                           emit_spectral=(a.spec_rope_k if a.spec_rope else 0),
                            identity_p=a.identity_p, emit_ref_text=a.ref_text,
                            demo_rest=a.demo_rest, augment=aug_cfg)
     ds_va = InContextPairs(base, names["val"], names["train"], object_types=types,
@@ -954,6 +987,7 @@ def main():
                            balance_skeletons=False, seed=a.seed + 1,
                            emit_fk_fields=(a.gamma_fk > 0 or a.gamma_vel > 0 or a.gamma_lock > 0),
                            emit_graph_v2=(a.struct_feats or a.dir_bias),
+                           emit_spectral=(a.spec_rope_k if a.spec_rope else 0),
                            emit_ref_text=a.ref_text, demo_rest=a.demo_rest)
     print(f"[train] {len(ds_tr)} targets / {len(ds_tr.types)} rigs / {ds_tr.pair_count()} pairs "
           f"| bucket-A val {len(ds_va)} targets / {len(ds_va.types)} rigs", flush=True)
@@ -1049,12 +1083,14 @@ def main():
                                      d_text=4096, d_joint_sem=4096,
                                      use_struct_feats=a.struct_feats,
                                      use_dir_bias=a.dir_bias, grad_ckpt=a.grad_ckpt,
-                                     use_ref_text=a.ref_text, qk_norm=a.qk_norm, use_geo_bias=a.geo_bias).to(dev)
+                                     use_ref_text=a.ref_text, qk_norm=a.qk_norm, use_geo_bias=a.geo_bias,
+                                     use_spec_rope=a.spec_rope, spec_rope_k=a.spec_rope_k).to(dev)
     else:
         model = InContextMotionDiT(in_ch=in_ch, dim=a.dim, depth=a.depth, n_heads=a.heads,
                                    d_text=4096, d_joint_sem=4096,
                                    use_struct_feats=a.struct_feats, use_dir_bias=a.dir_bias, grad_ckpt=a.grad_ckpt,
-                                   use_ref_text=a.ref_text, qk_norm=a.qk_norm, use_geo_bias=a.geo_bias).to(dev)
+                                   use_ref_text=a.ref_text, qk_norm=a.qk_norm, use_geo_bias=a.geo_bias,
+                                   use_spec_rope=a.spec_rope, spec_rope_k=a.spec_rope_k).to(dev)
     # raw_model stays the UNCOMPILED module: it is what state_dict()/load_state_dict() use, so
     # checkpoints keep clean keys (a compiled wrapper prefixes everything with `_orig_mod.` and
     # every earlier checkpoint would fail to load).
@@ -1182,7 +1218,9 @@ def main():
                 "aug_p", "aug_drop_max_frac", "aug_drop_mode", "aug_rest_deg", "aug_sem_noise", "aug_sem_drop_p",
                 "aug_stats_logsd", "aug_stats_shift", "aug_bone_scale", "aug_pool_frac", "aug_add_p", "aug_mode",
                 # simplified-baseline knobs (codex baseline r1 #2): both define the arm
-                "geo_bias", "freeze_zero_joint_sem")
+                "geo_bias", "freeze_zero_joint_sem",
+                # spectral joint RoPE (2026-09-15): architecture-defining (the checkpoint has spec_rope.* and no j_pos)
+                "spec_rope", "spec_rope_k")
         core = ("dim", "depth", "heads", "batch", "lr", "seed", "data_root", "splits_dir",
                 "joint_sem", "caption_cache", "texts_json")
         missing = [k for k in core if k not in old_args]
