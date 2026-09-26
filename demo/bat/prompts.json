@@ -1,0 +1,34 @@
+{
+ "rig": "OBJ_614ab66892894acabcda5cc4a94f87fe",
+ "body_plan": "avian",
+ "joints": 48,
+ "source": {
+  "name": "Bat Bay04",
+  "author": "thanhnhan",
+  "author_url": "https://sketchfab.com/thanhnhan",
+  "license": "CC Attribution",
+  "license_slug": "by",
+  "license_url": "http://creativecommons.org/licenses/by/4.0/",
+  "url": "https://sketchfab.com/3d-models/bat-bay04-614ab66892894acabcda5cc4a94f87fe",
+  "retrieved": "2026-09-26",
+  "object_id": "614ab66892894acabcda5cc4a94f87fe"
+ },
+ "prompts": [
+  {
+   "text": "An object flaps its wings in place.",
+   "text_emb": "text_emb_1.npy",
+   "seed": 7,
+   "frames": 60,
+   "reference": [
+    "ref_1.gif",
+    "ref_1.bvh"
+   ],
+   "scores_vs_training_clip": {
+    "motion": 1.28,
+    "gap": 0.107,
+    "jitter": 2.26,
+    "float_bl": 0.136
+   }
+  }
+ ]
+}

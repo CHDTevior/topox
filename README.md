@@ -69,6 +69,10 @@ python scripts/deploy_generate.py --ckpt weights/topox_h1_uniml3d73m_ep239_infer
     --skeleton my_rig.bvh --up +Y --forward +Z --text "An object walks forward." --frames 120 --seed 7 --out out/
 ```
 
+- **Demos first.** `demo/` holds 9 training-set rigs (triceratops, stag, bear, low-poly wolf, a mech, a Viking worker,
+  a crawling figure, spider, bat; CC BY 4.0 models from Sketchfab with UniML3D captions, credited in `demo/README.md`)
+  with 12 prompts, the exact embeddings the model was trained with and reference outputs. `bash demo/run_demos.sh` regenerates them without the text encoder --
+  the quickest check that an installation works (compare `out/demos/*/ref_*.gif` with `demo/*/ref_*.gif`).
 - **Rest pose.** The BVH's frame `--rest_frame` (default 0) is the rest pose: export the rig with its T-pose / rest pose as
   the first frame. `--rest_frame -1` uses the OFFSETs with zero rotations (the rest pose of a Blender export, but NOT of a
   3ds Max Biped export, whose OFFSETs are not the rest pose). Look at `<name>.rest.gif` before generating.
