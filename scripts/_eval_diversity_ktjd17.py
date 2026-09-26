@@ -44,6 +44,10 @@ def main():
     ap.add_argument("--report", required=True, help="the canonical merge report of those shards (binds ckpt, order and evaluator)")
     ap.add_argument("--eval_ckpt", default=EVAL_CKPT); ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--n_pairs", type=int, default=300); ap.add_argument("--encode_batch", type=int, default=64)
+    ap.add_argument("--expect_live_fp", default=None,
+                    help="the live scoring fingerprint you are accepting. Required when the report was scored by an "
+                         "audited legacy state: registry membership of the RECORDED hash does not certify the state "
+                         "running now (codex divmm r2)")
     a = ap.parse_args()
     if a.n_pairs < 2:
         raise SystemExit(f"[refuse] --n_pairs {a.n_pairs} is not a usable sample size")
@@ -100,7 +104,7 @@ def main():
     if rp is not None and eval_sha != str(rp["protocol"].get("eval_ckpt_sha256")):
         raise SystemExit(f"[refuse] evaluator {a.eval_ckpt} is not the one the report used")
     out = {"gen_ckpt": a.gen_ckpt, "gen_ckpt_sha256": gen_sha, "eval_ckpt_sha256": eval_sha, "report": a.report,
-           "seed": a.seed, "n_pairs": a.n_pairs}
+           "seed": a.seed, "n_pairs": a.n_pairs, "expect_live_fp": a.expect_live_fp}
 
     # ---------------- diversity, on the canonical samples ----------------
     if a.shards:
@@ -136,12 +140,40 @@ def main():
                 raise SystemExit(f"[refuse] shard {k} differs from the report's")
         # the SCORING code the report ran under, not only the generation code (codex divmm r2 #8): this script encodes through
         # the same functions, so a change to them since the report is a change to the number
-        from scripts._eval_v2_gen_in_evalspace import source_fingerprint
-        now_scoring = source_fingerprint(ca.get("anchor", "none"))
-        if rg.get("scoring_source_fingerprint") != now_scoring:
-            raise SystemExit(f"[refuse] the scoring code has changed since the report, or the report does not record it "
-                             f"({str(rg.get('scoring_source_fingerprint'))[:12]} vs {now_scoring[:12]}); re-merge the report first")
-        out["scoring_source_fingerprint"] = now_scoring
+        # An AUDITED legacy state counts as that code. The registry exists because scoring-only edits (argument parsing,
+        # the registry itself) move the hash without moving any number, so an exact-equality test here rejected every
+        # report ever written -- including all ten seed repetitions of Table 1, whose scoring state is registered.
+        # Same acceptance as scripts/_eval_nonparametric_baselines_ktjd17.py:214 (codex divmm r1).
+        from scripts._eval_v2_gen_in_evalspace import LEGACY_SOURCE_FINGERPRINTS, source_fingerprint
+        # flat=: the adapted baseline's denoiser is hashed into ITS arm's fingerprint only. Omitting the flag computed a
+        # state that never existed for a flat checkpoint, so such a report could never be scored here (codex divmm r1).
+        now_scoring = source_fingerprint(ca.get("anchor", "none"), flat=bool(ca.get("flat_joints", 0)))
+        canon_scoring = str(rg.get("scoring_source_fingerprint") or "")
+        if not canon_scoring:
+            raise SystemExit(f"[refuse] {a.report} records no scoring_source_fingerprint -- re-run its merge")
+        if canon_scoring != now_scoring and canon_scoring not in LEGACY_SOURCE_FINGERPRINTS:
+            raise SystemExit(f"[refuse] the scoring code changed since the report ({canon_scoring[:16]} recorded, "
+                             f"{now_scoring[:16]} live, not an audited legacy fingerprint); re-merge the report first")
+        # Registry membership of the RECORDED hash says the report's state was audited; it says nothing about the
+        # state running now, so on its own it let ANY live scoring code through (codex divmm r2 P1). When the two
+        # differ, the live state must be named on the command line: the number then records which live state produced
+        # it, and an edit landing under a running batch stops the batch instead of silently changing its arithmetic.
+        # A SUPPLIED pin is checked unconditionally; only the REQUIREMENT to supply one is conditional. Validating it
+        # only inside the legacy branch meant a wrong pin passed silently whenever the live state happened to equal
+        # the report's -- including the case the pin exists for, live code changing back mid-batch (codex divmm r3).
+        # `is not None`, not truthiness: --expect_live_fp "" is supplied but falsy, and an empty quoted shell
+        # variable produces exactly that (codex divmm r4)
+        if a.expect_live_fp is not None and a.expect_live_fp != now_scoring:
+            raise SystemExit(f"[refuse] --expect_live_fp {a.expect_live_fp[:16]} is not the live scoring state "
+                             f"{now_scoring[:16]}: the scoring code changed since you named it")
+        if canon_scoring != now_scoring and not a.expect_live_fp:
+            raise SystemExit(f"[refuse] the report was scored by {canon_scoring[:16]} (audited legacy) but the live "
+                             f"scoring state is {now_scoring[:16]}. Pass --expect_live_fp {now_scoring} to state "
+                             f"which live state you are accepting; it is recorded in the output.")
+        out["scoring_source_fingerprint"] = canon_scoring
+        out["scoring_source_fingerprint_live"] = now_scoring
+        out["legacy_fingerprint_note"] = (LEGACY_SOURCE_FINGERPRINTS.get(canon_scoring)
+                                          if canon_scoring != now_scoring else None)
         if not str(rp["protocol"].get("eval_order_sha256") or ""):
             raise SystemExit(f"[refuse] {a.report} predates the evaluation-order digest -- re-run its merge")
         if len(gens) != PROTOCOL_VAL_N:
@@ -152,6 +184,40 @@ def main():
             raise SystemExit(f"[refuse] the scored order {order_sha[:12]} differs from the report's "
                              f"{str(rp['protocol']['eval_order_sha256'])[:12]}")
         out["eval_order_sha256"] = order_sha
+        # EVIDENCE that these are the report's EMBEDDINGS, not merely its clips: recompute the report's own FID from
+        # them. The gates above are exact but cover identity (checkpoint bytes, shard bytes, clip order, code state),
+        # never arithmetic -- and this scoring runs on whatever card is free, while the report was scored on the card in
+        # protocol.generation.shards[].device, whose TF32 matmul rounds differently. A wrong space moves FID by orders of
+        # magnitude; cross-card rounding does not. Tolerance declared here, not fitted to an observed value.
+        # It is a NECESSARY condition, not a sufficient one: two different embedding sets can share a mean and a
+        # covariance, so this rides on top of the exact identity gates above rather than replacing them.
+        from scripts._eval_v2_gen_in_evalspace import fid as _fid
+        fid_now = _fid(me_gen, me_gt)
+        fid_rep = rp.get("fid_gen_vs_gt")
+        out["fid_crosscheck"] = {"report": fid_rep, "recomputed": fid_now,
+                                 "abs_delta": abs(fid_now - float(fid_rep)) if fid_rep is not None else None,
+                                 "report_device": (rg.get("shards") or [{}])[0].get("device"),
+                                 "scoring_device": torch.cuda.get_device_name(0)}
+        import math
+        if fid_rep is None:
+            raise SystemExit(f"[refuse] {a.report} records no fid_gen_vs_gt; the embedding space cannot be cross-checked")
+        # a NaN or an infinity makes every `abs(delta) > tol` comparison False, i.e. the gate would pass on exactly the
+        # inputs that mean it could not be evaluated (codex divmm r2 P1)
+        if not (math.isfinite(float(fid_rep)) and math.isfinite(fid_now)):
+            raise SystemExit(f"[refuse] FID cross-check is not evaluable: report {fid_rep!r}, recomputed {fid_now!r}")
+        # RELATIVE band only. An absolute floor of 0.01 on a report FID of ~0.005 spanned 0..0.015, so it accepted
+        # FID exactly 0 -- the value a generated-vs-generated or GT-vs-GT mix-up produces (codex divmm r1 P1-3).
+        # 25% is generous for cross-card TF32 rounding and still excludes the degenerate answers; if a real pass
+        # trips it, that is a finding to report, not a threshold to widen.
+        tol = 0.25 * abs(float(fid_rep))
+        if abs(fid_now - float(fid_rep)) > tol:
+            raise SystemExit(f"[refuse] recomputing the report's FID from these embeddings gives {fid_now:.6f}, the "
+                             f"report says {float(fid_rep):.6f} (tolerance {tol:.6f}): this is not the space the report "
+                             f"scored in, so a diversity measured here would not belong beside its numbers")
+        print(f"[divmm] FID cross-check: report {float(fid_rep):.6f} vs recomputed {fid_now:.6f} "
+              f"(|d|={abs(fid_now - float(fid_rep)):.2e}; report scored on "
+              f"{out['fid_crosscheck']['report_device']!r}, this on {out['fid_crosscheck']['scoring_device']!r})",
+              flush=True)
         out["diversity"] = {"generated": mean_pair_l2(me_gen, a.n_pairs, torch.Generator().manual_seed(a.seed)),
                             "real": mean_pair_l2(me_gt, a.n_pairs, torch.Generator().manual_seed(a.seed)),
                             "n_clips": int(me_gen.shape[0]), "protocol": proto}

@@ -44,7 +44,7 @@ export GRAD_CKPT=1 COMPILE=1
 # --- data: animal-only cut + matching recalibrated gammas ---
 export KTJD_ROOT=dataset/ktjd17_pzh312_noik_v2
 export PERCELL=data/noik_norm_stats_v2.npz
-export CALIB=${CALIB:-configs/pilot_animal_rest_gamma_calibration_b16_v1.json}
+export CALIB=${CALIB:-configs/pilot_animal_rest_gamma_calibration_b16_v2.json}
 export CUT=configs/pilot_animal_only_exclusions.json
 export JOINT_SEM=data/joint_semantics_llm2vec_pzh312_v1.npz
 export CAPTION_CACHE=data/noik_caption_llm2vec_v1
@@ -52,7 +52,7 @@ export TEXTS_JSON=data/noik_pzh312_motion_texts_v1.json
 
 export OUT=${OUT:-runs/v2_noik_pilot36m_rest}
 export NCCL_SOCKET_IFNAME=ib1 NCCL_IB_HCA=${NCCL_IB_HCA:-mlx5_3}
-export EXTRA="--rep_norm rest"
+export EXTRA="--rep_norm rest ${EXTRA_APPEND:-}"   # defining flags are never droppable; EXTRA_APPEND adds to them
 # Representation ablation arm (user 2026-09-06): 36M r1acc recipe with --rep_norm scale_only (KTJD spec scale-only normalisation).
 # Two 2-card H200 allocs, blossom04 (master, ib1 10.6.15.133, mlx5_1) + flamingo01 (worker): B32/rank x 4 = global 128, lr 2e-4,
 # 120 epochs, grad-ckpt on. B64 x 2 on one node OOMed on real data. Calibration measured under REP_NORM=scale_only at batch 32.

@@ -243,6 +243,20 @@ def main():
     ap.add_argument("--rigs_T", default="",
                     help="rigs rendered from the TRAIN bucket (seen rigs, SEEN clips -- the "
                          "memorisation upper bound; user 2026-08-20)")
+    ap.add_argument("--clips", default="",
+                    help="explicit TARGET clip ids: comma-separated, or a path to a JSON list / newline-separated "
+                         "file. Every listed clip is rendered from whichever bucket holds it (val=A, held=B, "
+                         "train=T); the per-rig --pick / --all_targets selection and the --rigs_* lists are "
+                         "bypassed, and a listed clip found in no bucket is refused. ktjd17 corpus only. "
+                         "(UniMate controlled comparison 2026-09-22: both sides generate the same 255 held-out "
+                         "clips over 248 rigs, so some rigs hold more than one target.)")
+    ap.add_argument("--zero_shot", action="store_true",
+                    help="with --clips: every listed clip sits on a rig with NO training clip; they are rendered from "
+                         "their own bucket Z and served from the skeleton file alone -- the stats artifact's exact-"
+                         "constant mask and constants (measured on the rig's own clips, including the target) are "
+                         "dropped for those rigs, so channel_valid is purely structural and the mean is the rest frame. "
+                         "Needs a --rep_norm rest, 1-frame rest-demo checkpoint. (UniMate OOD comparison, user "
+                         "2026-09-23: pure zero-shot, the same information UniMate gets.)")
     ap.add_argument("--caption_re", default="",
                     help="with --pick caption: python regex matched (case-insensitive) against "
                          "the target's caption; picks the FIRST matching clip per rig. The "
@@ -294,12 +308,25 @@ def main():
                dim=ca["dim"], depth=ca["depth"], n_heads=ca["heads"],
                d_text=4096, d_joint_sem=4096,
                use_struct_feats=bool(ca.get("struct_feats", False)),
+               struct_world_rest=bool(ca.get("struct_world_rest", False)),
                use_dir_bias=bool(ca.get("dir_bias", False)),
                qk_norm=bool(ca.get("qk_norm", False)),
                use_ref_text=bool(ca.get("ref_text", False)),
                use_geo_bias=bool(ca.get("geo_bias", True)),
-               use_spec_rope=bool(ca.get("spec_rope", False)), spec_rope_k=int(ca.get("spec_rope_k", 8)))
-    if bool(ca.get("two_stage", False)):
+               use_spec_rope=bool(ca.get("spec_rope", False)), spec_rope_k=int(ca.get("spec_rope_k", 8)),
+               spec_rope_hks=bool(ca.get("spec_rope_hks", False)),
+               use_temporal_rope=bool(ca.get("temporal_rope", False)), trope_base=float(ca.get("trope_base", 700.0)))
+    if (bool(ca.get("spec_rope", False)) or bool(ca.get("temporal_rope", False))) and int(ca.get("flat_joints", 0) or 0):
+        # FlatMotionDiT has neither rotary and keeps its own learned tables (codex trope r2 P1)
+        raise SystemExit("[refuse] a flat checkpoint records a rotary flag (spec_rope="
+                         f"{ca.get('spec_rope')!r}, temporal_rope={ca.get('temporal_rope')!r}); FlatMotionDiT has "
+                         "neither, so rendering it here would silently use the learned tables instead")
+    if int(ca.get("flat_joints", 0) or 0):
+        from src.models.v2.dit_flat import FlatMotionDiT
+        model = FlatMotionDiT(in_ch=mkw["in_ch"], max_joints=int(ca["flat_joints"]), dim=mkw["dim"],
+                              depth=mkw["depth"], n_heads=mkw["n_heads"], d_text=4096,
+                              qk_norm=mkw["qk_norm"]).to(dev)
+    elif bool(ca.get("two_stage", False)):
         from src.models.v2.dit_motion import TwoStageInContextDiT
         model = TwoStageInContextDiT(root_dim=int(ca.get("root_dim", 192)), root_depth=4,
                                      **mkw).to(dev)
@@ -392,10 +419,26 @@ def main():
                              f"{ca.get('demo_frames')}; expected 1")
         a.demo_frames = 1
         print("[render] ckpt trained with --demo_rest: 1-frame rest demo", flush=True)
+    # user 2026-09-20: "我们以后 demo 就默认是 rest 一帧了，你把那个筛选注释掉"。
+    # 那道筛选是 incontext_pairs.py:260 的 distinct-demo 规则（目标必须存在同骨架的**另一条** clip 当 demo）。
+    # 在 demo_rest 下 demo clip 从不被打开，该规则什么也买不到，却把只有一条 clip 的骨架全部丢掉。
+    # 实测 uniml3d_v1：桶 T 旧 196/5263 rig（3.7%）、1544/6611 clip（23.4%）→ 新 5263 rig / 6611 clip，
+    # n_dropped_self_only 5067→0；桶 A（val 目标 / train demo，两集合强制不相交）**逐字段 byte-identical**，
+    # 已交付的渲染不受影响。
+    # 值**从 ckpt 读**，不重新推导：训练器存 vars(a)，--rest_demo_self_pairs 是 argparse dest 且在
+    # resume-critical 清单里。重新推导会给 runs/ 下约 70 个 demo_rest=True 但该标志为 False/缺失的 ckpt
+    # 错误地打开自配对（今天无害，将来在带单 clip rig 的语料上会静默渲出模型没训过的 clip 却标成 T=train）。
+    # 本文件 :385-390 的铁律就是 "EVERY window-defining knob comes from the CHECKPOINT"。
+    # 键缺失 → False → 与改动前逐字节一致。incontext_pairs.py:222-231 的三道守卫原样生效，
+    # 且结构上不可能触发（训练时已被同一套守卫验过；ktjd17 的 base 不传 random_caption，
+    # False 来自 src/data/ktjd17_incontext.py:84,87 的类默认）。
     PK = dict(demo_rest=ck_rest, emit_ref_text=bool(ca.get("ref_text", False)),
+              rest_demo_self_pairs=bool(ca.get("rest_demo_self_pairs", False)),
               demo_frames=a.demo_frames, target_frames=a.target_frames,
               emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)),
-              emit_spectral=(int(ca.get("spec_rope_k", 8)) if bool(ca.get("spec_rope", False)) else 0))
+              struct_world_rest=bool(ca.get("struct_world_rest", False)),
+              emit_spectral=(int(ca.get("spec_rope_k", 8)) if bool(ca.get("spec_rope", False)) else 0),
+              spectral_hks=bool(ca.get("spec_rope_hks", False)))
     dsA = InContextPairs(base, names["val"], names["train"], object_types=tb,
                          balance_skeletons=False, seed=a.seed, **PK)
     # the merged no-IK corpus ships only train/val; a missing held bucket renders nothing for B
@@ -406,8 +449,54 @@ def main():
                          balance_skeletons=False, seed=a.seed, **PK)
 
     jobs = []
-    for bucket, rigs, ds in (("A", a.rigs_A, dsA), ("B", a.rigs_B, dsB), ("T", a.rigs_T, dsT)):
+    clipset = set()
+    if a.clips:
+        import json as _json
+        rows_ = getattr(base, "_rows", None)
+        if a.corpus != "ktjd17" or rows_ is None:
+            raise SystemExit("[refuse] --clips needs the ktjd17 corpus (clip ids live in its manifest rows)")
+        src_ = Path(a.clips)
+        if src_.is_file():
+            txt_ = src_.read_text()
+            clipset = set(map(str, _json.loads(txt_))) if txt_.lstrip().startswith("[") \
+                else {ln.strip() for ln in txt_.splitlines() if ln.strip()}
+        else:
+            clipset = {x.strip() for x in a.clips.split(",") if x.strip()}
+        if not clipset:
+            raise SystemExit("[refuse] --clips given but names no clip")
+        print(f"[render] --clips: {len(clipset)} explicit target(s); --rigs_A/B/T, --pick and --all_targets are bypassed", flush=True)
+    dsZ = None
+    if a.zero_shot:
+        if not clipset:
+            raise SystemExit("[refuse] --zero_shot needs --clips")
+        if not ck_rest or str(ca.get("rep_norm")) != "rest":
+            raise SystemExit("[refuse] --zero_shot serves a rig from its skeleton file alone: it needs a --rep_norm rest, "
+                             "1-frame rest-demo checkpoint")
+        if len(rows_) != len(base.samples):
+            raise SystemExit("[refuse] --zero_shot: manifest rows and served samples are not aligned")
+        _nm = lambda s_: Path(s_["path"]).name.replace(".npy", "")
+        zs_i = [i for i, r_ in enumerate(rows_) if str(r_["clip_id"]) in clipset]
+        zs_rigs = {base.samples[i]["object_type"] for i in zs_i}
+        _trained = {s_["object_type"] for s_ in base.samples if _nm(s_) in names["train"]}
+        if zs_rigs & _trained:
+            raise SystemExit(f"[refuse] --zero_shot: rig(s) with training clips: {sorted(zs_rigs & _trained)[:5]}")
+        for r_ in zs_rigs:                  # no motion-derived constant cells: _stats / static_masks fall back to the skeleton
+            base._sup.pop(r_, None)
+            for c_ in ("_masks", "_pc_so", "_restf", "_anchor"):
+                getattr(base, c_, {}).pop(r_, None)
+        zs_names = {_nm(base.samples[i]) for i in zs_i}
+        dsZ = InContextPairs(base, zs_names, zs_names, object_types=tb, balance_skeletons=False, seed=a.seed,
+                             **{**PK, "rest_demo_self_pairs": True})   # rest demo: the demo clip is never opened
+        print(f"[render] --zero_shot: {len(zs_i)} clip(s) on {len(zs_rigs)} rig(s) with no training clip, served from "
+              f"the skeleton file alone (bucket Z)", flush=True)
+    for bucket, rigs, ds in (("A", a.rigs_A, dsA), ("B", a.rigs_B, dsB), ("T", a.rigs_T, dsT), ("Z", "", dsZ)):
         if ds is None:
+            continue
+        if clipset:
+            # explicit targets: every listed clip this bucket holds, rig implied by the clip, no per-rig pick.
+            # The manifest row is enough to identify a target (no motion load), unlike the pick branches below.
+            jobs += [(bucket, ot, ds, i) for i, (ot, bi) in enumerate(ds.index)
+                     if str(rows_[bi]["clip_id"]) in clipset]
             continue
         for r in [x.strip() for x in rigs.split(",") if x.strip()]:
             if r not in ds.types:
@@ -462,6 +551,15 @@ def main():
                 else:
                     positions = positions[:1]                 # legacy: first target
             jobs += [(bucket, r, ds, pp) for pp in positions]
+    if clipset:
+        found_ = [str(rows_[ds.index[pos][1]]["clip_id"]) for _, _, ds, pos in jobs]
+        missing_ = sorted(clipset - set(found_))
+        if missing_:
+            raise SystemExit(f"[refuse] --clips: {len(missing_)} clip(s) in no rendered bucket "
+                             f"(val=A, held=B, train=T; excluded clips never enter a bucket): {missing_[:5]}")
+        if len(found_) != len(set(found_)):
+            raise SystemExit("[refuse] --clips: a clip was selected twice (present in more than one bucket)")
+        print(f"[render] --clips: {len(jobs)} explicit targets over {len({r for _, r, _, _ in jobs})} rigs", flush=True)
     lines = []
     for bucket, rig, ds, pos in jobs:
         # Stream reset PER ITEM: each target's demo/crop draw starts from the same rng origin, so a

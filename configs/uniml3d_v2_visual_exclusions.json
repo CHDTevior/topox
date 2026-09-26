@@ -1,0 +1,16 @@
+{
+ "generation_id": "20260920T162314097778Z-b54d5f79e630",
+ "clips": {
+  "ed266322157b60527984": "all"
+ },
+ "reasons": {
+  "ed266322157b60527984": "Source-fidelity conversion is numerically valid, but the 25-frame motion rises about 66 rest-AABB scales and reaches 3.04 scales/frame. Exclude from ordinary motion training pending source-intent review."
+ },
+ "evidence": "dataset/ktjd17_uniml3d_v1/analysis/channel_visuals/OBJ_669a8e3557bbceb71e8f634b_glb__ed266322157b60527984_sequence.png",
+ "scope": "One visually inspected extreme clip, not a claim that every remaining source is clean. Original frozen corpus and all-accepted reporting statistics are retained. Apply with the existing loader exclude_clips argument.",
+ "carried_from": {
+  "generation_id": "20260915T174929822046Z-6c4c46786a1e",
+  "corpus": "dataset/ktjd17_uniml3d_v1"
+ },
+ "carry_rationale": "内容与 v1 完全相同，只换 generation 绑定。理由：v1 这条排除是靠极端值扫查找到的，v2 重跑同一扫查后它仍是 speed_p99(91.22 对第二名 37.16) 与 max_step_rig_units(3.04 对 1.33) 的双料第一，自成一档；v2 新增的 1,097 个 rig 里最极端的 cf54df740d5844f41e36 (speed_p99 31.80 / max_step 1.06) 与 5018d4a84539569e4054 (max_step 1.05) 都落在 v1 本来就接受的区间内（v1 保留了 37.16 与 30.14 两条），按 v1 用的同一把尺子不构成新增排除。依据 dataset/ktjd17_uniml3d_v2/analysis/extreme_clips.json。"
+}

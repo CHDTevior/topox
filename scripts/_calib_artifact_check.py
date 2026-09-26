@@ -3,8 +3,10 @@
 sourced (the arm's config): the complete augmentation protocol record must equal AugConfig(...).protocol() built from the
 AUG_* variables (the trainer compares the whole record; codex 2026-09-15 unimate r5 P2: a partial comparison accepted an
 artifact measured under an earlier augmentation rule), the model record must be the arm's (DIM / DEPTH / HEADS / QK_NORM /
-STRUCT_FEATS / DIR_BIAS / ARM_GEO_BIAS / ARM_FREEZE_ZERO_JOINT_SEM / ARM_SPEC_ROPE / ARM_SPEC_ROPE_K -- the two spectral-RoPE
-variables default to the measurer's own "0" / "8" when unset), the mechanism check must have run VERIFY_STEPS steps,
+STRUCT_FEATS / DIR_BIAS / ARM_GEO_BIAS / ARM_FREEZE_ZERO_JOINT_SEM / ARM_SPEC_ROPE / ARM_SPEC_ROPE_K / ARM_SPEC_ROPE_HKS / ARM_STRUCT_WORLD_REST / AUG_REST_P /
+ARM_TEMPORAL_ROPE / ARM_TROPE_BASE -- the RoPE variables default to the measurer's own "0" / "8" / "0" / "0" / "700" when
+unset), the mechanism
+check must have run VERIFY_STEPS steps,
 the solve must be the pinned GAMMA_SOLVE with non-uniform gammas, and the producer must be the allowlisted script named
 by EXPECT_CODE_SCRIPT. usage: python scripts/_calib_artifact_check.py <artifact.json>  (exit 1 = refused)"""
 import json, os, sys
@@ -21,16 +23,32 @@ def main(path: str) -> int:
                     sem_noise=float(e.get("AUG_SEM_NOISE", "0")), sem_drop_p=float(e.get("AUG_SEM_DROP_P", "0")),
                     stats_logsd=float(e.get("AUG_STATS_LOGSD", "0")), stats_shift=float(e.get("AUG_STATS_SHIFT", "0")),
                     bone_scale=float(e.get("AUG_BONE_SCALE", "0")), pool_frac=float(e.get("AUG_POOL_FRAC", "0")),
-                    add_p=float(e.get("AUG_ADD_P", "0")), mode=e.get("AUG_MODE", "joint"))
+                    add_p=float(e.get("AUG_ADD_P", "0")), mode=e.get("AUG_MODE", "joint"),
+                    rest_p=float(e.get("AUG_REST_P", "0")))
     want_aug = cfg.protocol()
     want_model = {"dim": int(e["DIM"]), "depth": int(e["DEPTH"]), "heads": int(e["HEADS"]), "qk_norm": e["QK_NORM"] == "1",
                   "struct_feats": e["STRUCT_FEATS"] == "1", "dir_bias": e["DIR_BIAS"] == "1",
                   "geo_bias": e["ARM_GEO_BIAS"] == "1", "freeze_zero_joint_sem": e["ARM_FREEZE_ZERO_JOINT_SEM"] == "1",
-                  "spec_rope": e.get("ARM_SPEC_ROPE", "0") == "1", "spec_rope_k": int(e.get("ARM_SPEC_ROPE_K", "8"))}
+                  "spec_rope": e.get("ARM_SPEC_ROPE", "0") == "1", "spec_rope_k": int(e.get("ARM_SPEC_ROPE_K", "8")),
+                  "spec_rope_hks": e.get("ARM_SPEC_ROPE_HKS", "0") == "1",
+                  "struct_world_rest": e.get("ARM_STRUCT_WORLD_REST", "0") == "1",
+                  "temporal_rope": e.get("ARM_TEMPORAL_ROPE", "0") == "1", "trope_base": float(e.get("ARM_TROPE_BASE", "700"))}
     want_solve, want_steps, want_script = e["GAMMA_SOLVE"], int(e["VERIFY_STEPS"]), e["EXPECT_CODE_SCRIPT"]
     bad = []
     if pr.get("augmentation") != want_aug: bad.append(f"augmentation={pr.get('augmentation')!r} != {want_aug!r}")
-    if ver.get("arm_model") != want_model: bad.append(f"verify.arm_model={ver.get('arm_model')!r} != {want_model!r}")
+    # an artifact written before a rotary field existed was measured WITHOUT that rotary: absence means exactly that,
+    # the same convention the trainer's calib_arm_model_drift uses, so an older artifact still validates (codex trope r1 P2)
+    # completed or refused as a PAIR: a flag without its parameter is malformed, not legacy (codex trope r2 P2)
+    _legacy = {("spec_rope", "spec_rope_k"): (False, 8), ("temporal_rope", "trope_base"): (False, 700.0), ("struct_world_rest",): (False,),
+               ("spec_rope_hks",): (False,)}         # H1: a single field, absent = measured on the eigenvector / SignNet model
+    _arm = dict(ver.get("arm_model") or {})
+    for _ks, _vs in _legacy.items():
+        _present = [_k for _k in _ks if _k in _arm]
+        if not _present:
+            _arm.update(dict(zip(_ks, _vs)))
+        elif len(_present) != len(_ks):
+            bad.append(f"verify.arm_model records {_present} without {sorted(set(_ks) - set(_present))}")
+    if ver.get("arm_model") is None or _arm != want_model: bad.append(f"verify.arm_model={ver.get('arm_model')!r} != {want_model!r}")
     if ver.get("steps") != want_steps or ver.get("arm_grad_ckpt") is not True:
         bad.append(f"verify.steps/arm_grad_ckpt={ver.get('steps')!r}/{ver.get('arm_grad_ckpt')!r}")
     if pr.get("gamma_solve") != want_solve: bad.append(f"gamma_solve={pr.get('gamma_solve')!r} != {want_solve!r}")

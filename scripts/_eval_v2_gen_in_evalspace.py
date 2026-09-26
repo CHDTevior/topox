@@ -165,6 +165,49 @@ COHORT_DETERMINED_PINS = {"exclusion", "caption_payload_sha256"}
 # entry). Merge records which fingerprint a shard set carries so a report always names the generation code it came from
 # (codex 2026-09-06 P1-1; exception wording codex 2026-09-07 r2 P3).
 LEGACY_SOURCE_FINGERPRINTS = {
+    "a37ff01bfc0a56314b26afd64451d47ed49e1b65a92b202c43486934763e3e14":
+        "anchor=none, per-joint, temporal RoPE only: the state of the main tree when the held-out study's arm E report "
+        "(runs/_heldout/eval/geneval_E_ep119_pool64_strict.json, 2026-09-16 23:29, generation and scoring) was made. "
+        "Every other hashed file is byte-identical to the 2026-09-24 pre-H1 snapshot (their mtimes, 2026-09-08 00:06 .. 2026-09-16 06:47 +0100, all precede these reports), so what separates it from that snapshot's fingerprint is the 2026-09-24 S1 --balance_alpha edit of incontext_pairs.py alone: draw_cdf_for() and the alpha > 0 branch of InContextPairs._pick; the default alpha 0 reproduces the original draw and RNG consumption byte-for-byte (scripts/_aug_dev/_test_balance_alpha.py), and these checkpoints carry no balance_alpha. Re-hashed 2026-09-24 (sub-agent review): git c7ba0f0's incontext_pairs.py plus the 2026-09-16 rest_demo_self_pairs hunks (= the snapshot's copy minus the S1 hunks: draw_cdf_for, the balance_alpha argument / attributes / refusal in __init__, the alpha branch of _pick) reproduces this fingerprint exactly, and that real pre-S1 module draws the same 20,000 samples with the same RNG state as the live one; the gen-eval dataset is built with balance_skeletons=False, so none of the S1 code runs during generation (_test_balance_alpha.py's own reference is a replica of the old _pick, not the old bytes). The snapshot's entries below carry the audit of the later H1 edit.",
+    "8b22354a2a3af00504b5265d0f955e5f6dbf74b1db529eabf1b3795512a15087":
+        "anchor=none, per-joint, spectral + temporal RoPE: the state of the main tree when the held-out study's arm G and H "
+        "reports (geneval_G_ep119_pool64_strict.json 2026-09-17 21:58, geneval_H_ep119_pool64_strict.json 2026-09-18 06:11) "
+        "were made. Every other hashed file is byte-identical to the 2026-09-24 pre-H1 snapshot (their mtimes, 2026-09-08 00:06 .. 2026-09-16 06:47 +0100, all precede these reports), so what separates it from that snapshot's fingerprint is the 2026-09-24 S1 --balance_alpha edit of incontext_pairs.py alone: draw_cdf_for() and the alpha > 0 branch of InContextPairs._pick; the default alpha 0 reproduces the original draw and RNG consumption byte-for-byte (scripts/_aug_dev/_test_balance_alpha.py), and these checkpoints carry no balance_alpha. Re-hashed 2026-09-24 (sub-agent review): git c7ba0f0's incontext_pairs.py plus the 2026-09-16 rest_demo_self_pairs hunks (= the snapshot's copy minus the S1 hunks: draw_cdf_for, the balance_alpha argument / attributes / refusal in __init__, the alpha branch of _pick) reproduces this fingerprint exactly, and that real pre-S1 module draws the same 20,000 samples with the same RNG state as the live one; the gen-eval dataset is built with balance_skeletons=False, so none of the S1 code runs during generation (_test_balance_alpha.py's own reference is a replica of the old _pick, not the old bytes). The snapshot's entries below carry the audit of the later H1 edit.",
+    "180062a2b9f5529655e08ec4424edf8ecf53fe964d5074489a9cff03579f4a6a":
+        "anchor=none, per-joint, no rotary: the state of the main tree on 2026-09-24 before the H1 heat-kernel-signature edit (after the S1 --balance_alpha sampling edit of incontext_pairs.py, default 0 = the original draws and RNG use, and the --zero_shot render flag; neither touches scoring). What separates it from the live state is H1 only: this script, dit_motion.py and incontext_pairs.py gained the spec_rope_hks / spectral_hks arguments passed from the checkpoint args, default False, under which scripts/_aug_dev/_test_spec_rope_hks.py group A found items, augmented items, collate and both model state_dicts byte-identical to this state. No gen-eval shard carries it (the 2026-09-22/23 UniMate comparison was rendered, not scored); registered so a later re-score of the S1 / control checkpoints is not stranded.",
+    "333568f0298ebe711e5b3a8c32e03a93ea7ed1dd5f669d03b70c3eadf3b15f5b":
+        "anchor=none, per-joint, temporal RoPE only: the state of the main tree on 2026-09-24 before the H1 heat-kernel-signature edit (after the S1 --balance_alpha sampling edit of incontext_pairs.py, default 0 = the original draws and RNG use, and the --zero_shot render flag; neither touches scoring). What separates it from the live state is H1 only: this script, dit_motion.py and incontext_pairs.py gained the spec_rope_hks / spectral_hks arguments passed from the checkpoint args, default False, under which scripts/_aug_dev/_test_spec_rope_hks.py group A found items, augmented items, collate and both model state_dicts byte-identical to this state. No gen-eval shard carries it (the 2026-09-22/23 UniMate comparison was rendered, not scored); registered so a later re-score of the S1 / control checkpoints is not stranded.",
+    "5bafd16b38bd4d73824a041a751a3350b0c723a4da65c133450b4934bda92942":
+        "anchor=none, per-joint, spectral RoPE only: the state of the main tree on 2026-09-24 before the H1 heat-kernel-signature edit (after the S1 --balance_alpha sampling edit of incontext_pairs.py, default 0 = the original draws and RNG use, and the --zero_shot render flag; neither touches scoring). What separates it from the live state is H1 only: this script, dit_motion.py and incontext_pairs.py gained the spec_rope_hks / spectral_hks arguments passed from the checkpoint args, default False, under which scripts/_aug_dev/_test_spec_rope_hks.py group A found items, augmented items, collate and both model state_dicts byte-identical to this state. No gen-eval shard carries it (the 2026-09-22/23 UniMate comparison was rendered, not scored); registered so a later re-score of the S1 / control checkpoints is not stranded.",
+    "95e238946ce81884b13db771d9219f3df0f7fde19ce608a6c59d35209243f89e":
+        "anchor=none, per-joint, spectral + temporal RoPE (the S1 / UniMate-comparison arms): the state of the main tree on 2026-09-24 before the H1 heat-kernel-signature edit (after the S1 --balance_alpha sampling edit of incontext_pairs.py, default 0 = the original draws and RNG use, and the --zero_shot render flag; neither touches scoring). What separates it from the live state is H1 only: this script, dit_motion.py and incontext_pairs.py gained the spec_rope_hks / spectral_hks arguments passed from the checkpoint args, default False, under which scripts/_aug_dev/_test_spec_rope_hks.py group A found items, augmented items, collate and both model state_dicts byte-identical to this state. No gen-eval shard carries it (the 2026-09-22/23 UniMate comparison was rendered, not scored); registered so a later re-score of the S1 / control checkpoints is not stranded.",
+    "db9dfe65c6e5440722bee887c1c7e25ffdff3305d05b4771bd2a2700e7ce03c4":
+        "anchor=none, FLAT sibling (dit_flat.py hashed): the state of the main tree on 2026-09-24 before the H1 heat-kernel-signature edit (after the S1 --balance_alpha sampling edit of incontext_pairs.py, default 0 = the original draws and RNG use, and the --zero_shot render flag; neither touches scoring). What separates it from the live state is H1 only: this script, dit_motion.py and incontext_pairs.py gained the spec_rope_hks / spectral_hks arguments passed from the checkpoint args, default False, under which scripts/_aug_dev/_test_spec_rope_hks.py group A found items, augmented items, collate and both model state_dicts byte-identical to this state. No gen-eval shard carries it (the 2026-09-22/23 UniMate comparison was rendered, not scored); registered so a later re-score of the S1 / control checkpoints is not stranded.",
+    "38267c0c96686940de01b25d5bad9fa486ed3cdb6011d095209debb8c38d32cf":
+        "anchor=none, per-joint, no rotary: the state of the main tree on 2026-09-25 after the H1 heat-kernel-signature edit and before the R2/R1 edit (the world-frame rest descriptor struct_world_rest in incontext_pairs.py / dit_motion.py's struct_rest_in, off by default and byte-identical off per scripts/_aug_dev/_test_struct_world_rest.py group A against the snapshot /iridisfs/scratch/ts1v23/workspace/noKslot_pre_r2_ref; the rest-convention channel's mean / demo fix, off by default; this script's load_gen_model passes the flag). Computed with the snapshot's own module. No report or shard carries it (none was generated between the two edits) -- registered so the audit trail stays continuous.",
+    "80b37d6a098d1509ee4d29d947389d9f84480f6c59d32c827a709c5bbbc6ec9b":
+        "anchor=none, per-joint, temporal RoPE only: the state of the main tree on 2026-09-25 after the H1 heat-kernel-signature edit and before the R2/R1 edit (the world-frame rest descriptor struct_world_rest in incontext_pairs.py / dit_motion.py's struct_rest_in, off by default and byte-identical off per scripts/_aug_dev/_test_struct_world_rest.py group A against the snapshot /iridisfs/scratch/ts1v23/workspace/noKslot_pre_r2_ref; the rest-convention channel's mean / demo fix, off by default; this script's load_gen_model passes the flag). Computed with the snapshot's own module. No report or shard carries it (none was generated between the two edits) -- registered so the audit trail stays continuous.",
+    "a900f7ae6caf446b48d49e202b76be82cd467ab04be4e9571841f1f1134b444a":
+        "anchor=none, per-joint, spectral RoPE only: the state of the main tree on 2026-09-25 after the H1 heat-kernel-signature edit and before the R2/R1 edit (the world-frame rest descriptor struct_world_rest in incontext_pairs.py / dit_motion.py's struct_rest_in, off by default and byte-identical off per scripts/_aug_dev/_test_struct_world_rest.py group A against the snapshot /iridisfs/scratch/ts1v23/workspace/noKslot_pre_r2_ref; the rest-convention channel's mean / demo fix, off by default; this script's load_gen_model passes the flag). Computed with the snapshot's own module. No report or shard carries it (none was generated between the two edits) -- registered so the audit trail stays continuous.",
+    "0c269cf924f45626cad3a34824d712b90d0718c1f08fcf6d0483784238489868":
+        "anchor=none, per-joint, spectral + temporal RoPE (the S1 / H1 / UniMate-comparison arms): the state of the main tree on 2026-09-25 after the H1 heat-kernel-signature edit and before the R2/R1 edit (the world-frame rest descriptor struct_world_rest in incontext_pairs.py / dit_motion.py's struct_rest_in, off by default and byte-identical off per scripts/_aug_dev/_test_struct_world_rest.py group A against the snapshot /iridisfs/scratch/ts1v23/workspace/noKslot_pre_r2_ref; the rest-convention channel's mean / demo fix, off by default; this script's load_gen_model passes the flag). Computed with the snapshot's own module. No report or shard carries it (none was generated between the two edits) -- registered so the audit trail stays continuous.",
+    "f9260256e82b8f875cbb57c7aaf5bf883c192a113f664a49a9c7e10e50ed74ae":
+        "anchor=none, FLAT sibling (dit_flat.py hashed): the state of the main tree on 2026-09-25 after the H1 heat-kernel-signature edit and before the R2/R1 edit (the world-frame rest descriptor struct_world_rest in incontext_pairs.py / dit_motion.py's struct_rest_in, off by default and byte-identical off per scripts/_aug_dev/_test_struct_world_rest.py group A against the snapshot /iridisfs/scratch/ts1v23/workspace/noKslot_pre_r2_ref; the rest-convention channel's mean / demo fix, off by default; this script's load_gen_model passes the flag). Computed with the snapshot's own module. No report or shard carries it (none was generated between the two edits) -- registered so the audit trail stays continuous.",
+    "3b9eaa1f04c621cf504c7cb44d1bf772b2af1ea435a658f5cf2aa0d4a2465c31":
+        "the state that generated the held-out baseline and old-augmentation arms (A, B; 2026-09-14), i.e. before "
+        "the 2026-09-15 spectral-RoPE edit (arm D) and the 2026-09-16 temporal-RoPE edit (arm E). Both edits added "
+        "constructor arguments this script passes from the checkpoint args and conditional entries in the fingerprint "
+        "list; a checkpoint whose args carry neither flag builds the same module either way, and the dataset, sampler "
+        "and scoring code are unchanged. Its shards are runs/_final_geneval/heldout{A,B}/.",
+    "6ef79c540f5a05976ff35332331952a390bd96924df1aa7fe9a9739682bff906":
+        "the same state for the UniMate-strength augmented arm C (2026-09-15), whose shards were generated between "
+        "the augmentation commit and the spectral-RoPE edit. Same audit as the entry above.",
+    "2294ea4ff30c767cc4d41f5be56ebfbe223850c75d2484cf0c44205696f4dbe5":
+        "The held-out-rig study's reports carry it. What separates it from the live state is the 2026-09-16 temporal-RoPE edit (arm E): this script gained the two temporal arguments it passes to the model constructor, the temporal file in the fingerprint list, and the shared-rotary rule of codex trope r1 P1-1; and the 2026-09-16 pair-loader edit, which adds the OFF-BY-DEFAULT rest_demo_self_pairs branch (measured: the served target index of the active corpus is identical with the flag off and on, 55,984 targets / 290 rigs either way, and 0 targets were dropped by the rule it relaxes). For a checkpoint whose args carry no temporal_rope the constructor receives use_temporal_rope=False and builds the same module the old bytes built, and the sampler and scoring code are untouched, so no frozen-protocol sample changes. It is arm A's seed 43/44/45 repetitions, shards runs/_final_geneval/heldoutA_s4{3,4,5}/.",
+    "aacd56061aff8c3956011ad2a9feb44c6032475377160c8920567773542231dc":
+        "The held-out-rig study's reports carry it. What separates it from the live state is the 2026-09-16 temporal-RoPE edit (arm E): this script gained the two temporal arguments it passes to the model constructor, the temporal file in the fingerprint list, and the shared-rotary rule of codex trope r1 P1-1; and the 2026-09-16 pair-loader edit, which adds the OFF-BY-DEFAULT rest_demo_self_pairs branch (measured: the served target index of the active corpus is identical with the flag off and on, 55,984 targets / 290 rigs either way, and 0 targets were dropped by the rule it relaxes). For a checkpoint whose args carry no temporal_rope the constructor receives use_temporal_rope=False and builds the same module the old bytes built, and the sampler and scoring code are untouched, so no frozen-protocol sample changes. It is the SPECTRAL sibling -- the same pre-temporal state with spec_rope.py and "
+        "skeleton_spectral.py in the hashed list -- carried by arm D's seed 42/43/44/45 reports, shards "
+        "runs/_final_geneval/heldoutD{,_s43,_s44,_s45}/.",
     "52844c100322a89edf7de8f6e2a64d6e7ecad5e5c4cc260b6eee010bc8efd213":
         "the state of 2026-09-14 after the incontext_pairs.py augmentation-call edit named in the a197efc9 / 71b13210 "
         "entries and before this script's --eval_split edit; no shard carries it. Only that edit of this script separates "
@@ -290,6 +333,13 @@ def load_gen_model(ck, dev):
         raise SystemExit(f"[refuse] gen ckpt corpus={ca.get('corpus')!r}; this eval is KTJD-17 only")
     if bool(ca.get("two_stage", False)):
         raise SystemExit("[refuse] two_stage ckpts are not wired here")
+    if bool(ca.get("spec_rope", False)) or bool(ca.get("temporal_rope", False)):
+        # FlatMotionDiT has neither rotary and keeps its own learned tables; a flat checkpoint that RECORDS one would be
+        # scored by a model that silently ignores it (codex trope r2 P1)
+        if int(ca.get("flat_joints", 0) or 0):
+            raise SystemExit("[refuse] a flat checkpoint records a rotary flag (spec_rope="
+                             f"{ca.get('spec_rope')!r}, temporal_rope={ca.get('temporal_rope')!r}); FlatMotionDiT has "
+                             "neither, so scoring it here would silently use the learned tables instead")
     if int(ca.get("flat_joints", 0) or 0):
         from src.models.v2.dit_flat import FlatMotionDiT
         model = FlatMotionDiT(in_ch=17, max_joints=int(ca["flat_joints"]), dim=ca["dim"],
@@ -302,11 +352,15 @@ def load_gen_model(ck, dev):
         in_ch=17, dim=ca["dim"], depth=ca["depth"], n_heads=ca["heads"],
         d_text=4096, d_joint_sem=4096,
         use_struct_feats=bool(ca.get("struct_feats", False)),
+        struct_world_rest=bool(ca.get("struct_world_rest", False)),
         use_dir_bias=bool(ca.get("dir_bias", False)),
         qk_norm=bool(ca.get("qk_norm", False)),
         use_ref_text=bool(ca.get("ref_text", False)),
         use_geo_bias=bool(ca.get("geo_bias", True)),
-        use_spec_rope=bool(ca.get("spec_rope", False)), spec_rope_k=int(ca.get("spec_rope_k", 8))).to(dev)
+        use_spec_rope=bool(ca.get("spec_rope", False)), spec_rope_k=int(ca.get("spec_rope_k", 8)),
+        spec_rope_hks=bool(ca.get("spec_rope_hks", False)),
+        use_temporal_rope=bool(ca.get("temporal_rope", False)), trope_base=float(ca.get("trope_base", 700.0))).to(dev)
+    # (a flat checkpoint that records either rotary is refused above, before FlatMotionDiT is built)
     model.load_state_dict(ck["model"])
     model.eval()
     return model, ca
@@ -343,7 +397,9 @@ def generate_all(model, ca, base, names, dev, a):
               demo_frames=int(ca.get("demo_frames", 1)),
               target_frames=int(ca["target_frames"]),
               emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)),
-              emit_spectral=(int(ca.get("spec_rope_k", 8)) if bool(ca.get("spec_rope", False)) else 0))
+              struct_world_rest=bool(ca.get("struct_world_rest", False)),
+              emit_spectral=(int(ca.get("spec_rope_k", 8)) if bool(ca.get("spec_rope", False)) else 0),
+              spectral_hks=bool(ca.get("spec_rope_hks", False)))
     if PK["demo_rest"] and PK["demo_frames"] != 1:
         raise SystemExit("[refuse] demo_rest ckpt with demo_frames != 1")
     tg = eval_targets(names, a)
@@ -435,7 +491,9 @@ def make_pairs(ds_args, base, names, a):
                           demo_rest=bool(ca.get("demo_rest", False)), emit_ref_text=bool(ca.get("ref_text", False)),
                           demo_frames=int(ca.get("demo_frames", 1)), target_frames=int(ca["target_frames"]),
                           emit_graph_v2=bool(ca.get("struct_feats", False)) or bool(ca.get("dir_bias", False)),
-                          emit_spectral=(int(ca.get("spec_rope_k", 8)) if bool(ca.get("spec_rope", False)) else 0))
+                          struct_world_rest=bool(ca.get("struct_world_rest", False)),
+                          emit_spectral=(int(ca.get("spec_rope_k", 8)) if bool(ca.get("spec_rope", False)) else 0),
+                          spectral_hks=bool(ca.get("spec_rope_hks", False)))
 
 
 def generation_plan(ds, base, a):
@@ -462,7 +520,7 @@ def generation_plan(ds, base, a):
             "shard_clips_sha256": {k: hashlib.sha256("\n".join(v).encode()).hexdigest() for k, v in shard_clips.items()}}
 
 
-def source_fingerprint(anchor="none", flat=False, spec_rope=False):
+def source_fingerprint(anchor="none", flat=False, spec_rope=False, temporal_rope=False):
     """sha256 over the code that turns (ckpt, data, seed) into samples: this script, the sampler/model, the
     pair dataset and the corpus adapter -- and the trainer module whenever the checkpoint's anchor mode makes
     generate_all() call its ktjd_anchor() (codex 2026-09-03 r2; anchor=none checkpoints never touch it), and the
@@ -480,8 +538,10 @@ def source_fingerprint(anchor="none", flat=False, spec_rope=False):
         files.append("src/models/v2/dit_flat.py")
     if str(anchor) != "none":
         files.append("scripts/train_v2_incontext.py")
-    if spec_rope:
-        files += ["src/models/v2/spec_rope.py", "src/data/skeleton_spectral.py"]
+    # the rotation itself lives in spec_rope.py and BOTH rotary arms execute it, so it is listed whenever either flag
+    # is on; the coordinate sources only for the arm that reads them (codex trope r1 P1-1)
+    from scripts.train_v2_incontext import rotary_code_files
+    files += rotary_code_files(bool(spec_rope), bool(temporal_rope))
     h = hashlib.sha256()
     for rel in files:
         h.update(rel.encode()); h.update((repo / rel).read_bytes())
@@ -518,7 +578,8 @@ def shard_meta(a, ca, gen_sha, base, plan):
             **({"cohort_caption_payload_sha256": str(a.cohort_pin)} if getattr(a, "cohort_pin", None) else {}),
             "source_fingerprint": source_fingerprint(ca.get("anchor", "none"),
                                                      flat=bool(ca.get("flat_joints", 0)),
-                                                     spec_rope=bool(ca.get("spec_rope", False))),
+                                                     spec_rope=bool(ca.get("spec_rope", False)),
+                                                     temporal_rope=bool(ca.get("temporal_rope", False))),
             "runtime": runtime_fingerprint(),
             "protocol_variant": a.protocol_variant,
             "rank_env": os.environ.get("RANK"),

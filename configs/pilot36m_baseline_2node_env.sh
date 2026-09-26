@@ -46,4 +46,4 @@ export TEXTS_JSON=data/noik_pzh312_motion_texts_v1.json
 
 export OUT=${OUT:-runs/v2_noik_pilot36m_baseline}
 export NCCL_SOCKET_IFNAME=ib1 NCCL_IB_HCA=${NCCL_IB_HCA:-mlx5_3}
-export EXTRA="--freeze_zero_joint_sem --no_geo_bias --require_uniform_gammas"
+export EXTRA="--freeze_zero_joint_sem --no_geo_bias --require_uniform_gammas ${EXTRA_APPEND:-}"

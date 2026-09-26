@@ -65,6 +65,14 @@ AUG_VERSION_KIN = "ktjd17_skel_aug_v2"  # + bone_scale / pool_frac / add_p (FK r
 STATS_Z_CLIP = 3.0            # standard-normal draws of the statistics perturbation are clipped to +-3 sigma
 STATS_LOGSD_MAX = 1.0         # exp(+-3) at most: the effective scale stays within [e^-3, e^3] of the rig's
 STATS_SHIFT_MAX = 3.0
+REST_RULE = ("one_of rest-convention channel v3 (R2, 2026-09-26): drawn per sample with probability rest_p, independent of p and "
+             "of the op; every joint with full rotation rows gets its own Q_j (random axis, angle U(0, rest_deg)), R_rest_j <- "
+             "Q_j R_rest_j; a row without them keeps its convention (its held-constant delta composes as is); a synthetic row takes "
+             "its parent's Q and its delta is rotated like every row's; under the rest normalisation the sample's mean is the "
+             "TRANSFORMED rest pose and the rest demo is the transformed rig's own rest frame (zero), as a rig authored in that "
+             "convention serves them -- the target's deltas delta_j Q_j^T are the only trace of Q; world motion unchanged, the "
+             "served sample FK-consistent. (Mode joint's rest_deg keeps the legacy rule -- the source rig's mean and demo -- for the "
+             "finished restaug arms' bytes; new arms use this channel.)")
 AUG_VERSION_ONE_OF = "ktjd17_skel_aug_v3.6_one_of"   # UniMate's rule: ONE kinematic operation per augmented sample; v3.1 =
 #                                                       UniMate's rotation semantics for pool / add (ONE_OF_ROTATION_RULE);
 #                                                       v3.2 = the rotation cells of recomposed rows re-enter (ONE_OF_REENTRY);
@@ -121,7 +129,8 @@ class AugConfig:
     drop_max_frac: float = 0.0   # sub-skeleton: fraction of droppable joints removed, uniform in [0, max]
     drop_mode: str = "any"       # "any": any non-protected joint (children re-parented; FK through the virtual bone is inexact
     #                              where the removed joint articulated); "tips": prune leaves only, iteratively (FK stays exact)
-    rest_deg: float = 0.0        # rest convention: max rotation angle per joint, degrees
+    rest_deg: float = 0.0        # rest convention: max rotation angle per joint, degrees. Mode joint: LEGACY semantics (the source
+    #                              rig's mean and demo; two finished restaug arms) -- new arms use the one_of channel (rest_p, REST_RULE)
     sem_noise: float = 0.0       # description embeddings: noise std relative to the row RMS
     sem_drop_p: float = 0.0      # description embeddings: probability of zeroing the whole table
     stats_logsd: float = 0.0     # statistics: std of the log-normal factor on per-cell std
@@ -132,6 +141,9 @@ class AugConfig:
     mode: str = "joint"          # "joint": every enabled perturbation on every augmented sample; "one_of": UniMate's rule --
     #                              one of add / remove / pool / scale per augmented sample with UniMate's rates (ONE_OF),
     #                              bone_scale the magnitude of scale, drop_mode "tips", every other field 0
+    rest_p: float = 0.0          # R2 (2026-09-25): mode "one_of" only -- probability, drawn per sample INDEPENDENTLY of p and of
+    #                              the op, that the rest-convention perturbation (2., angle <= rest_deg) is applied; a sample can
+    #                              carry the rest change alone, an op alone, both, or neither. 0 = the pre-R2 draws, byte-identical.
 
     def __post_init__(self):
         if self.drop_mode not in ("any", "tips"):
@@ -158,15 +170,22 @@ class AugConfig:
                 raise ValueError("AugConfig.mode 'one_of' removes leaves only (UniMate): drop_mode must be 'tips'")
             if self.bone_scale <= 0:
                 raise ValueError("AugConfig.mode 'one_of' needs bone_scale > 0 (the magnitude of its scale operation)")
-            if any((self.drop_max_frac, self.rest_deg, self.sem_noise, self.sem_drop_p, self.stats_logsd, self.stats_shift,
+            if any((self.drop_max_frac, self.sem_noise, self.sem_drop_p, self.stats_logsd, self.stats_shift,
                     self.pool_frac, self.add_p)):
                 raise ValueError("AugConfig.mode 'one_of' draws one of add / remove / pool / scale per sample with UniMate's "
-                                 "own rates (ONE_OF); drop_max_frac, pool_frac, add_p and the rest / statistics / "
+                                 "own rates (ONE_OF); drop_max_frac, pool_frac, add_p and the statistics / "
                                  "description fields must be 0")
+            if (self.rest_deg > 0) != (self.rest_p > 0):
+                raise ValueError("AugConfig.mode 'one_of': the rest-convention perturbation is its own channel -- rest_deg > 0 "
+                                 "and rest_p > 0 go together (R2), both 0 = off")
+        elif self.rest_p > 0:
+            raise ValueError("AugConfig.rest_p is a mode 'one_of' channel; mode 'joint' applies rest_deg to every augmented sample")
+        if not (0.0 <= self.rest_p <= 1.0):
+            raise ValueError("AugConfig.rest_p must lie in [0, 1]")
 
     @property
     def active(self) -> bool:
-        return self.p > 0
+        return self.p > 0 or self.rest_p > 0      # R2: the rest channel alone (p = 0) is still an augmented run
 
     def protocol(self) -> dict | None:
         """None when off (so an unaugmented run matches a calibration that never heard of augmentation). With the three
@@ -176,11 +195,16 @@ class AugConfig:
             return None
         d = asdict(self)
         mode = d.pop("mode")                              # absent from the v1 / v2 records (their checkpoints keep matching)
+        rest_p = d.pop("rest_p")                          # R2: a one_of-only channel; the joint-mode records never carry it
         if mode == "one_of":
-            return {"version": AUG_VERSION_ONE_OF, "mode": mode, "p": d["p"], "drop_mode": d["drop_mode"],
-                    "bone_scale": d["bone_scale"], "ops": list(ONE_OF_OPS), **ONE_OF, "rotation_rule": ONE_OF_ROTATION_RULE,
-                    "reentry": ONE_OF_REENTRY, "contact": ONE_OF_CONTACT, "contact_abs_bl": ONE_OF_CONTACT_ABS,
-                    "lock_denominator": ONE_OF_LOCK_DEN, "deviations": list(ONE_OF_DEVIATIONS)}
+            rec = {"version": AUG_VERSION_ONE_OF, "mode": mode, "p": d["p"], "drop_mode": d["drop_mode"],
+                   "bone_scale": d["bone_scale"], "ops": list(ONE_OF_OPS), **ONE_OF, "rotation_rule": ONE_OF_ROTATION_RULE,
+                   "reentry": ONE_OF_REENTRY, "contact": ONE_OF_CONTACT, "contact_abs_bl": ONE_OF_CONTACT_ABS,
+                   "lock_denominator": ONE_OF_LOCK_DEN, "deviations": list(ONE_OF_DEVIATIONS)}
+            if rest_p > 0:
+                # R2: an artifact measured without the rest channel lacks these keys and is refused for a run with it
+                rec.update(rest_p=rest_p, rest_deg=d["rest_deg"], rest_rule=REST_RULE)
+            return rec
         kin = {k: d.pop(k) for k in ("bone_scale", "pool_frac", "add_p")}
         if any(kin.values()):
             return {"version": AUG_VERSION_KIN, **d, **kin, "stats_z_clip": STATS_Z_CLIP}
@@ -289,6 +313,10 @@ class SkeletonTransform:
     par0: np.ndarray | None = None      # [J] original parents (unimate_rot only)
     mu_all: np.ndarray | None = None    # [J,17] the rig's serving statistics on every original joint (unimate_rot only)
     sd_all: np.ndarray | None = None
+    rest_channel: bool = False          # this sample carries the one_of rest-convention channel (REST_RULE v2); mode joint's
+    #                                     legacy rest_deg perturbation leaves it False
+    mu_rest: np.ndarray | None = None   # [J',17] float32, rest normalisation only: the transformed rig's rest frame in raw units
+    #                                     (= the unperturbed reference mean); the channel's rest demo is (mu_rest - mu) / (sd + floor)
 
     @property
     def n_joints(self) -> int:
@@ -312,14 +340,18 @@ def _fk(parents, root_positions, G, offsets):
 
 
 def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global, offset_parent_local,
-                   channel_valid, mu, sd, contact_joints, fps: float = 30.0, rest_norm: bool = False) -> SkeletonTransform:
+                   channel_valid, mu, sd, contact_joints, fps: float = 30.0, rest_norm: bool = False,
+                   skip_op: bool = False, rest: bool | None = None) -> SkeletonTransform:
     """One sample's transform. `contact_joints` [J] bool marks joints that touch the ground in the target clip
     (protected from dropping and pooling); `mu`/`sd` [J,17] are the rig's serving statistics; `fps` is the corpus
     frame rate the velocity channels were encoded at; `rest_norm` says the serving mean is the rig's rest frame
     (Ktjd17Base normalization "rest"), so a re-encoded sample gets the transformed rest pose as its position mean.
     Mode "one_of" draws ONE of add / remove / pool / scale (UniMate's rule and rates, ONE_OF) instead of applying every
     enabled perturbation; the draw is recorded in the transform's `op`. In that mode a re-encoded sample keeps a served
-    contact flag only where the joint moves no more than it did (apply_motion, ONE_OF_CONTACT; codex 2026-09-15 unimate r5 P1)."""
+    contact flag only where the joint moves no more than it did (apply_motion, ONE_OF_CONTACT; codex 2026-09-15 unimate r5 P1).
+    R2 (2026-09-25), mode "one_of" only: `skip_op=True` draws no op (a rest-only sample: tree, bones and positions untouched)
+    and `rest` says whether this sample carries the rest-convention perturbation (the caller draws it with cfg.rest_p);
+    `rest=None` keeps the legacy rule (mode "joint": whenever rest_deg > 0)."""
     par = np.asarray(parents, dtype=np.int64)
     J = len(par)
     if par[0] != -1 or np.any(par[1:] >= np.arange(1, J)):
@@ -334,8 +366,12 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
     for j in range(1, J):
         children[par[j]].append(j)
     reencode = False
-    op = ONE_OF_OPS[int(rng.integers(len(ONE_OF_OPS)))] if cfg.mode == "one_of" else None   # UniMate: one op per sample
-    do_scale = cfg.bone_scale > 0 and (op is None or op == "scale")
+    if skip_op and cfg.mode != "one_of":
+        raise ValueError("make_transform(skip_op=True) is a mode 'one_of' path (a rest-only sample)")
+    op = (None if skip_op else ONE_OF_OPS[int(rng.integers(len(ONE_OF_OPS)))]) if cfg.mode == "one_of" else None   # UniMate: one op per sample
+    do_scale = cfg.bone_scale > 0 and ((op == "scale") if cfg.mode == "one_of" else True)
+    rest_on = (cfg.rest_deg > 0) if rest is None else (bool(rest) and cfg.rest_deg > 0)
+    rest_v2 = rest_on and rest is not None               # the one_of channel (REST_RULE v2); mode joint keeps the legacy bytes
     # ---- 1. sub-skeleton ----
     keep_mask = np.ones(J, dtype=bool)
     if cfg.drop_max_frac > 0:
@@ -485,11 +521,14 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
     # ---- 2. rest convention ----
     rot_rows = cvk[:, 3:9].all(axis=1)
     Q = np.tile(np.eye(3), (Jn, 1, 1))
-    if cfg.rest_deg > 0:
+    if rest_on:
         for n in np.where(rot_rows)[0]:
             Q[n] = _random_rotation(rng, cfg.rest_deg)
     for n in np.where(src < 0)[0]:                        # a synthetic joint shares its parent's rest convention: its served
         Q[n] = Q[new_par[n]]                              # deltas are a copy of the parent's, so R_rest must be the parent's too
+    # a row WITHOUT full rotation cells keeps Q = I: its delta cell is an excluded constant c the trainer's mask holds at the
+    # mean and both FK consumers compose cell-wise (G_j = c R_rest_j; fk_torch.py, decoder.py animated_dof), so any Q on it
+    # would move its whole subtree (reviewer 2026-09-26 P0-1: 253 such interior rows on 15% of the UniML3D v2 rigs, 0.3-0.45 bl)
     R_new = Q @ R_old
     P_new = np.empty((Jn, 3), dtype=np.float64)
     P_new[0] = P[keep[0]]
@@ -505,13 +544,20 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
         ref = sd0[cv_served[:, ch], ch]
         if ref.size:
             sd_ref[reentered[:, ch], ch] = np.float32(np.median(ref))
-    if reencode and rest_norm:
+    mu_rest = None
+    if (reencode or rest_v2) and rest_norm:
         # under the rest normalisation the mean is the rig's rest pose; the transformed skeleton's is that pose played
-        # through the new bones (identity deltas = the UNperturbed rest rotations), FK'd from the mean's own root row
-        # (Ktjd17Base._rest_raw17: the rest pose relative to its root XZ) -- exactly what apply_motion recomputes for
-        # the rest demo, which therefore still normalises to zero on the position channels
-        P_demo = _fk(new_par, mu0[0, 0:3].astype(np.float64)[None], R_old[None], new_off)[0]
+        # through the new bones under the sample's rest rotations, FK'd from the mean's own root row (Ktjd17Base._rest_raw17:
+        # the rest pose relative to its root XZ). For a kinematic op alone that is exactly what apply_motion recomputes for
+        # the rest demo (which therefore still normalises to zero on the position channels; R_new == R_old, kept literally
+        # so the served bytes are unchanged). With the rest channel it is what a rig AUTHORED in that convention serves as
+        # its mean -- its own rest pose FK'd under Q R, not the source rig's (reviewer 2026-09-25 P1: FK'd under R_old, the
+        # sample's positions were relative to the old rest while its deltas and descriptor spoke the new convention, a
+        # hybrid no rig serves)
+        P_demo = _fk(new_par, mu0[0, 0:3].astype(np.float64)[None], (R_new if rest_v2 else R_old)[None], new_off)[0]
         mu_ref[:, 0:3] = P_demo.astype(np.float32)
+    if rest_norm:
+        mu_rest = mu_ref.copy()                          # the transformed rig's rest frame in raw units (SkeletonTransform.mu_rest)
     mu_n, sd_n = mu_ref.copy(), sd_ref.copy()
     if cfg.stats_logsd > 0 or cfg.stats_shift > 0:
         cells = cvk.copy()
@@ -534,7 +580,8 @@ def make_transform(rng, cfg: AugConfig, *, parents, P_rest_global, R_rest_global
                              reencode=bool(reencode), fps=float(fps), op=op, unimate_rot=unimate_rot,
                              recomposed=(recomposed.copy() if unimate_rot else None), par0=(par.copy() if unimate_rot else None),
                              mu_all=(np.asarray(mu, dtype=np.float32).copy() if unimate_rot else None),
-                             sd_all=(np.asarray(sd, dtype=np.float32).copy() if unimate_rot else None))
+                             sd_all=(np.asarray(sd, dtype=np.float32).copy() if unimate_rot else None),
+                             rest_channel=bool(rest_v2), mu_rest=mu_rest)
 
 
 def _rotate_rest_deltas(raw, tr, rows_of):
@@ -659,7 +706,10 @@ def apply_motion_with_contact(x18: np.ndarray, tr: SkeletonTransform):
             con = raw[:, rr, 12] > 0.5
             con[:-1] &= d_new <= d_old + ONE_OF_CONTACT_ABS * bl
             raw[:, rr, 12] = con.astype(np.float64)
-    _rotate_rest_deltas(raw, tr, rows)
+    # every row's delta takes Q^T: under the one_of add / pool recomposition (unimate_rot) the synthetic row's delta was written
+    # above and its R_rest is the parent's Q R_old[p], so it must rotate too (reviewer 2026-09-26 P0-2: 0.1 bl on the added
+    # joint's subtree); on the other paths the synthetic rows are still zero here (degenerate -> kept) and then copied
+    _rotate_rest_deltas(raw, tr, np.arange(Jn) if tr.unimate_rot else rows)
     for j in np.where(tr.src < 0)[0]:                                                      # synthetic rows: the parent's deltas
         if not tr.unimate_rot:                                                             # (one_of: recomposed above)
             raw[:, j, 3:9] = raw[:, tr.parents[j], 3:9]

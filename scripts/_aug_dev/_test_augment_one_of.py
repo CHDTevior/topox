@@ -272,7 +272,7 @@ jcfgs = {"all_v2": AugConfig(**dict(v2, p=1.0)), "scale": AugConfig(p=1.0, bone_
          "pool": AugConfig(p=1.0, pool_frac=1.0), "v1_tips": AugConfig(**dict(v1, p=1.0)),
          "drop_any": AugConfig(p=1.0, drop_max_frac=1.0, drop_mode="any"), "stats_only": AugConfig(p=1.0, stats_logsd=0.2, stats_shift=0.3),
          "rest_only": AugConfig(p=1.0, rest_deg=10.0), "sem_only": AugConfig(p=1.0, sem_noise=0.1, sem_drop_p=0.5)}
-def prev_cfg(cfg): return prev.AugConfig(**{k: v for k, v in asdict(cfg).items() if k != "mode"})
+def prev_cfg(cfg): return prev.AugConfig(**{k: v for k, v in asdict(cfg).items() if k != "mode" and k in {f.name for f in fields(prev.AugConfig)}})   # rest_p (R2) postdates the .bak
 n_par = 0
 for n, bi in enumerate(idxs):
     it, J0, T, x, mu0, sd0, cv0, raw0, contact, geom = load(bi)

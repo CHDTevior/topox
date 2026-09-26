@@ -63,6 +63,37 @@ UPDOWN_CLIP = 15         # graph-v2 directional tables: up/down hop indices 0..1
 #                          bias's clip at 8 -- deep chains stay distinguishable twice as far)
 
 
+def _world_rest_feats(parents, offsets, P_rest):
+    """R1/R2 (2026-09-25): [J, 6] float32 world-frame rest descriptor appended to the graph-v2 struct features when
+    struct_world_rest is on -- what the model never saw before (P_rest entered the FK loss only):
+      0:3  u_j = (P_rest[j] - P_rest[parent(j)]) normalised: the world direction of bone j at rest (root and zero-length
+           bones: zeros);
+      3:6  P_rest[j] with the root's XZ subtracted, divided by the rig's mean bone length |offset| (height kept: the rest
+           pose is grounded at the data level, so this is height above ground in bone lengths), then radially
+           log-compressed, c -> c * log1p(|c|) / |c| (direction kept, invertible).
+    Read off the rest positions themselves rather than R_rest @ offset: the skeleton files' parent-frame offsets are not
+    FK-consistent with P_rest on every rig, and an augmented item's transform rebuilds P_rest by FK of its (possibly
+    rotated) rest rotations, so on both paths P_rest IS the served rest pose and u follows it exactly."""
+    par = np.asarray(parents, dtype=np.int64); J = len(par)
+    off = np.asarray(offsets, dtype=np.float64)[:J]
+    P = np.asarray(P_rest, dtype=np.float64)[:J]
+    blen = np.linalg.norm(off, axis=-1)
+    mean_bone = max(float(blen[1:].mean()) if J > 1 else 1.0, 1e-6)
+    u = np.zeros((J, 3))
+    if J > 1:
+        d = P[1:] - P[par[1:]]
+        n = np.linalg.norm(d, axis=1)
+        ok = n > 1e-8
+        u[1:][ok] = d[ok] / n[ok, None]
+    c = (P - np.array([P[0, 0], 0.0, P[0, 2]])[None]) / mean_bone
+    # radial log compression: a joint 20 bone lengths above the ground lands at 3.0 instead of 20, keeping these columns O(1)
+    # like the graph-v2 table's log1p(...) columns (reviewer 2026-09-25 P2-2: max 21, median 11 on the UniML3D v2 rigs; the
+    # bias-free struct_rest_in would have been dominated by them at init)
+    r = np.linalg.norm(c, axis=1)
+    c = c * np.where(r > 0, np.log1p(r) / np.maximum(r, 1e-12), 1.0)[:, None]
+    return np.concatenate([u, c], axis=1).astype(np.float32)
+
+
 def _graph_v2_tables(parents, offsets, geodesic_raw):
     """Per-rig graph-v2 statics: structural joint features [J,8] + LCA-decomposed directional
     hop matrix [J,J,2] (up-steps to the lowest common ancestor, then down-steps).
@@ -154,6 +185,23 @@ def pzh_types(cond_keys) -> list:
     return sorted(k for k in cond_keys if k.startswith("PZ_") or k.startswith("HML3D"))
 
 
+def draw_cdf_for(draw_types, by_type, alpha):
+    """Cumulative draw distribution over `draw_types` with weight (target count)^alpha per entry; None at alpha 0 so the
+    caller keeps the original uniform draw (and its RNG consumption). The last cell is pinned to 1.0 so a uniform u in
+    [0, 1) always lands on an entry."""
+    alpha = float(alpha)
+    if alpha < 0:
+        raise ValueError(f"balance_alpha must be >= 0, got {alpha}")
+    if alpha == 0.0:
+        return None
+    w = np.array([len(by_type[t]["targets"]) ** alpha for t in draw_types], dtype=np.float64)
+    if not (np.isfinite(w).all() and w.sum() > 0):
+        raise ValueError("balance_alpha: draw weights are not finite and positive")
+    cdf = np.cumsum(w / w.sum())
+    cdf[-1] = 1.0
+    return cdf
+
+
 class InContextPairs(Dataset):
     """Serves [demo | target] items. `base` must be an AnyTopDataset built with split="all" so both
     pools are visible; membership is decided here by the frozen name lists, never by re-splitting.
@@ -166,9 +214,16 @@ class InContextPairs(Dataset):
     def __init__(self, base: AnyTopDataset, target_names, demo_names, *,
                  object_types=None, demo_frames=DEMO_FRAMES, target_frames=TARGET_FRAMES,
                  balance_skeletons=True, seed=0, emit_fk_fields=False, emit_graph_v2=False,
-                 rig_multiplicity=None, epoch_draws=None,
-                 identity_p=0.0, emit_ref_text=False, demo_rest=False, augment=None, emit_spectral=0):
+                 rig_multiplicity=None, epoch_draws=None, balance_alpha=0.0,
+                 identity_p=0.0, emit_ref_text=False, demo_rest=False, augment=None, emit_spectral=0,
+                 spectral_hks=False, rest_demo_self_pairs=False, struct_world_rest=False):
         self.base = base
+        # R1/R2 (2026-09-25): the world-frame rest descriptor (_world_rest_feats) is appended to struct_feats (8 -> 14).
+        # Needs emit_graph_v2 (it extends that table). Off = byte-identical items.
+        self.struct_world_rest = bool(struct_world_rest)
+        if self.struct_world_rest and not emit_graph_v2:
+            raise ValueError("struct_world_rest extends the graph-v2 struct_feats table: it needs emit_graph_v2=True")
+        self._wrcache = {}
         # skeleton-robustness augmentation (src/data/ktjd17_augment.py, user 2026-09-07): per-sample
         # sub-skeleton / rest-convention / description-noise / statistics perturbations, applied to the
         # target AND its demo. KTJD-17 only (needs static_masks + the FK fields). None or p == 0 = off,
@@ -193,6 +248,14 @@ class InContextPairs(Dataset):
         # [J,K] per item (src/data/skeleton_spectral.py, UniMate's compute_laplacian_eigenvectors), cached per rig
         # like the graph-v2 statics; an augmented item's tree is its own. 0 = off, byte-identical batches.
         self.emit_spectral = int(emit_spectral)
+        # H1 (2026-09-24): with spectral_hks the served coordinates are the tree's heat-kernel signature at K scales
+        # (skeleton_spectral.heat_kernel_signature: sign- and basis-invariant, every non-trivial mode kept, trace-normalised
+        # per rig) instead of
+        # its K eigenvectors -- same key, same [J,K] shape, same per-rig cache, an augmented item's tree still its own.
+        # Off = byte-identical items.
+        self.spectral_hks = bool(spectral_hks)
+        if self.spectral_hks and self.emit_spectral <= 0:
+            raise ValueError("spectral_hks needs emit_spectral=K > 0: it selects WHICH spectral coordinates are served")
         self._speccache = {}
         # UMO SOURCE_IDENTITY analogue (manifest_dataset.py:289-304 mechanism): with prob p the
         # target IS the demo clip (different windows of the same clip) and the caption embedding
@@ -210,6 +273,24 @@ class InContextPairs(Dataset):
         self.demo_rest = bool(demo_rest)
         if self.demo_rest and int(demo_frames) != 1:
             raise ValueError(f"demo_rest needs demo_frames=1, got {demo_frames}")
+        # A corpus of mostly ONE-CLIP rigs (UniML3D: 5,006 of 5,263 rigs hold a single motion) loses most of its
+        # training set to the distinct-demo rule below -- 6,611 clips collapse to 1,544. Under the rest demo that rule
+        # is buying nothing: the demo clip is not read at all, the demo slot carries the rig's rest pose, so a target
+        # paired with ITSELF is not an identity-copy shortcut, it is the same rest frame every other target of that rig
+        # gets. The flag is therefore legal only under exactly the conditions in which the demo clip is never opened
+        # (user 2026-09-16: "就不需要配对器了，我们已经是用 rest pose 了"). Default off = byte-identical pair sets, and
+        # on the active corpus the rule drops nothing anyway (measured: 0 targets on both the train and the val cut).
+        self.rest_demo_self_pairs = bool(rest_demo_self_pairs)
+        if self.rest_demo_self_pairs:
+            if not self.demo_rest:
+                raise ValueError("rest_demo_self_pairs needs demo_rest=True: without it the demo clip IS read and a "
+                                 "self-demo would hand the target its own motion as the demonstration")
+            if emit_ref_text:
+                raise ValueError("rest_demo_self_pairs cannot be combined with emit_ref_text: the reference-transcript "
+                                 "branch reads the demo clip, so a self-demo would leak the target's own caption")
+            if getattr(base, "random_caption", False):
+                raise ValueError("rest_demo_self_pairs cannot be combined with a random_caption base: its __getitem__ "
+                                 "advances a caption RNG, so the demo clip is still opened")
         # Corpus-specific post-crop hook (KTJD-17 crop contract, codex round-S0): KTJD requires
         # smooth-root XZ to be re-based at EVERY crop boundary (loader.py:99-122 is the normative
         # crop; generic _crop only slices). A base dataset that needs window-level fixups exposes
@@ -238,7 +319,7 @@ class InContextPairs(Dataset):
             dm = sorted(demo_pool.get(ot, []))
             if not dm:
                 continue
-            legal = [t for t in sorted(tg) if any(d != t for d in dm)]
+            legal = sorted(tg) if self.rest_demo_self_pairs else [t for t in sorted(tg) if any(d != t for d in dm)]
             self.n_dropped_self_only += len(tg) - len(legal)
             if legal:
                 self.by_type[ot] = {"targets": legal, "demos": dm}
@@ -259,6 +340,17 @@ class InContextPairs(Dataset):
             raise ValueError(f"rig_multiplicity must be >= 1: {self.rig_multiplicity}")
         self.draw_types = [t for t in self.types
                            for _ in range(int(self.rig_multiplicity.get(t, 1)))]
+        # DRAW WEIGHTS (S1, user 2026-09-24). A rig's draw is weighted by (its target count)^alpha: alpha 0 is the
+        # uniform-over-rigs rule above -- and consumes the RNG exactly as before, so every existing arm's batches stay
+        # byte-identical -- alpha 1 is uniform over clips, alpha 0.5 is UniMate's sampler_alpha. On UniML3D 74% of the
+        # training clips sit alone on their rig, so uniform-over-rigs starves the multi-clip rigs, the only place "same
+        # rig, different text" is ever seen: on the common cut a 91-clip rig's clip is drawn 0.11x per epoch against
+        # 10.2x for a lone clip; alpha 0.5 lifts it to 1.0x while lone clips stay at 9.7x. Multiplicity still applies
+        # (a repeated entry is weighted once per repeat).
+        self.balance_alpha = float(balance_alpha)
+        self.draw_cdf = draw_cdf_for(self.draw_types, self.by_type, self.balance_alpha) if self.balance else None
+        if self.balance_alpha != 0.0 and not self.balance:
+            raise ValueError("balance_alpha needs balance_skeletons=True: unbalanced mode covers the index, it does not draw")
         # HOW LONG AN EPOCH IS. _pick's own rule -- "an epoch is a fixed number of draws, not a cover of
         # the index" -- leaves that number equal to the corpus size only by accident, so an arm trained on
         # a larger cut silently takes more optimizer steps per epoch and, because the lr decay horizon is
@@ -333,7 +425,11 @@ class InContextPairs(Dataset):
         nondeterministic by design; an epoch is a fixed number of draws, not a cover of the index."""
         if not self.balance:
             return self.index[i]
-        ot = self.draw_types[int(rng.integers(len(self.draw_types)))]
+        if self.draw_cdf is None:                              # alpha 0: the original draw, RNG use unchanged
+            ot = self.draw_types[int(rng.integers(len(self.draw_types)))]
+        else:
+            ot = self.draw_types[min(int(np.searchsorted(self.draw_cdf, rng.random(), side="right")),
+                                     len(self.draw_types) - 1)]
         tg = self.by_type[ot]["targets"]
         return ot, int(tg[int(rng.integers(len(tg)))])
 
@@ -371,9 +467,12 @@ class InContextPairs(Dataset):
         rng = self._worker_rng()
         ot, tgt_idx = self._pick(i, rng)
         demos = [d for d in self.by_type[ot]["demos"] if d != tgt_idx]
-        if not demos:      # cannot happen: targets without a distinct demo are dropped at build
-            raise AssertionError(f"{ot}: target {tgt_idx} has no distinct demo")
-        demo_idx = int(demos[int(rng.integers(len(demos)))])
+        if not demos:
+            if not self.rest_demo_self_pairs:   # otherwise unreachable: such targets are dropped at build
+                raise AssertionError(f"{ot}: target {tgt_idx} has no distinct demo")
+            demo_idx = tgt_idx                  # never opened under the rest demo; the slot carries the rest pose
+        else:
+            demo_idx = int(demos[int(rng.integers(len(demos)))])
         is_identity = self.identity_p > 0 and float(rng.random()) < self.identity_p
         if is_identity:
             demo_idx = tgt_idx          # same clip: demo window (random) vs target head window
@@ -400,7 +499,11 @@ class InContextPairs(Dataset):
 
         tr = None
         t_con_before = None
-        if self.aug is not None and float(rng.random()) < self.aug.p:
+        # R2: the rest-convention channel is drawn AFTER the op draw and only when configured (rest_p > 0), so a run
+        # without it consumes the RNG exactly as before; a rest-only sample gets a transform with no op (skip_op).
+        do_op = self.aug is not None and float(rng.random()) < self.aug.p
+        do_rest = self.aug is not None and self.aug.rest_p > 0 and float(rng.random()) < self.aug.rest_p
+        if do_op or do_rest:
             from src.data.ktjd17_augment import make_transform, apply_motion, apply_motion_with_contact
             cv0 = np.asarray(self.base.static_masks(ot)["channel_valid"], dtype=bool)[:J0]
             mu0 = np.asarray(t_item["anytop_mean"], dtype=np.float32)[:J0, :17]
@@ -414,7 +517,9 @@ class InContextPairs(Dataset):
                                 offset_parent_local=np.asarray(sk["offset_parent_local"])[:J0],
                                 channel_valid=cv0, mu=mu0, sd=sd0, contact_joints=contact,
                                 fps=30.0,                                   # the corpus rate (validate_schema pins fps_target 30)
-                                rest_norm=(self.base.normalization == "rest"))
+                                rest_norm=(self.base.normalization == "rest"),
+                                skip_op=not do_op,
+                                rest=(do_rest if self.aug.mode == "one_of" else None))
             t_x, t_con_before = apply_motion_with_contact(t_x, tr)
             if not self.demo_rest:
                 d_x = apply_motion(d_x, tr)
@@ -427,6 +532,13 @@ class InContextPairs(Dataset):
             d_crop = np.array(np.asarray(self.base.rest_frame_normalized(ot))[:J0], dtype=np.float32, copy=True)   # [J,C]
             if tr is not None:
                 d_crop = apply_motion(d_crop, tr)
+                if tr.rest_channel and tr.mu_rest is not None:
+                    # the transformed rig's OWN rest frame: under the rest normalisation its mean IS that frame (make_transform,
+                    # mu_rest), so the frame normalises to zero on every cell exactly as a real rig's does
+                    # (Ktjd17Base.rest_frame_normalized); non-zero only under a statistics perturbation. apply_motion would
+                    # instead serve the SOURCE rig's rest pose described in the new convention (positions relative to the new
+                    # rest, deltas Q^T): a frame no rig serves, and one that hands the model every Q_j (reviewer 2026-09-25 P1)
+                    d_crop[:, :17] = ((tr.mu_rest - tr.mu) / (tr.sd + _STD_FLOOR)).astype(np.float32)
             d_crop = d_crop[None]                                     # [1,J,C]
             # The rest pose is a REFERENCE, not a motion sample, so it need not lie inside the
             # motion distribution its statistics describe. Four rigs have a root rot6d component
@@ -540,6 +652,8 @@ class InContextPairs(Dataset):
                     np.asarray(t_item["R_rest_global"])[:J]).float()
         if self.emit_graph_v2 and tr is not None:
             feats, ud = _graph_v2_tables(tr.parents, tr.offsets, geo)   # this sample's tree, uncached
+            if self.struct_world_rest:                                   # the transformed rest (Q_j R_rest_j, rebuilt P)
+                feats = np.concatenate([feats, _world_rest_feats(tr.parents, tr.offsets, tr.P_rest)], axis=1)
             out["struct_feats"] = torch.from_numpy(feats)
             out["updown"] = torch.from_numpy(ud)
         elif self.emit_graph_v2:
@@ -551,18 +665,31 @@ class InContextPairs(Dataset):
                     np.asarray(t_item["rest_offsets"])[:J],
                     np.asarray(t_item["geodesic_dist"])[:J, :J])
             feats, ud = self._g2cache[ot]
+            if self.struct_world_rest:
+                if ot not in self._wrcache:
+                    self._wrcache[ot] = _world_rest_feats(
+                        np.asarray(t_item["parent_indices"][:J], dtype=np.int64), np.asarray(t_item["rest_offsets"])[:J],
+                        np.asarray(t_item["P_rest_global"])[:J])
+                feats = np.concatenate([feats, self._wrcache[ot]], axis=1)
             out["struct_feats"] = torch.from_numpy(feats)
             out["updown"] = torch.from_numpy(ud)
         if self.emit_spectral > 0:
-            from src.data.skeleton_spectral import laplacian_eigenvectors
             if tr is not None:
-                out["spectral_feats"] = torch.from_numpy(laplacian_eigenvectors(tr.parents, self.emit_spectral)[0])
+                out["spectral_feats"] = torch.from_numpy(self._spectral_coords(tr.parents))
             else:
                 if ot not in self._speccache:
-                    self._speccache[ot] = laplacian_eigenvectors(
-                        np.asarray(t_item["parent_indices"][:J], dtype=np.int64), self.emit_spectral)[0]
+                    self._speccache[ot] = self._spectral_coords(
+                        np.asarray(t_item["parent_indices"][:J], dtype=np.int64))
                 out["spectral_feats"] = torch.from_numpy(self._speccache[ot])
         return out
+
+    def _spectral_coords(self, parents):
+        """[J, K] float32 spectral coordinates of one served tree: its K eigenvectors, or with spectral_hks its
+        trace-normalised heat-kernel signature at K scales."""
+        from src.data.skeleton_spectral import laplacian_eigenvectors, heat_kernel_signature, hks_scales
+        if self.spectral_hks:
+            return heat_kernel_signature(parents, hks_scales(self.emit_spectral))
+        return laplacian_eigenvectors(parents, self.emit_spectral)[0]
 
 
 def collate(batch):

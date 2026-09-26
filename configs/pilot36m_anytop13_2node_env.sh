@@ -46,7 +46,7 @@ export TEXTS_JSON=data/noik_pzh312_motion_texts_v1.json
 
 export OUT=${OUT:-runs/v2_noik_pilot36m_anytop13}
 export NCCL_SOCKET_IFNAME=ib1 NCCL_IB_HCA=mlx5_1
-export EXTRA=""
+export EXTRA="${EXTRA_APPEND:-}"
 # Topology: two 2-card H200 allocs, blossom04 (master, ib1 10.6.15.133, mlx5_1) + flamingo01 (worker): B32/rank x 4 = global 128,
 # lr 2e-4, 120 epochs, grad-ckpt on; no watchdog (the single-instance watchdog belongs to the 100M arm). Launcher:
 # scripts/_launch_v2_ddp_2node_h200.sh (CFG=this file), run ON blossom04. Calibration: configs/pilot_animal_anytop13_gamma_calibration_b32_v1.json

@@ -1,0 +1,295 @@
+{
+  "version": "pzh312_v1",
+  "generation_id": "20260920T162314097778Z-b54d5f79e630",
+  "target_centering": "ktjd_rest_centered_scale_v1",
+  "percell_sha256": "edb68655887c07ff16c793228d2fa041447662bfd1ad95a0fead5415ac0aaf34",
+  "residual_saturation_at_init": 0.0002440293025209951,
+  "protocol": {
+    "cohort": "train_all_targets_one_pass",
+    "cohort_windows": 6747,
+    "cohort_rigs": 5487,
+    "weighting": "clip_balanced",
+    "seed": 0,
+    "batch": 16,
+    "demo_rest": true,
+    "demo_frames": 1,
+    "huber_delta": 10.0,
+    "normalization": "rest",
+    "augmentation": {
+      "version": "ktjd17_skel_aug_v3.6_one_of",
+      "mode": "one_of",
+      "p": 0.8,
+      "drop_mode": "tips",
+      "bone_scale": 0.1,
+      "ops": [
+        "add",
+        "remove",
+        "pool",
+        "scale"
+      ],
+      "remove_rate": [
+        0.05,
+        0.15
+      ],
+      "remove_cap": 3,
+      "pool_rate": [
+        0.1,
+        0.3
+      ],
+      "pool_min": 1,
+      "select_alpha": 0.5,
+      "add_alpha": [
+        0.3,
+        0.7
+      ],
+      "add_sigma": 0.5,
+      "add_lateral": 0.5,
+      "rotation_rule": "unimate_local_slots",
+      "reentry": "rotation_and_contact_cells_of_recomposed_rows",
+      "contact": "pruned_on_recomposed_rows_where_displacement_grows",
+      "contact_abs_bl": 0.05,
+      "lock_denominator": "pre_pruning_pairs",
+      "deviations": [
+        "protected_root_and_contact_joints",
+        "rest_norm_mean_is_transformed_rest",
+        "velocity_reencoded",
+        "contact_pruned_on_recomposed_rows",
+        "synthetic_row_rule"
+      ],
+      "rest_p": 0.5,
+      "rest_deg": 30.0,
+      "rest_rule": "one_of rest-convention channel v3 (R2, 2026-09-26): drawn per sample with probability rest_p, independent of p and of the op; every joint with full rotation rows gets its own Q_j (random axis, angle U(0, rest_deg)), R_rest_j <- Q_j R_rest_j; a row without them keeps its convention (its held-constant delta composes as is); a synthetic row takes its parent's Q and its delta is rotated like every row's; under the rest normalisation the sample's mean is the TRANSFORMED rest pose and the rest demo is the transformed rig's own rest frame (zero), as a rig authored in that convention serves them -- the target's deltas delta_j Q_j^T are the only trace of Q; world motion unchanged, the served sample FK-consistent. (Mode joint's rest_deg keeps the legacy rule -- the source rig's mean and demo -- for the finished restaug arms' bytes; new arms use this channel.)"
+    },
+    "gamma_solve": "kimodo",
+    "windows": "demo_rest1/target_head",
+    "crop_rebase_active": true,
+    "space": "normalized_model_space",
+    "t_sampler": "uniform",
+    "v_space": true,
+    "sigma_min": 0.2,
+    "gamma_acc": 1.0,
+    "energy_stat": "mean_x1_sq_over_effective_valid_cells",
+    "mapping": "kimodo_eq1_family_shares: share_fam ~ gamma_fam^2 * sum E_i; gamma_fam = sqrt(share_fam / sum E_i)",
+    "families": {
+      "r_p": [
+        "root_pos",
+        "smooth_root"
+      ],
+      "r_a": [
+        "heading"
+      ],
+      "j_p": [
+        "body_pos"
+      ],
+      "j_a": [
+        "body_rot",
+        "root_rot"
+      ],
+      "j_v": [
+        "body_vel",
+        "root_vel"
+      ],
+      "f": [
+        "contact"
+      ]
+    },
+    "empty_groups": [],
+    "representation": "ktjd17",
+    "anchor": {
+      "j_a": 10.0
+    },
+    "mask_policy_version": "ktjd17_effvalid_v2",
+    "verify": {
+      "steps": 30,
+      "tolerance_x": 1.25,
+      "predictor": "batch-wise gamma^2*sum(e2*mm)/(count_g*n_total), same denominators as the loss",
+      "arm_model": {
+        "dim": 512,
+        "depth": 10,
+        "heads": 8,
+        "qk_norm": true,
+        "struct_feats": true,
+        "dir_bias": true,
+        "geo_bias": true,
+        "freeze_zero_joint_sem": false,
+        "spec_rope": true,
+        "spec_rope_k": 8,
+        "spec_rope_hks": true,
+        "struct_world_rest": true,
+        "temporal_rope": true,
+        "trope_base": 700.0
+      },
+      "arm_grad_ckpt": true
+    }
+  },
+  "counts": {
+    "root_pos": 1997153,
+    "root_rot": 3784044,
+    "root_vel": 1981625,
+    "body_pos": 72835881,
+    "body_rot": 145073422,
+    "body_vel": 72866645,
+    "contact": 5670928,
+    "smooth_root": 1330096,
+    "heading": 1262255
+  },
+  "energies": {
+    "root_pos": 0.158114,
+    "root_rot": 0.120294,
+    "root_vel": 1.114798,
+    "body_pos": 0.442521,
+    "body_rot": 0.355285,
+    "body_vel": 2.042486,
+    "contact": 0.209992,
+    "smooth_root": 3.658343,
+    "heading": 0.281245
+  },
+  "target_family_shares": {
+    "j_a": 0.303951,
+    "j_p": 0.303951,
+    "f": 0.048632,
+    "j_v": 0.027356,
+    "r_p": 0.303951,
+    "r_a": 0.012158
+  },
+  "solve_consistency_check": {
+    "statement": "gamma_fam^2 * sum(E_x1) over families, normalized, == the preregistered Kimodo Eq.1 share profile (hard gate, 1e-4)",
+    "scope": "TRUE BY CONSTRUCTION of the solve -- this gate proves the solve ran on the measured energies with the declared family map and anchor, and that nothing was mis-serialized. It is NOT evidence that the profile is attained during training; the profile is a design choice, and the realized gradient share depends on error energies that evolve.",
+    "rationale": "Kimodo's gamma^2 profile holds because its components are unit-variance normalized; gamma_i = gamma_kimodo_i / sqrt(E_i) is the faithful transfer into KTJD units",
+    "achieved": {
+      "j_a": 0.303949,
+      "j_p": 0.30395,
+      "f": 0.048631,
+      "j_v": 0.027354,
+      "r_p": 0.303957,
+      "r_a": 0.012158
+    },
+    "max_deviation": 5.965450170009046e-06
+  },
+  "acc_diagnostic": {
+    "gamma_acc": 1.0,
+    "acc_match_mean": 0.15190962726871174,
+    "family_shares_with_acc": {
+      "r_p": 0.079426,
+      "r_a": 0.024082,
+      "j_p": 0.257618,
+      "j_a": 0.566398,
+      "j_v": 0.018333,
+      "f": 0.054143
+    },
+    "family_shares_without_acc": {
+      "r_p": 0.079694,
+      "r_a": 0.024163,
+      "j_p": 0.258338,
+      "j_a": 0.568008,
+      "j_v": 0.015639,
+      "f": 0.054157
+    },
+    "note": "diagnostic only -- no analytic prediction exists for the acc term"
+  },
+  "mechanism_check": {
+    "statement": "measured output-grad share == gamma^2 * E_err within 25%/group (diagnostic: catches wiring bugs; CANNOT verify the design target, because init E_err carries an untrained-output-variance transient)",
+    "init_error_energies": {
+      "root_pos": 63.643291,
+      "root_rot": 100.476859,
+      "root_vel": 171.829605,
+      "body_pos": 95.53595,
+      "body_rot": 124.515628,
+      "body_vel": 280.824462,
+      "contact": 59.243675,
+      "smooth_root": 197.965489,
+      "heading": 158.438334
+    },
+    "predicted_grad_shares_init_batchwise": {
+      "root_pos": 0.019823,
+      "root_rot": 0.247589,
+      "root_vel": 0.005766,
+      "body_pos": 0.258338,
+      "body_rot": 0.320419,
+      "body_vel": 0.009873,
+      "contact": 0.054157,
+      "smooth_root": 0.059871,
+      "heading": 0.024163
+    },
+    "predicted_grad_shares_init_pooledEerr_diagnostic": {
+      "root_pos": 0.019898,
+      "root_rot": 0.252083,
+      "root_vel": 0.005844,
+      "body_pos": 0.257593,
+      "body_rot": 0.312393,
+      "body_vel": 0.009551,
+      "contact": 0.053859,
+      "smooth_root": 0.061893,
+      "heading": 0.026888
+    },
+    "measured_grad_shares_init": {
+      "root_pos": 0.019823,
+      "root_rot": 0.247589,
+      "root_vel": 0.005766,
+      "body_pos": 0.258338,
+      "body_rot": 0.320419,
+      "body_vel": 0.009873,
+      "contact": 0.054157,
+      "smooth_root": 0.059871,
+      "heading": 0.024163
+    },
+    "measured_family_shares_init": {
+      "r_p": 0.079694,
+      "r_a": 0.024163,
+      "j_p": 0.258338,
+      "j_a": 0.568008,
+      "j_v": 0.015639,
+      "f": 0.054157
+    },
+    "verify_effective_cells": {
+      "root_pos": 142814,
+      "root_rot": 272542,
+      "root_vel": 141744,
+      "body_pos": 5258816,
+      "body_rot": 10453815,
+      "body_vel": 5259857,
+      "contact": 384968,
+      "smooth_root": 95299,
+      "heading": 89950
+    },
+    "asserted_groups": [
+      "body_pos",
+      "body_rot",
+      "body_vel",
+      "contact",
+      "heading",
+      "root_pos",
+      "root_rot",
+      "root_vel",
+      "smooth_root"
+    ]
+  },
+  "gammas": {
+    "root_pos": 3.5301,
+    "root_rot": 10.0,
+    "root_vel": 1.1643,
+    "body_pos": 10.3668,
+    "body_rot": 10.0,
+    "body_vel": 1.1643,
+    "contact": 6.0196,
+    "smooth_root": 3.5301,
+    "heading": 2.6008
+  },
+  "hashes": {
+    "gains_sha256": "dcde268e52a6c629475ab7529c666e202904df51729de7792c551f8a5615434b",
+    "schema_sha256": "9132e7b11573062569361d4959e561f84dafac1d3ea25e737506be3bf6da7edf",
+    "joint_sem_sha256": "54c03072220536882b02bca25847e5143bbdf520fbb3b5aaecaf5504b69644f6",
+    "code_sha256": "213a4c1f427dd33476c94750d497eb6587ac284555e2a828a72bf60c27365351",
+    "code_files": [
+      "src/models/v2/dit_motion.py",
+      "scripts/_measure_ktjd17_gamma_calibration_view_v3.py",
+      "src/models/v2/spec_rope.py",
+      "src/data/skeleton_spectral.py",
+      "src/models/v2/temporal_rope.py"
+    ],
+    "code_script": "scripts/_measure_ktjd17_gamma_calibration_view_v3.py",
+    "exclusion_sha256": "8fb74b187c2cbced55f543172df370b4097229737fcd236b65daf0cde1fc3526",
+    "train_ids_sha256": "c4f2d8cf585602ec5797f0d3b8f0fc63eed3c47f8806e0ca52e9ccbbd5d88af1",
+    "manifest_sha256": "b54d5f79e6303462c1a7e7ff1606156479fe9f2bc5ccddcab8e35444f6e15415"
+  }
+}

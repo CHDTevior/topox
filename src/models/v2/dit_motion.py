@@ -38,6 +38,7 @@ import torch.nn as nn
 import torch.utils.checkpoint  # activation checkpointing (grad_ckpt)
 import torch.nn.functional as F
 from src.models.v2.spec_rope import SpectralJointRoPE, apply_rotary_pos_emb
+from src.models.v2.temporal_rope import sinusoidal_cos_sin
 
 
 def timestep_embedding(t: torch.Tensor, dim: int, max_period: float = 10000.0) -> torch.Tensor:
@@ -138,9 +139,11 @@ class Block(nn.Module):
             for k in (2, 5, 8):
                 self.ada[-1].bias[k * dim:(k + 1) * dim].fill_(1.0)
 
-    def forward(self, x, c, joint_bias=None, frame_valid=None, joint_valid=None, rope_cos=None, rope_sin=None):
-        # x [B,T,J,D]; rope_cos / rope_sin [B,1,1,J,dh] (spectral joint RoPE) reach the spatial attention only --
-        # two positional tensors, not a tuple, so the activation-checkpoint call below can pass them through
+    def forward(self, x, c, joint_bias=None, frame_valid=None, joint_valid=None, rope_cos=None, rope_sin=None,
+                trope_cos=None, trope_sin=None):
+        # x [B,T,J,D]; rope_cos / rope_sin [B,1,1,J,dh] (spectral joint RoPE) reach the spatial attention,
+        # trope_cos / trope_sin [1,1,T,dh] (sinusoidal temporal RoPE) the temporal one -- positional tensors, not
+        # tuples, so the activation-checkpoint call below can pass them through
         B, T, J, D = x.shape
         p = self.ada(c)                                    # [B, 9D]
         (st, sc, sg, st2, sc2, sg2, mt, mc, mg) = p.chunk(9, dim=-1)
@@ -149,7 +152,8 @@ class Block(nn.Module):
         # --- temporal: tokens are frames, batched over joints ---
         y = modulate(self.n1(x), e(st), e(sc)).permute(0, 2, 1, 3).reshape(B * J, T, D)
         fv = frame_valid.repeat_interleave(J, 0) if frame_valid is not None else None
-        y = self.t_attn(y, key_pad=fv).reshape(B, J, T, D).permute(0, 2, 1, 3)
+        y = self.t_attn(y, key_pad=fv, rope=(trope_cos, trope_sin) if trope_cos is not None else None
+                        ).reshape(B, J, T, D).permute(0, 2, 1, 3)
         x = x + e(sg) * y
 
         # --- spatial: tokens are joints, batched over frames; skeleton graph enters as bias ---
@@ -182,7 +186,8 @@ class InContextMotionDiT(nn.Module):
     def __init__(self, in_ch=13, dim=256, depth=6, n_heads=8, d_text=4096, d_blueprint=16,
                  d_joint_sem=4096, mlp_ratio=4.0, use_struct_feats=False, use_dir_bias=False,
                  local_root_dim=0, use_ref_text=False, grad_ckpt=False, qk_norm=False, use_geo_bias=True,
-                 use_spec_rope=False, spec_rope_k=8):
+                 use_spec_rope=False, spec_rope_k=8, spec_rope_hks=False, use_temporal_rope=False, trope_base=700.0,
+                 struct_world_rest=False):
         super().__init__()
         # Activation checkpointing recomputes each block's activations in the backward pass
         # instead of storing them: ~60-70% less activation memory for ~30% more compute. It is
@@ -198,12 +203,44 @@ class InContextMotionDiT(nn.Module):
         # them here, the same seed produced different backbone weights per flag combination
         # (codex 01a01b1a fix B), silently confounding any cross-arm comparison.
         self.use_struct_feats = bool(use_struct_feats)
+        # R1/R2 (2026-09-25): the struct features carry a 6-d world-frame rest descriptor (bone direction at rest, rest
+        # position; src/data/incontext_pairs.py _world_rest_feats) -- a choice WITHIN the struct-feats arm. The extra
+        # columns enter through their own bias-free Linear (struct_rest_in, built at the very END of __init__ so every
+        # other tensor is drawn from the same RNG sequence as the 8-column arm); its output is added to the first
+        # struct_mlp layer's pre-activation. The checkpoint states the flag by that parameter: a strict load refuses
+        # 14-column weights in an 8-column model (unexpected key) and the reverse (missing key).
+        self.struct_world_rest = bool(struct_world_rest)
+        if self.struct_world_rest and not self.use_struct_feats:
+            raise ValueError("struct_world_rest extends the struct_feats table: it needs use_struct_feats=True")
+        self.struct_in = 8 + (6 if self.struct_world_rest else 0)
         self.use_dir_bias = bool(use_dir_bias)
         self.use_geo_bias = bool(use_geo_bias)
         # UniMate's spectral joint RoPE (src/models/v2/spec_rope.py; user 2026-09-15 "照 UniMate: 谱 RoPE 替掉 j_pos"): the
         # joint-slot table j_pos is NOT created (nor added) when it is on; the SignNet module is built LAST (see below).
         self.use_spec_rope = bool(use_spec_rope)
         self.spec_rope_k = int(spec_rope_k)
+        # H1 (2026-09-24): the spectral RoPE's coordinates are the rig's heat-kernel signature at K scales and its encoder
+        # a plain MLP (src/models/v2/spec_rope.py HeatKernelSpectralEncoder) instead of the SignNet on K eigenvectors. A
+        # choice WITHIN the spectral arm, not a module of its own: it needs use_spec_rope, and spec_rope_k then counts scales.
+        self.spec_rope_hks = bool(spec_rope_hks)
+        if self.spec_rope_hks and not self.use_spec_rope:
+            raise ValueError("spec_rope_hks needs use_spec_rope=True: the heat-kernel signature is the spectral RoPE's "
+                             "coordinate, not a module of its own")
+        # Sinusoidal temporal RoPE (src/models/v2/temporal_rope.py; user 2026-09-16), the same trade on the frame axis:
+        # the learned t_pos table is NOT created (nor added) when it is on. The base travels with the weights as a
+        # persistent buffer, so a consumer that rebuilds the model with the wrong base gets the right one back from the
+        # checkpoint, and its presence / absence makes a mismatched rebuild fail strict loading either way.
+        self.use_temporal_rope = bool(use_temporal_rope)
+        if self.use_temporal_rope:
+            # The base is kept BOTH as a python float, which is what the forward reads, and as a persistent buffer,
+            # which is what travels with the weights. The float is what torch.compile can specialise on: reading
+            # float(buffer) inside the forward broke on the first recompilation (the traced value is not a real
+            # number there, and the table builder's own range check raised). The buffer exists so that a consumer
+            # rebuilding with the wrong base is REFUSED rather than silently corrected by the checkpoint while its
+            # args keep saying the wrong number -- the calibration is bound to the args (codex trope r1 P1-2) -- and
+            # the pre-hook below makes the two agree by construction, so the forward may trust the float.
+            self.trope_base_value = float(trope_base)
+            self._register_load_state_dict_pre_hook(self._refuse_trope_base_drift)
         if not self.use_geo_bias:
             # simplified-baseline arm (user 2026-09-08; codex baseline r1 #1): the spatial attention keeps NO skeleton-graph prior.
             # The flag travels with the checkpoint as a buffer, so a consumer that rebuilds the model without use_geo_bias=False
@@ -218,7 +255,7 @@ class InContextMotionDiT(nn.Module):
         # broadcasts one [D] shift/scale to every token, so without positions it cannot paint a
         # T x J x C target that differs per position.
         self.max_T, self.max_J = 4096, 160
-        self.t_pos = nn.Parameter(torch.zeros(1, self.max_T, 1, dim))
+        t_pos = torch.zeros(1, self.max_T, 1, dim)      # a Parameter only when the learned table is in use (below)
         # JOINT POSITION, separate from joint SEMANTICS. Semantics say what a joint IS
         # ("the left claw of the arm"); position says which slot it occupies. They are complementary:
         # several joints down one limb have near-identical descriptions, and joint_semantics is
@@ -229,7 +266,11 @@ class InContextMotionDiT(nn.Module):
         # tensor that is then dropped) so the backbone parameters after this point are bit-identical under one seed
         # whichever way the flag is set (the causal-pairing discipline of the graph-v2 modules, codex 01a01b1a fix B).
         j_pos = torch.zeros(1, 1, self.max_J, dim)
-        nn.init.normal_(self.t_pos, std=0.02); nn.init.normal_(j_pos, std=0.02)
+        nn.init.normal_(t_pos, std=0.02); nn.init.normal_(j_pos, std=0.02)
+        if not self.use_temporal_rope:
+            self.t_pos = nn.Parameter(t_pos)
+        else:
+            self.register_buffer("trope_base", torch.tensor(float(trope_base)))
         if not self.use_spec_rope:
             self.j_pos = nn.Parameter(j_pos)
         self.joint_sem = nn.Linear(d_joint_sem, dim)              # per-joint identity (LLM2Vec)
@@ -305,22 +346,47 @@ class InContextMotionDiT(nn.Module):
         # their code; NOT zero-initialised, so this arm is not the exact baseline function at init (the baseline's j_pos
         # is gone anyway). Its parameters are the checkpoint's marker: a consumer that rebuilds the model without the flag
         # fails strict loading (unexpected spec_rope.* keys, missing j_pos) instead of silently restoring a slot table.
+        # Under spec_rope_hks the encoder's keys are the MLP's (spec_rope.spectral_encoder.net.*) plus its `scales` buffer,
+        # so a SignNet checkpoint and an HKS checkpoint refuse each other's weights the same way.
         self.spec_rope = None
         if self.use_spec_rope:
-            self.spec_rope = SpectralJointRoPE(head_dim=dim // n_heads, num_eigvecs=self.spec_rope_k)
+            self.spec_rope = SpectralJointRoPE(head_dim=dim // n_heads, num_eigvecs=self.spec_rope_k,
+                                               hks=self.spec_rope_hks)
+        # R1/R2 world-rest columns (see the flag above): built last, after spec_rope, so the 8-column arm's tensors are
+        # bit-identical under the same seed whether or not the flag is on.
+        self.struct_rest_in = None
+        if self.struct_world_rest:
+            self.struct_rest_in = nn.Linear(6, dim, bias=False)
+    def _refuse_trope_base_drift(self, state_dict, prefix, *args):
+        key = prefix + "trope_base"
+        if key in state_dict and float(state_dict[key]) != self.trope_base_value:
+            raise RuntimeError(
+                f"[refuse] this checkpoint was trained with trope_base={float(state_dict[key])} but the model was built "
+                f"with {self.trope_base_value}: the loaded buffer would silently overrule the flag this run records "
+                f"and the calibration is bound to the flag, not to the buffer")
+
     def forward(self, x, t, *, is_target, joint_sem=None, text=None, blueprint=None,
                 joint_bias=None, frame_valid=None, joint_valid=None,
                 struct_feats=None, updown=None, local_root=None, demo_text=None, spectral_feats=None):
         """x [B,T,J,C] ; t [B] in [0,1] ; is_target [B,T] bool.
-        struct_feats [B,J,8] / updown [B,J,J,2] are graph-v2 inputs; both ignored (and refused)
-        unless the matching use_* flag built the module.
-        spectral_feats [B,J,K] are the rig's Laplacian eigenvectors (src/data/skeleton_spectral.py); required by and
-        only accepted with use_spec_rope (a mismatch either way is refused).
+        struct_feats [B,J,8] (14 with struct_world_rest) / updown [B,J,J,2] are graph-v2 inputs; both ignored
+        (and refused) unless the matching use_* flag built the module.
+        spectral_feats [B,J,K] are the rig's Laplacian eigenvectors (src/data/skeleton_spectral.py), or with
+        spec_rope_hks its heat-kernel signature at K scales; required by and only accepted with use_spec_rope (a
+        mismatch either way is refused).
         local_root [B,T,4] is the two-stage bridge input (Kimodo's local-root representation);
         it is refused unless local_root_dim built the module."""
         B, T, J, _ = x.shape
         h = self.x_in(x)
-        h = h + self.t_pos[:, :T]                                               # temporal position
+        trope_cos = trope_sin = None
+        if self.use_temporal_rope:
+            # float32 table ALWAYS, whatever autocast is doing to h: at bf16 the stored cos/sin miss the unit
+            # circle by 5.5e-3 (codex trope r1 P2), and apply_rotary_pos_emb does its arithmetic in float32 anyway
+            cs, sn = sinusoidal_cos_sin(T, self.dim // self.n_heads, self.trope_base_value,
+                                        device=h.device, dtype=torch.float32)
+            trope_cos, trope_sin = cs[None, None], sn[None, None]                # [1,1,T,dh]: over the folded B*J and H
+        else:
+            h = h + self.t_pos[:, :T]                                           # temporal position (learned table)
         rope_cos = rope_sin = None
         if self.use_spec_rope:
             if spectral_feats is None:
@@ -351,7 +417,13 @@ class InContextMotionDiT(nn.Module):
             if struct_feats is None:
                 raise ValueError("model built with use_struct_feats=True but batch has no "
                                  "struct_feats -- dataset must be built with emit_graph_v2=True")
-            h = h + self.struct_mlp(struct_feats)[:, None]                      # [B,1,J,D]
+            if struct_feats.shape[-1] != self.struct_in:
+                raise ValueError(f"struct_feats has {struct_feats.shape[-1]} columns but the model was built for "
+                                 f"{self.struct_in} (struct_world_rest={self.struct_world_rest}): dataset and model disagree")
+            z = self.struct_mlp[0](struct_feats[..., :8])
+            if self.struct_world_rest:
+                z = z + self.struct_rest_in(struct_feats[..., 8:])
+            h = h + self.struct_mlp[2](self.struct_mlp[1](z))[:, None]         # [B,1,J,D]
         if not self.use_geo_bias and joint_bias is not None:
             # drop the geodesic entries (-clip(geo, 8), in [-8, 0]) but keep the PAD_BIAS (-1e4) padding entries the collator
             # wrote, so padded joints stay masked exactly as before
@@ -377,10 +449,12 @@ class InContextMotionDiT(nn.Module):
                 # use_reentrant=False: the reentrant variant does not play well with DDP's
                 # bucketed backward and silently drops the grads of unused parameters.
                 h = torch.utils.checkpoint.checkpoint(
-                    blk, h, c, joint_bias, frame_valid, joint_valid, rope_cos, rope_sin, use_reentrant=False)
+                    blk, h, c, joint_bias, frame_valid, joint_valid, rope_cos, rope_sin,
+                    trope_cos, trope_sin, use_reentrant=False)
             else:
                 h = blk(h, c, joint_bias=joint_bias, frame_valid=frame_valid,
-                        joint_valid=joint_valid, rope_cos=rope_cos, rope_sin=rope_sin)
+                        joint_valid=joint_valid, rope_cos=rope_cos, rope_sin=rope_sin,
+                        trope_cos=trope_cos, trope_sin=trope_sin)
         shift, scale = self.ada_out(c).chunk(2, dim=-1)
         h = modulate(self.n_out(h), shift[:, None, None], scale[:, None, None])
         return self.out(h)

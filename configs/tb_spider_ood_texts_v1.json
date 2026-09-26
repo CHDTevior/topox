@@ -1,0 +1,162 @@
+{
+ "SPIDER_OOD_01.npy": {
+  "primary_caption": "The spider climbs up a vertical wall",
+  "captions": [
+   "The spider climbs up a vertical wall"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_01",
+  "frames": 240,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_02.npy": {
+  "primary_caption": "The spider wraps its prey in silk",
+  "captions": [
+   "The spider wraps its prey in silk"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_02",
+  "frames": 200,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_03.npy": {
+  "primary_caption": "The spider walks backward slowly",
+  "captions": [
+   "The spider walks backward slowly"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_03",
+  "frames": 200,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_04.npy": {
+  "primary_caption": "The spider turns around to face the opposite direction",
+  "captions": [
+   "The spider turns around to face the opposite direction"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_04",
+  "frames": 180,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_05.npy": {
+  "primary_caption": "The spider runs forward quickly",
+  "captions": [
+   "The spider runs forward quickly"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_05",
+  "frames": 200,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_06.npy": {
+  "primary_caption": "The spider hangs upside down from its web",
+  "captions": [
+   "The spider hangs upside down from its web"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_06",
+  "frames": 240,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_07.npy": {
+  "primary_caption": "The spider crouches low to the ground and stays still",
+  "captions": [
+   "The spider crouches low to the ground and stays still"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_07",
+  "frames": 180,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_08.npy": {
+  "primary_caption": "The spider waves its front legs in the air",
+  "captions": [
+   "The spider waves its front legs in the air"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_08",
+  "frames": 150,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_09.npy": {
+  "primary_caption": "The spider walks in a circle",
+  "captions": [
+   "The spider walks in a circle"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_09",
+  "frames": 240,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_10.npy": {
+  "primary_caption": "The spider jumps to the right",
+  "captions": [
+   "The spider jumps to the right"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_10",
+  "frames": 150,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_11.npy": {
+  "primary_caption": "The spider flees backward quickly and then stops",
+  "captions": [
+   "The spider flees backward quickly and then stops"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_11",
+  "frames": 200,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_12.npy": {
+  "primary_caption": "The spider stretches its legs one by one",
+  "captions": [
+   "The spider stretches its legs one by one"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_12",
+  "frames": 200,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_13.npy": {
+  "primary_caption": "The spider drops down from a thread and lands on the ground",
+  "captions": [
+   "The spider drops down from a thread and lands on the ground"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_13",
+  "frames": 240,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_14.npy": {
+  "primary_caption": "The spider walks sideways to the right",
+  "captions": [
+   "The spider walks sideways to the right"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_14",
+  "frames": 200,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_15.npy": {
+  "primary_caption": "The spider lifts its abdomen and shoots silk upward",
+  "captions": [
+   "The spider lifts its abdomen and shoots silk upward"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_15",
+  "frames": 180,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ },
+ "SPIDER_OOD_16.npy": {
+  "primary_caption": "The spider lies on its back and struggles to get up",
+  "captions": [
+   "The spider lies on its back and struggles to get up"
+  ],
+  "source_dataset": "ood_authored_pzstyle",
+  "source_motion_id": "SPIDER_OOD_16",
+  "frames": 240,
+  "note": "authored 2026-09-05 for the Spider LoRA text-OOD probe (big vs small backbone); no GT motion exists"
+ }
+}

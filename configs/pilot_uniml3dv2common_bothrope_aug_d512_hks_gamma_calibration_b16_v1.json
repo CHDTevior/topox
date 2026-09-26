@@ -1,0 +1,291 @@
+{
+  "version": "pzh312_v1",
+  "generation_id": "20260920T162314097778Z-b54d5f79e630",
+  "target_centering": "ktjd_rest_centered_scale_v1",
+  "percell_sha256": "edb68655887c07ff16c793228d2fa041447662bfd1ad95a0fead5415ac0aaf34",
+  "residual_saturation_at_init": 0.000251575829773665,
+  "protocol": {
+    "cohort": "train_all_targets_one_pass",
+    "cohort_windows": 6747,
+    "cohort_rigs": 5487,
+    "weighting": "clip_balanced",
+    "seed": 0,
+    "batch": 16,
+    "demo_rest": true,
+    "demo_frames": 1,
+    "huber_delta": 10.0,
+    "normalization": "rest",
+    "augmentation": {
+      "version": "ktjd17_skel_aug_v3.6_one_of",
+      "mode": "one_of",
+      "p": 0.8,
+      "drop_mode": "tips",
+      "bone_scale": 0.1,
+      "ops": [
+        "add",
+        "remove",
+        "pool",
+        "scale"
+      ],
+      "remove_rate": [
+        0.05,
+        0.15
+      ],
+      "remove_cap": 3,
+      "pool_rate": [
+        0.1,
+        0.3
+      ],
+      "pool_min": 1,
+      "select_alpha": 0.5,
+      "add_alpha": [
+        0.3,
+        0.7
+      ],
+      "add_sigma": 0.5,
+      "add_lateral": 0.5,
+      "rotation_rule": "unimate_local_slots",
+      "reentry": "rotation_and_contact_cells_of_recomposed_rows",
+      "contact": "pruned_on_recomposed_rows_where_displacement_grows",
+      "contact_abs_bl": 0.05,
+      "lock_denominator": "pre_pruning_pairs",
+      "deviations": [
+        "protected_root_and_contact_joints",
+        "rest_norm_mean_is_transformed_rest",
+        "velocity_reencoded",
+        "contact_pruned_on_recomposed_rows",
+        "synthetic_row_rule"
+      ]
+    },
+    "gamma_solve": "kimodo",
+    "windows": "demo_rest1/target_head",
+    "crop_rebase_active": true,
+    "space": "normalized_model_space",
+    "t_sampler": "uniform",
+    "v_space": true,
+    "sigma_min": 0.2,
+    "gamma_acc": 1.0,
+    "energy_stat": "mean_x1_sq_over_effective_valid_cells",
+    "mapping": "kimodo_eq1_family_shares: share_fam ~ gamma_fam^2 * sum E_i; gamma_fam = sqrt(share_fam / sum E_i)",
+    "families": {
+      "r_p": [
+        "root_pos",
+        "smooth_root"
+      ],
+      "r_a": [
+        "heading"
+      ],
+      "j_p": [
+        "body_pos"
+      ],
+      "j_a": [
+        "body_rot",
+        "root_rot"
+      ],
+      "j_v": [
+        "body_vel",
+        "root_vel"
+      ],
+      "f": [
+        "contact"
+      ]
+    },
+    "empty_groups": [],
+    "representation": "ktjd17",
+    "anchor": {
+      "j_a": 10.0
+    },
+    "mask_policy_version": "ktjd17_effvalid_v2",
+    "verify": {
+      "steps": 30,
+      "tolerance_x": 1.25,
+      "predictor": "batch-wise gamma^2*sum(e2*mm)/(count_g*n_total), same denominators as the loss",
+      "arm_model": {
+        "dim": 512,
+        "depth": 10,
+        "heads": 8,
+        "qk_norm": true,
+        "struct_feats": true,
+        "dir_bias": true,
+        "geo_bias": true,
+        "freeze_zero_joint_sem": false,
+        "spec_rope": true,
+        "spec_rope_k": 8,
+        "spec_rope_hks": true,
+        "temporal_rope": true,
+        "trope_base": 700.0
+      },
+      "arm_grad_ckpt": true
+    }
+  },
+  "counts": {
+    "root_pos": 1996391,
+    "root_rot": 3784044,
+    "root_vel": 1982265,
+    "body_pos": 72939690,
+    "body_rot": 145212742,
+    "body_vel": 72979678,
+    "contact": 5585513,
+    "smooth_root": 1330096,
+    "heading": 1262255
+  },
+  "energies": {
+    "root_pos": 0.158174,
+    "root_rot": 0.112051,
+    "root_vel": 1.114438,
+    "body_pos": 0.445176,
+    "body_rot": 0.349949,
+    "body_vel": 2.066837,
+    "contact": 0.212932,
+    "smooth_root": 3.658343,
+    "heading": 0.281245
+  },
+  "target_family_shares": {
+    "f": 0.048632,
+    "j_a": 0.303951,
+    "j_p": 0.303951,
+    "r_a": 0.012158,
+    "j_v": 0.027356,
+    "r_p": 0.303951
+  },
+  "solve_consistency_check": {
+    "statement": "gamma_fam^2 * sum(E_x1) over families, normalized, == the preregistered Kimodo Eq.1 share profile (hard gate, 1e-4)",
+    "scope": "TRUE BY CONSTRUCTION of the solve -- this gate proves the solve ran on the measured energies with the declared family map and anchor, and that nothing was mis-serialized. It is NOT evidence that the profile is attained during training; the profile is a design choice, and the realized gradient share depends on error energies that evolve.",
+    "rationale": "Kimodo's gamma^2 profile holds because its components are unit-variance normalized; gamma_i = gamma_kimodo_i / sqrt(E_i) is the faithful transfer into KTJD units",
+    "achieved": {
+      "f": 0.048632,
+      "j_a": 0.303949,
+      "j_p": 0.303948,
+      "r_a": 0.012158,
+      "j_v": 0.027358,
+      "r_p": 0.303955
+    },
+    "max_deviation": 3.4598685071385304e-06
+  },
+  "acc_diagnostic": {
+    "gamma_acc": 1.0,
+    "acc_match_mean": 0.15469479362169902,
+    "family_shares_with_acc": {
+      "r_p": 0.078964,
+      "r_a": 0.024032,
+      "j_p": 0.247987,
+      "j_a": 0.572105,
+      "j_v": 0.018215,
+      "f": 0.058697
+    },
+    "family_shares_without_acc": {
+      "r_p": 0.07924,
+      "r_a": 0.024116,
+      "j_p": 0.248698,
+      "j_a": 0.573795,
+      "j_v": 0.015417,
+      "f": 0.058735
+    },
+    "note": "diagnostic only -- no analytic prediction exists for the acc term"
+  },
+  "mechanism_check": {
+    "statement": "measured output-grad share == gamma^2 * E_err within 25%/group (diagnostic: catches wiring bugs; CANNOT verify the design target, because init E_err carries an untrained-output-variance transient)",
+    "init_error_energies": {
+      "root_pos": 63.940819,
+      "root_rot": 100.375545,
+      "root_vel": 172.597613,
+      "body_pos": 92.281599,
+      "body_rot": 121.676567,
+      "body_vel": 277.778928,
+      "contact": 66.067772,
+      "smooth_root": 197.280421,
+      "heading": 158.95922
+    },
+    "predicted_grad_shares_init_batchwise": {
+      "root_pos": 0.01976,
+      "root_rot": 0.252113,
+      "root_vel": 0.005721,
+      "body_pos": 0.248698,
+      "body_rot": 0.321682,
+      "body_vel": 0.009695,
+      "contact": 0.058735,
+      "smooth_root": 0.05948,
+      "heading": 0.024116
+    },
+    "predicted_grad_shares_init_pooledEerr_diagnostic": {
+      "root_pos": 0.019913,
+      "root_rot": 0.258226,
+      "root_vel": 0.005804,
+      "body_pos": 0.246375,
+      "body_rot": 0.313025,
+      "body_vel": 0.009341,
+      "contact": 0.059005,
+      "smooth_root": 0.061438,
+      "heading": 0.026871
+    },
+    "measured_grad_shares_init": {
+      "root_pos": 0.01976,
+      "root_rot": 0.252113,
+      "root_vel": 0.005721,
+      "body_pos": 0.248698,
+      "body_rot": 0.321682,
+      "body_vel": 0.009695,
+      "contact": 0.058735,
+      "smooth_root": 0.05948,
+      "heading": 0.024116
+    },
+    "measured_family_shares_init": {
+      "r_p": 0.07924,
+      "r_a": 0.024116,
+      "j_p": 0.248698,
+      "j_a": 0.573795,
+      "j_v": 0.015417,
+      "f": 0.058735
+    },
+    "verify_effective_cells": {
+      "root_pos": 142866,
+      "root_rot": 272542,
+      "root_vel": 141813,
+      "body_pos": 5224884,
+      "body_rot": 10393904,
+      "body_vel": 5226839,
+      "contact": 389372,
+      "smooth_root": 95299,
+      "heading": 89950
+    },
+    "asserted_groups": [
+      "body_pos",
+      "body_rot",
+      "body_vel",
+      "contact",
+      "heading",
+      "root_pos",
+      "root_rot",
+      "root_vel",
+      "smooth_root"
+    ]
+  },
+  "gammas": {
+    "root_pos": 3.4793,
+    "root_rot": 10.0,
+    "root_vel": 1.1433,
+    "body_pos": 10.1872,
+    "body_rot": 10.0,
+    "body_vel": 1.1433,
+    "contact": 5.892,
+    "smooth_root": 3.4793,
+    "heading": 2.5634
+  },
+  "hashes": {
+    "gains_sha256": "dcde268e52a6c629475ab7529c666e202904df51729de7792c551f8a5615434b",
+    "schema_sha256": "9132e7b11573062569361d4959e561f84dafac1d3ea25e737506be3bf6da7edf",
+    "joint_sem_sha256": "54c03072220536882b02bca25847e5143bbdf520fbb3b5aaecaf5504b69644f6",
+    "code_sha256": "570956b11d4b6744b713af79f80a040723b1255ac67bdcb14fd9bbd8586d2ba8",
+    "code_files": [
+      "src/models/v2/dit_motion.py",
+      "scripts/_measure_ktjd17_gamma_calibration_view_v3.py",
+      "src/models/v2/spec_rope.py",
+      "src/data/skeleton_spectral.py",
+      "src/models/v2/temporal_rope.py"
+    ],
+    "code_script": "scripts/_measure_ktjd17_gamma_calibration_view_v3.py",
+    "exclusion_sha256": "8fb74b187c2cbced55f543172df370b4097229737fcd236b65daf0cde1fc3526",
+    "train_ids_sha256": "c4f2d8cf585602ec5797f0d3b8f0fc63eed3c47f8806e0ca52e9ccbbd5d88af1",
+    "manifest_sha256": "b54d5f79e6303462c1a7e7ff1606156479fe9f2bc5ccddcab8e35444f6e15415"
+  }
+}

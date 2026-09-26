@@ -224,7 +224,9 @@ def calib_arm_model_drift(calib: dict, want: dict, require_uniform: bool):
     - the spectral-RoPE fields (spec_rope / spec_rope_k) bind EVERY arm: a slot-table artifact must never certify a
       spectral-RoPE run or vice versa, and the code hash cannot tell the two apart (codex 2026-09-15 specrope r1 P1). An
       artifact written before the fields existed was measured on a model without the spectral RoPE -- absence means
-      exactly that (the _calib_demo_drift convention).
+      exactly that (the _calib_demo_drift convention). The HKS coordinate of that RoPE (spec_rope_hks, H1 2026-09-24)
+      binds the same way: a SignNet / eigenvector artifact must never certify an HKS run or vice versa, and an artifact
+      written before the field existed was measured without it.
     - the four conditioning fields (struct_feats / dir_bias / geo_bias / freeze_zero_joint_sem) bind the UNIFORM arm only,
       strictly (all four recorded): the mechanism check and the acceleration diagnostic must not certify a denoiser that
       still has the ingredients the arm removed (codex baseline r4 #2). A calibrated arm is bound to its artifact by the
@@ -232,16 +234,33 @@ def calib_arm_model_drift(calib: dict, want: dict, require_uniform: bool):
       flat arm trains on the nodesc control's weights; codex 2026-09-15 unimate r4 P1-2), while artifacts older than the
       conditioning fields record the architecture only (codex unimate r3 P1)."""
     arm = (calib.get("protocol", {}).get("verify", {}) or {}).get("arm_model") or {}
-    legacy = {"spec_rope": False, "spec_rope_k": 8}
-    spec_want = {k: want[k] for k in legacy if k in want}
-    spec_got = {k: arm.get(k, legacy[k]) for k in spec_want}
+    # A rotary's flag and its parameter were introduced together, so ABSENCE of both means "measured without that
+    # rotary"; one present and the other missing is a malformed record, not a legacy one, and the code hash cannot
+    # recover the missing value (codex trope r2 P2). Each pair is completed or refused as a pair.
+    legacy = {("spec_rope", "spec_rope_k"): (False, 8), ("temporal_rope", "trope_base"): (False, 700.0),
+              ("spec_rope_hks",): (False,),          # a single field: absent = measured on the eigenvector / SignNet model
+              ("struct_world_rest",): (False,)}      # R1/R2: absent = measured on the 8-d struct_feats model
+    filled = dict(arm)
+    for keys, defaults in legacy.items():
+        present = [k for k in keys if k in arm]
+        if not present:
+            filled.update(dict(zip(keys, defaults)))
+        elif len(present) != len(keys):
+            return (f"records {present} without {sorted(set(keys) - set(present))}: a rotary's flag and its parameter "
+                    f"were written together, so a half-present pair is a malformed record, not a pre-rotary one")
+    spec_want = {k: want[k] for ks in legacy for k in ks if k in want}
+    spec_got = {k: filled.get(k) for k in spec_want}
     if spec_got != spec_want:
         return (f"was measured on a model with {spec_got}, this run builds {spec_want} -- re-measure it with the matching "
-                f"ARM_SPEC_ROPE / ARM_SPEC_ROPE_K")
+                f"ARM_SPEC_ROPE / ARM_SPEC_ROPE_K / ARM_SPEC_ROPE_HKS / ARM_STRUCT_WORLD_REST")
     if not require_uniform:
         return None
-    rest_want = {k: v for k, v in want.items() if k not in legacy}
-    got = {k: arm.get(k) for k in rest_want}
+    _legacy_keys = {k for ks in legacy for k in ks}                 # legacy keys are TUPLES of field names
+    rest_want = {k: v for k, v in want.items() if k not in _legacy_keys}
+    # rest_want holds only the four conditioning fields (every rotary field is a legacy key and was already checked in
+    # spec_got above); they are never completed, so filled.get(k) == arm.get(k) here and they stay strict. Reading from
+    # the completed record keeps this branch symmetric with the calibrated-arm branch.
+    got = {k: filled.get(k) for k in rest_want}
     if got != rest_want:
         return f"was measured on a model with {got}, this run builds {rest_want} -- re-measure it with the matching ARM_* conditioning"
     return None
@@ -249,16 +268,33 @@ def calib_arm_model_drift(calib: dict, want: dict, require_uniform: bool):
 
 # the spectral-RoPE implementation is loss / model code for that arm only: hashed into the calibration binding when the
 # arm uses it, left out otherwise so every older artifact keeps matching (codex 2026-09-15 specrope r1 P2)
-SPEC_ROPE_CODE_FILES = ("src/models/v2/spec_rope.py", "src/data/skeleton_spectral.py")
+# src/models/v2/spec_rope.py holds the rotation itself (`apply_rotary_pos_emb`), which BOTH rotary arms execute, so it
+# is hashed whenever either flag is on (codex trope r1 P1-1: a sign-error mutation in it left both hashes unchanged).
+# The two coordinate sources are hashed only for the arm that reads them.
+ROTARY_SHARED_CODE_FILES = ("src/models/v2/spec_rope.py",)
+SPEC_ROPE_CODE_FILES = ("src/data/skeleton_spectral.py",)
+TEMPORAL_ROPE_CODE_FILES = ("src/models/v2/temporal_rope.py",)
 
 
-def calib_code_sha256(repo: Path, calib_script: Path, spec_rope: bool) -> str:
-    """sha256 over dit_motion.py + the measuring script (+ the spectral-RoPE files when the arm uses them) -- the ONE
-    formula both the trainer's binding check and the v2 measurer's record use."""
-    blob = (repo / "src" / "models" / "v2" / "dit_motion.py").read_bytes() + Path(calib_script).read_bytes()
+def rotary_code_files(spec_rope: bool, temporal_rope: bool) -> list[str]:
+    """The rotary sources an arm actually executes, in a fixed order."""
+    out = []
+    if spec_rope or temporal_rope:
+        out += list(ROTARY_SHARED_CODE_FILES)
     if spec_rope:
-        for rel in SPEC_ROPE_CODE_FILES:
-            blob += (repo / rel).read_bytes()
+        out += list(SPEC_ROPE_CODE_FILES)
+    if temporal_rope:
+        out += list(TEMPORAL_ROPE_CODE_FILES)
+    return out
+
+
+def calib_code_sha256(repo: Path, calib_script: Path, spec_rope: bool, temporal_rope: bool = False) -> str:
+    """sha256 over dit_motion.py + the measuring script + the rotary sources the arm executes -- the ONE formula both
+    the trainer's binding check and the v2 measurer's record use. Nothing is appended for an arm with neither rotary
+    flag, so every pre-rotary artifact keeps matching."""
+    blob = (repo / "src" / "models" / "v2" / "dit_motion.py").read_bytes() + Path(calib_script).read_bytes()
+    for rel in rotary_code_files(spec_rope, temporal_rope):
+        blob += (repo / rel).read_bytes()
     return hashlib.sha256(blob).hexdigest()
 
 
@@ -328,7 +364,9 @@ def _calib_batch_gate(proto, run_batch, calib_sha, calib_path, resume):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    # allow_abbrev=False: the launcher's EXTRA duplicate guard matches exact flag strings, and argparse's prefix
+    # abbreviation let `--rest_demo_self_pair` slip past it and still set the real flag (codex uniml3d r2 P2-2).
+    ap = argparse.ArgumentParser(allow_abbrev=False)
     ap.add_argument("--data_root", default="data/animo4d_L4TB_plus_human_v4b272neutral")
     ap.add_argument("--splits_dir", default="data/holdout_splits_v1")
     ap.add_argument("--joint_sem", default="data/joint_semantics_llm2vec_v1.npz")
@@ -422,6 +460,10 @@ def main():
                     help="RIG:N[,RIG:N] -- draw a named rig as if it were N rigs under --balance rig. For a corpus "
                          "holding one topology with many rigs' worth of clips: uniform-over-rigs gives it 1/N of the "
                          "samples, uniform-over-clips lets it take a quarter of the batch. Empty = unchanged draws.")
+    ap.add_argument("--balance_alpha", type=float, default=0.0,
+                    help="under --balance rig, weight a rig's draw by (its clip count)^alpha: 0 = uniform over rigs "
+                         "(unchanged), 1 = uniform over clips, 0.5 = UniMate's sampler_alpha. S1 (user 2026-09-24): on "
+                         "UniML3D 74%% of clips sit alone on their rig and uniform-over-rigs starves the multi-clip rigs.")
     ap.add_argument("--flat_joints", type=int, default=0,
                     help="train the flat padded-joint baseline instead of the per-joint model: one token per FRAME "
                          "holding every joint's channels zero-padded to this many joints, no joint descriptions, no "
@@ -432,11 +474,36 @@ def main():
     ap.add_argument("--dir_bias", action="store_true",
                     help="graph-v2 knife 2: learnable per-head directional (up/down LCA hop) "
                          "attention bias added to the fixed -geodesic scalar")
+    ap.add_argument("--struct_world_rest", action="store_true",
+                    help="R1/R2 (2026-09-25): append the world-frame rest descriptor to the struct features (8 -> 14): each "
+                         "bone's world direction at rest (P_rest[j] - P_rest[parent], unit) and the rest position (root XZ removed, in "
+                         "mean bone lengths, radially log-compressed); built from the served tree, so an augmented item's rest "
+                         "follows its transform; "
+                         "needs --struct_feats (the checkpoint carries struct_rest_in.weight, a Linear(6, dim) built last)")
     ap.add_argument("--spec_rope", action="store_true",
                     help="UniMate's spectral joint RoPE (src/models/v2/spec_rope.py): a sign-invariant SignNet maps the rig's K "
                          "smallest non-trivial Laplacian eigenvectors to rotation angles that rotate q/k of the spatial attention; "
                          "REPLACES the learned joint-slot table j_pos (the checkpoint carries spec_rope.* and no j_pos)")
     ap.add_argument("--spec_rope_k", type=int, default=8, help="spectral RoPE: eigenvector count K (UniMate max_freqs 8)")
+    ap.add_argument("--spec_rope_hks", action="store_true",
+                    help="H1: the spectral RoPE reads the rig's heat-kernel signature at K scales (t_i = 0.25 * 2^i; "
+                         "src/data/skeleton_spectral.py heat_kernel_signature: every non-trivial mode kept, invariant to "
+                         "eigenvector sign AND basis, trace-normalised per rig so every scale's column has mean 1 over "
+                         "the rig's joints) through a plain MLP, instead of K eigenvectors through the SignNet; "
+                         "needs --spec_rope (the checkpoint carries spec_rope.spectral_encoder.net.* and .scales)")
+    ap.add_argument("--temporal_rope", action="store_true",
+                    help="sinusoidal temporal RoPE (src/models/v2/temporal_rope.py) on the temporal attention's q/k, REPLACING "
+                         "the learned frame-position table t_pos (whose rows past the training window no gradient ever sees)")
+    ap.add_argument("--trope_base", type=float, default=700.0,
+                    help="temporal RoPE frequency base; 700 is UniMate's RopeND auto rule at the 241-frame window")
+    ap.add_argument("--allow_self_only_drop", action="store_true",
+                    help="train on the remainder after the distinct-demo rule discarded the targets whose rig holds no "
+                         "other clip. Deliberate only: on a corpus of one-clip rigs that is most of the training set")
+    ap.add_argument("--rest_demo_self_pairs", action="store_true",
+                    help="keep a target whose rig has no OTHER clip (it pairs with itself). Legal only with --demo_rest and "
+                         "without --ref_text / --random_caption, i.e. exactly when the demo clip is never opened and the demo "
+                         "slot carries the rest pose. A corpus of one-clip rigs needs it: UniML3D keeps 6,611 training clips "
+                         "with it and 1,544 without")
     ap.add_argument("--ktjd_root", default="dataset/ktjd17_truebones",
                     help="ktjd17 corpus root (only read when --corpus ktjd17)")
     ap.add_argument("--anchor", choices=("none", "rest", "demo"), default="none",
@@ -473,6 +540,9 @@ def main():
     ap.add_argument("--aug_drop_mode", choices=("any", "tips"), default="any",
                     help="sub-skeleton: 'any' joint (children re-parented) or 'tips' (prune leaves only; FK stays exact)")
     ap.add_argument("--aug_rest_deg", type=float, default=0.0, help="rest-convention: max per-joint rotation, degrees")
+    ap.add_argument("--aug_rest_p", type=float, default=0.0,
+                    help="R2 (2026-09-25), --aug_mode one_of only: per-sample probability of the rest-convention perturbation "
+                         "(angle <= --aug_rest_deg), drawn independently of --aug_p and of the op; 0 = off")
     ap.add_argument("--aug_sem_noise", type=float, default=0.0, help="description embeddings: noise std / row RMS")
     ap.add_argument("--aug_sem_drop_p", type=float, default=0.0, help="description embeddings: P(zero the whole table)")
     ap.add_argument("--aug_stats_logsd", type=float, default=0.0, help="statistics: log-normal std factor sigma")
@@ -618,10 +688,13 @@ def main():
     ap.add_argument("--lora_targets", default="attn,ffn,cond",
                     help="comma list of src.models.v2.lora.TARGET_GROUPS keys")
     a = ap.parse_args()
+    if a.struct_world_rest and not a.struct_feats:
+        raise SystemExit("[refuse] --struct_world_rest extends the struct_feats table: it needs --struct_feats")
     aug_cfg = AugConfig(p=a.aug_p, drop_max_frac=a.aug_drop_max_frac, drop_mode=a.aug_drop_mode, rest_deg=a.aug_rest_deg,
                         sem_noise=a.aug_sem_noise, sem_drop_p=a.aug_sem_drop_p,
                         stats_logsd=a.aug_stats_logsd, stats_shift=a.aug_stats_shift,
-                        bone_scale=a.aug_bone_scale, pool_frac=a.aug_pool_frac, add_p=a.aug_add_p, mode=a.aug_mode)
+                        bone_scale=a.aug_bone_scale, pool_frac=a.aug_pool_frac, add_p=a.aug_add_p, mode=a.aug_mode,
+                        rest_p=a.aug_rest_p)
     if aug_cfg.active and a.corpus != "ktjd17":
         raise SystemExit("[refuse] --aug_* is ktjd17-only (needs static_masks and the FK skeleton fields)")
     if aug_cfg.active and a.anchor == "rest":
@@ -633,6 +706,9 @@ def main():
         raise SystemExit("[refuse] --resume is not supported for LoRA runs (they are short; restart from --init_from)")
     if a.lora_r > 0 and a.two_stage:
         raise SystemExit("[refuse] LoRA is wired for InContextMotionDiT only")
+    if a.spec_rope_hks and not a.spec_rope:
+        raise SystemExit("[refuse] --spec_rope_hks needs --spec_rope: it chooses the spectral RoPE's coordinates, it is not "
+                         "a module of its own")
     # Objective-shaping knobs are validated UNCONDITIONALLY: they reach cfm_loss on every corpus,
     # so a guard inside the ktjd17 branch would let another corpus pass an invalid value straight
     # through (codex 2026-08-22 hygiene). 2/s-1 is only defined on (0, 1].
@@ -781,7 +857,11 @@ def main():
         _REPO = Path(__file__).resolve().parents[1]
         _CALIB_SCRIPTS = {(_REPO / x).resolve() for x in ("scripts/_measure_ktjd17_gamma_calibration.py",
                                                           "scripts/_measure_ktjd17_gamma_calibration_view.py",
-                                                          "scripts/_measure_ktjd17_gamma_calibration_view_v2.py")}
+                                                          "scripts/_measure_ktjd17_gamma_calibration_view_v2.py",
+                                                          # v3 = v2 + SELF_DEMO_PAIRS, a separate file because this
+                                                          # hash covers the measurer's own bytes and v2 must stay
+                                                          # frozen for the artifacts already bound to it
+                                                          "scripts/_measure_ktjd17_gamma_calibration_view_v3.py")}
         _rel = str(calib["hashes"].get("code_script", "scripts/_measure_ktjd17_gamma_calibration.py"))
         _calib_script = _REPO / _rel
         if (Path(_rel).is_absolute() or ".." in Path(_rel).parts        # no escape-and-return paths
@@ -790,7 +870,7 @@ def main():
                 or _REPO not in _calib_script.resolve().parents):
             raise SystemExit(f"[refuse] gamma calibration names a measuring script outside the repo allowlist: "
                              f"{_rel!r}")
-        code_now = calib_code_sha256(_REPO, _calib_script, bool(a.spec_rope))
+        code_now = calib_code_sha256(_REPO, _calib_script, bool(a.spec_rope), bool(a.temporal_rope))
         if str(calib["hashes"].get("code_sha256")) != code_now and not a.allow_calib_code_drift:
             raise SystemExit("[refuse] gamma calibration was measured against different loss code "
                              "(dit_motion.py / the calibration script / the spectral-RoPE files changed since). Recalibrate, "
@@ -900,7 +980,10 @@ def main():
                              "a calibrated arm needs 'kimodo' (the uniform arm passes --require_uniform_gammas)")
         _drift = calib_arm_model_drift(calib, {"struct_feats": bool(a.struct_feats), "dir_bias": bool(a.dir_bias),
                                                "geo_bias": bool(a.geo_bias), "freeze_zero_joint_sem": bool(a.freeze_zero_joint_sem),
-                                               "spec_rope": bool(a.spec_rope), "spec_rope_k": int(a.spec_rope_k)},
+                                               "spec_rope": bool(a.spec_rope), "spec_rope_k": int(a.spec_rope_k),
+                                               "spec_rope_hks": bool(a.spec_rope_hks),
+                                               "struct_world_rest": bool(a.struct_world_rest),
+                                               "temporal_rope": bool(a.temporal_rope), "trope_base": float(a.trope_base)},
                                        bool(a.require_uniform_gammas))
         if _drift:
             raise SystemExit(f"[refuse] {a.ktjd_gamma_calib} {_drift}")
@@ -977,20 +1060,37 @@ def main():
                            demo_frames=a.demo_frames, target_frames=a.target_frames,
                            balance_skeletons=(a.balance == "rig"), seed=a.seed,
                            rig_multiplicity=_rig_multiplicity(a), epoch_draws=a.epoch_draws,
+                           balance_alpha=a.balance_alpha,
                            emit_fk_fields=(a.gamma_fk > 0 or a.gamma_vel > 0 or a.gamma_lock > 0),
-                           emit_graph_v2=(a.struct_feats or a.dir_bias),
-                           emit_spectral=(a.spec_rope_k if a.spec_rope else 0),
+                           emit_graph_v2=(a.struct_feats or a.dir_bias), struct_world_rest=a.struct_world_rest,
+                           emit_spectral=(a.spec_rope_k if a.spec_rope else 0), spectral_hks=a.spec_rope_hks,
+                           rest_demo_self_pairs=a.rest_demo_self_pairs,
                            identity_p=a.identity_p, emit_ref_text=a.ref_text,
                            demo_rest=a.demo_rest, augment=aug_cfg)
     ds_va = InContextPairs(base, names["val"], names["train"], object_types=types,
                            demo_frames=a.demo_frames, target_frames=a.target_frames,
                            balance_skeletons=False, seed=a.seed + 1,
                            emit_fk_fields=(a.gamma_fk > 0 or a.gamma_vel > 0 or a.gamma_lock > 0),
-                           emit_graph_v2=(a.struct_feats or a.dir_bias),
-                           emit_spectral=(a.spec_rope_k if a.spec_rope else 0),
+                           emit_graph_v2=(a.struct_feats or a.dir_bias), struct_world_rest=a.struct_world_rest,
+                           emit_spectral=(a.spec_rope_k if a.spec_rope else 0), spectral_hks=a.spec_rope_hks,
+                           rest_demo_self_pairs=a.rest_demo_self_pairs,
                            emit_ref_text=a.ref_text, demo_rest=a.demo_rest)
+    # THE load-bearing guard for the pairing rule (codex uniml3d r2 P2-1): a launcher knob that defaults to the
+    # dangerous value is invisible, but the dataset knows EXACTLY how many targets the distinct-demo rule discarded.
+    # On a corpus of one-clip rigs that is most of the training set (UniML3D: 5,067 of 6,611), and under the rest demo
+    # the rule buys nothing because the demo clip is never opened. Refuse rather than train on the remainder in silence.
+    if ds_tr.n_dropped_self_only and not a.rest_demo_self_pairs and not a.allow_self_only_drop:
+        raise SystemExit(
+            f"[refuse] the distinct-demo rule discarded {ds_tr.n_dropped_self_only} of "
+            f"{ds_tr.n_dropped_self_only + len(ds_tr)} training targets: their rig holds no OTHER clip. "
+            + ("Under --demo_rest the demo clip is never opened, so pass --rest_demo_self_pairs to keep them "
+               if a.demo_rest else
+               "Without --demo_rest the demo clip IS read, so those targets have no demonstration; use --demo_rest "
+               "with --rest_demo_self_pairs, or a cut whose rigs hold several clips ")
+            + "-- or pass --allow_self_only_drop to train on the remainder deliberately.")
     print(f"[train] {len(ds_tr)} targets / {len(ds_tr.types)} rigs / {ds_tr.pair_count()} pairs "
-          f"| bucket-A val {len(ds_va)} targets / {len(ds_va.types)} rigs", flush=True)
+          f"| bucket-A val {len(ds_va)} targets / {len(ds_va.types)} rigs"
+          f"{' | rig draw weight = clips^' + str(a.balance_alpha) if a.balance_alpha else ''}", flush=True)
 
     # Under DDP a DistributedSampler partitions the INDEX SPACE (734 -> ~183/rank -> 22 steps at
     # B8, 704 global draws vs 728 single-GPU). Balanced _pick ignores the indices themselves; the
@@ -1064,7 +1164,11 @@ def main():
         # rest-pose demonstration frame, objective, schedule, budget and the frozen evaluation -- is
         # the control's, which is what the works we are positioned against mean by a fair comparison
         for _bad, _why in (("two_stage", "a different denoiser"), ("struct_feats", "a skeleton input"),
-                           ("dir_bias", "a skeleton input"), ("ref_text", "a per-frame text pathway")):
+                           ("dir_bias", "a skeleton input"), ("ref_text", "a per-frame text pathway"),
+                           # FlatMotionDiT keeps its own learned tables and never reads either rotary flag, so a flat
+                           # checkpoint that RECORDS one would load into a model that silently ignores it (codex trope
+                           # r1 P1-4)
+                           ("spec_rope", "a per-joint rotary"), ("temporal_rope", "a temporal rotary")):
             if getattr(a, _bad):
                 raise SystemExit(f"[refuse] --flat_joints with --{_bad}: the flat baseline has no place for {_why}")
         if a.geo_bias:
@@ -1084,13 +1188,17 @@ def main():
                                      use_struct_feats=a.struct_feats,
                                      use_dir_bias=a.dir_bias, grad_ckpt=a.grad_ckpt,
                                      use_ref_text=a.ref_text, qk_norm=a.qk_norm, use_geo_bias=a.geo_bias,
-                                     use_spec_rope=a.spec_rope, spec_rope_k=a.spec_rope_k).to(dev)
+                                     use_spec_rope=a.spec_rope, spec_rope_k=a.spec_rope_k, spec_rope_hks=a.spec_rope_hks,
+                                     use_temporal_rope=a.temporal_rope, trope_base=a.trope_base,
+                                     struct_world_rest=a.struct_world_rest).to(dev)
     else:
         model = InContextMotionDiT(in_ch=in_ch, dim=a.dim, depth=a.depth, n_heads=a.heads,
                                    d_text=4096, d_joint_sem=4096,
                                    use_struct_feats=a.struct_feats, use_dir_bias=a.dir_bias, grad_ckpt=a.grad_ckpt,
                                    use_ref_text=a.ref_text, qk_norm=a.qk_norm, use_geo_bias=a.geo_bias,
-                                   use_spec_rope=a.spec_rope, spec_rope_k=a.spec_rope_k).to(dev)
+                                   use_spec_rope=a.spec_rope, spec_rope_k=a.spec_rope_k, spec_rope_hks=a.spec_rope_hks,
+                                   use_temporal_rope=a.temporal_rope, trope_base=a.trope_base,
+                                   struct_world_rest=a.struct_world_rest).to(dev)
     # raw_model stays the UNCOMPILED module: it is what state_dict()/load_state_dict() use, so
     # checkpoints keep clean keys (a compiled wrapper prefixes everything with `_orig_mod.` and
     # every earlier checkpoint would fail to load).
@@ -1143,7 +1251,14 @@ def main():
         # never enters the graph, and DDP's reducer otherwise waits forever for its gradients --
         # the H200 smoke caught exactly this. Costs a small per-step graph walk; excising bp_mlp
         # outright would break strict state_dict loading of every run-1 checkpoint.
-        model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
+        # broadcast_buffers=False: validation runs its forwards through this wrapper on rank 0 ALONE while the
+        # peers wait in a barrier; with buffers present (trope_base, and H1's spec_rope scales ladder) the default
+        # sync issues a coalesced broadcast on the first no_grad forward after a training step that no peer
+        # joins -- NCCL then fed garbage into _collective_abort's flag and every rank died with a phantom
+        # "peer rank aborted on the articulation gate" at H1's first validation (2026-09-25 01:37Z; mechanism
+        # reproduced with gloo in runs/_heldout/_ddp_probe/_repro_buffer_broadcast.py: hangs with True, clean
+        # with False). Every buffer of these models is a constant identical on all ranks; nothing needs syncing.
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=True, broadcast_buffers=False)
     n_par = sum(p.numel() for p in raw_model.parameters())
     trainable = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(trainable, lr=a.lr, weight_decay=a.wd)
@@ -1207,7 +1322,7 @@ def main():
                 "t_sampler", "v_space", "p_drop_text", "p_drop_demo", "p_drop_both",
                 "bf16", "warmup_steps", "wd", "gamma_fk", "fk_warmup_steps",
                 "struct_feats", "dir_bias", "ktjd_root", "anchor", "identity_p",
-                "two_stage", "flat_joints", "rig_multiplicity", "epoch_draws", "root_dim", "gamma_vel", "gamma_lock", "gamma_acc", "ref_text",
+                "two_stage", "flat_joints", "rig_multiplicity", "epoch_draws", "balance_alpha", "root_dim", "gamma_vel", "gamma_lock", "gamma_acc", "ref_text",
                 "demo_rest", "ktjd_percell_stats", "qk_norm",
                 # (codex 2026-08-21 (A)2) the robustness knee and the clip threshold BOTH define
                 # the trajectory: resuming with a different one produces later epochs trained
@@ -1217,10 +1332,17 @@ def main():
                 "artic_min", "artic_gate_after", "artic_gate_strikes", "val_every",
                 "aug_p", "aug_drop_max_frac", "aug_drop_mode", "aug_rest_deg", "aug_sem_noise", "aug_sem_drop_p",
                 "aug_stats_logsd", "aug_stats_shift", "aug_bone_scale", "aug_pool_frac", "aug_add_p", "aug_mode",
+                # R2 rest channel and R1/R2 rest input (2026-09-25): the served items and the model's parameters differ
+                "aug_rest_p", "struct_world_rest",
                 # simplified-baseline knobs (codex baseline r1 #2): both define the arm
                 "geo_bias", "freeze_zero_joint_sem",
-                # spectral joint RoPE (2026-09-15): architecture-defining (the checkpoint has spec_rope.* and no j_pos)
-                "spec_rope", "spec_rope_k")
+                # spectral joint RoPE (2026-09-15): architecture-defining (the checkpoint has spec_rope.* and no j_pos);
+                # its HKS coordinate (H1, 2026-09-24) likewise: the encoder's keys and the served coordinates differ
+                "spec_rope", "spec_rope_k", "spec_rope_hks",
+                # sinusoidal temporal RoPE (2026-09-16): architecture-defining (the checkpoint has no t_pos)
+                "temporal_rope", "trope_base",
+                # which targets exist at all (2026-09-16): flipping either mid-run changes the training set
+                "rest_demo_self_pairs", "allow_self_only_drop")
         core = ("dim", "depth", "heads", "batch", "lr", "seed", "data_root", "splits_dir",
                 "joint_sem", "caption_cache", "texts_json")
         missing = [k for k in core if k not in old_args]

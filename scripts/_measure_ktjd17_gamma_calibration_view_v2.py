@@ -84,7 +84,8 @@ from src.data.ktjd17_incontext import Ktjd17Base, ktjd17_split_names            
 from src.data.ktjd17_augment import AugConfig                                            # noqa: E402
 from src.models.v2.dit_motion import (InContextMotionDiT, cfm_loss,                       # noqa: E402
                                       _GROUP_SPEC_KTJD17, KTJD17_MASK_POLICY)
-from scripts.train_v2_incontext import ktjd_channel_lut, ktjd_prep, cond_of, to_dev, calib_code_sha256, SPEC_ROPE_CODE_FILES   # noqa: E402
+from scripts.train_v2_incontext import (ktjd_channel_lut, ktjd_prep, cond_of, to_dev,   # noqa: E402
+                                        calib_code_sha256, rotary_code_files)
 
 OUT = Path(os.environ.get("CALIB_OUT", "configs/pzh312_gamma_calibration_v5.json"))
 # Kimodo Eq.1 families -> KTJD groups, with the Eq.1-implied share profile (gamma^2-normalized:
@@ -169,7 +170,10 @@ ARM = dict(dim=int(os.environ.get("ARM_DIM", "384")), depth=int(os.environ.get("
            freeze_zero_joint_sem=os.environ.get("ARM_FREEZE_ZERO_JOINT_SEM", "0") == "1",
            # spectral joint RoPE arm (2026-09-15): the slot table replaced by UniMate's SignNet RoPE with K eigenvectors
            spec_rope=os.environ.get("ARM_SPEC_ROPE", "0") == "1",
-           spec_rope_k=int(os.environ.get("ARM_SPEC_ROPE_K", "8")))
+           spec_rope_k=int(os.environ.get("ARM_SPEC_ROPE_K", "8")),
+           # temporal RoPE arm (2026-09-16): the learned frame table replaced by the sinusoidal rotation
+           temporal_rope=os.environ.get("ARM_TEMPORAL_ROPE", "0") == "1",
+           trope_base=float(os.environ.get("ARM_TROPE_BASE", "700")))
 
 
 def main():
@@ -305,7 +309,8 @@ def main():
                                n_heads=ARM["heads"], d_text=4096, d_joint_sem=4096,
                                use_struct_feats=ARM["struct_feats"], use_dir_bias=ARM["dir_bias"],
                                use_geo_bias=ARM["geo_bias"], grad_ckpt=True, qk_norm=ARM["qk_norm"],
-                               use_spec_rope=ARM["spec_rope"], spec_rope_k=ARM["spec_rope_k"]).to(dev).train()
+                               use_spec_rope=ARM["spec_rope"], spec_rope_k=ARM["spec_rope_k"],
+                               use_temporal_rope=ARM["temporal_rope"], trope_base=ARM["trope_base"]).to(dev).train()
     if ARM["freeze_zero_joint_sem"]:
         with torch.no_grad():
             model.joint_sem.weight.zero_(); model.joint_sem.bias.zero_()
@@ -477,9 +482,9 @@ def main():
 
     # the trainer's formula (scripts/train_v2_incontext.py calib_code_sha256): dit_motion.py + this script, plus the
     # spectral-RoPE files when the arm uses them (codex 2026-09-15 specrope r1 P2)
-    code_sha = calib_code_sha256(Path(".").resolve(), Path(__file__), ARM["spec_rope"])
+    code_sha = calib_code_sha256(Path(".").resolve(), Path(__file__), ARM["spec_rope"], ARM["temporal_rope"])
     code_files = ["src/models/v2/dit_motion.py", os.path.relpath(Path(__file__).resolve(), Path(".").resolve())] \
-        + (list(SPEC_ROPE_CODE_FILES) if ARM["spec_rope"] else [])
+        + rotary_code_files(ARM["spec_rope"], ARM["temporal_rope"])
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text(json.dumps({
         "version": "pzh312_v1",

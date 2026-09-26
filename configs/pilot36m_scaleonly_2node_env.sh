@@ -85,7 +85,7 @@ export TEXTS_JSON=data/noik_pzh312_motion_texts_v1.json
 
 export OUT=${OUT:-runs/v2_noik_pilot36m_scaleonly}
 export NCCL_SOCKET_IFNAME=ib1 NCCL_IB_HCA=mlx5_1
-export EXTRA="--rep_norm scale_only"
+export EXTRA="--rep_norm scale_only ${EXTRA_APPEND:-}"
 # Representation ablation arm (user 2026-09-06): 36M r1acc recipe with --rep_norm scale_only (KTJD spec scale-only normalisation).
 # Two 2-card H200 allocs, blossom04 (master, ib1 10.6.15.133, mlx5_1) + flamingo01 (worker): B32/rank x 4 = global 128, lr 2e-4,
 # 120 epochs, grad-ckpt on. B64 x 2 on one node OOMed on real data. Calibration measured under REP_NORM=scale_only at batch 32.

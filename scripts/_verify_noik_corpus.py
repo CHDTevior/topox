@@ -12,7 +12,7 @@ import numpy as np
 
 R = sys.argv[1]
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 400
-SPEC = "handoff/20260822_pzh312_joint_names_descriptions.json"
+SPEC = os.environ.get("KTJD_JOINT_SPEC", "handoff/20260822_pzh312_joint_names_descriptions.json")
 
 motions = sorted(glob.glob(R + "/motions/*.npz"))
 rng = np.random.default_rng(0)
@@ -98,6 +98,10 @@ if missing[:3]:
     print("      not in spec:", missing[:3])
 # descriptions present and non-empty?
 k = np.load(skels[0], allow_pickle=True)
-dsc = list(k["joint_descriptions"])
-print(f"[4b] descriptions on {os.path.basename(skels[0])}: {len(dsc)} entries, "
-      f"{sum(1 for x in dsc if x.strip())} non-empty, e.g. {dsc[0]!r}")
+if "joint_descriptions" in k:
+    dsc = list(k["joint_descriptions"])
+    print(f"[4b] descriptions on {os.path.basename(skels[0])}: {len(dsc)} entries, "
+          f"{sum(1 for x in dsc if x.strip())} non-empty, e.g. {dsc[0] if dsc else None!r}")
+else:
+    print(f"[4b] optional joint_descriptions absent on {os.path.basename(skels[0])}; "
+          "not a numerical channel failure (consult the corpus sidecar).")

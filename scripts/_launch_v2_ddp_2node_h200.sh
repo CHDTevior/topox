@@ -106,6 +106,22 @@ DIR_BIAS=${DIR_BIAS:?1 or 0 -- graph-v2 directional bias}
 SPEC_ROPE=${SPEC_ROPE:-0}          # 1: UniMate's spectral joint RoPE replaces the joint-slot table (--spec_rope --spec_rope_k)
 SPEC_ROPE_K=${SPEC_ROPE_K:-8}
 case "$SPEC_ROPE" in 0|1) ;; *) echo "[orch] SPEC_ROPE must be exactly 0 or 1, got '$SPEC_ROPE'"; exit 1 ;; esac
+SPEC_ROPE_HKS=${SPEC_ROPE_HKS:-0}  # 1 (H1): that RoPE reads the heat-kernel signature through a plain MLP (--spec_rope_hks; needs SPEC_ROPE=1)
+case "$SPEC_ROPE_HKS" in 0|1) ;; *) echo "[orch] SPEC_ROPE_HKS must be exactly 0 or 1, got '$SPEC_ROPE_HKS'"; exit 1 ;; esac
+[ "$SPEC_ROPE_HKS" = 1 ] && [ "$SPEC_ROPE" != 1 ] && { echo "[orch] SPEC_ROPE_HKS=1 needs SPEC_ROPE=1"; exit 1; }
+STRUCT_WORLD_REST=${STRUCT_WORLD_REST:-0}  # 1 (R1/R2): the struct features carry the world-frame rest descriptor (--struct_world_rest; needs STRUCT_FEATS=1)
+case "$STRUCT_WORLD_REST" in 0|1) ;; *) echo "[orch] STRUCT_WORLD_REST must be exactly 0 or 1, got '$STRUCT_WORLD_REST'"; exit 1 ;; esac
+[ "$STRUCT_WORLD_REST" = 1 ] && [ "$STRUCT_FEATS" != 1 ] && { echo "[orch] STRUCT_WORLD_REST=1 needs STRUCT_FEATS=1"; exit 1; }
+TEMPORAL_ROPE=${TEMPORAL_ROPE:-0}  # 1: sinusoidal temporal RoPE replaces the learned frame table (--temporal_rope --trope_base)
+TROPE_BASE=${TROPE_BASE:-700}
+case "$TEMPORAL_ROPE" in 0|1) ;; *) echo "[orch] TEMPORAL_ROPE must be exactly 0 or 1, got '$TEMPORAL_ROPE'"; exit 1 ;; esac
+# 1: keep a target whose rig has no OTHER clip (it pairs with itself, and under the rest demo the demo clip is never
+# opened). A corpus of one-clip rigs NEEDS it: on dataset/ktjd17_uniml3d_v1 the training set is 6,611 clips / 5,263 rigs
+# with it and 1,544 / 196 without, and a launch that forgot it would train on the small one in silence. A launcher knob
+# rather than an EXTRA string for exactly that reason.
+SELF_DEMO_PAIRS=${SELF_DEMO_PAIRS:-0}
+case "$SELF_DEMO_PAIRS" in 0|1) ;; *) echo "[orch] SELF_DEMO_PAIRS must be exactly 0 or 1, got '$SELF_DEMO_PAIRS'"; exit 1 ;; esac
+[ "$SELF_DEMO_PAIRS" = 1 ] && [ "$DEMO_REST" != 1 ] && { echo "[orch] SELF_DEMO_PAIRS=1 needs DEMO_REST=1"; exit 1; }
 RANDOM_CAPTION=${RANDOM_CAPTION:?1 or 0 -- caption rotation}
 ANCHOR=${ANCHOR:?none|rest|demo}
 P_DROP_TEXT=${P_DROP_TEXT:?CFG text-drop probability}
@@ -124,7 +140,8 @@ for dup in --out --epochs --lr --batch --grad_accum --resume --corpus --ktjd_roo
            --dim --depth --lr_scheduler --lr_decay_epochs --eta_min_ratio --warmup_steps \
            --wd --grad_clip --grad_spike_reject --param_resync_steps --sigma_min --grad_ckpt --compile \
            --heads --bf16 --v_space --gamma_fk --fk_warmup_steps --gamma_vel --gamma_lock --gamma_acc --qk_norm \
-           --demo_rest --demo_frames --struct_feats --dir_bias --spec_rope --spec_rope_k --random_caption --anchor \
+           --demo_rest --demo_frames --struct_feats --dir_bias --struct_world_rest --spec_rope --spec_rope_k --spec_rope_hks \
+           --temporal_rope --trope_base --rest_demo_self_pairs --random_caption --anchor \
            --p_drop_text --p_drop_demo --p_drop_both --t_sampler; do
   case " $EXTRA " in *" $dup "*|*" $dup="*) echo "[orch] PREFLIGHT FAIL: EXTRA must not set $dup"; exit 1;; esac
 done
@@ -200,7 +217,7 @@ echo "[orch] arch dim=$DIM depth=$DEPTH grad_ckpt=$GRAD_CKPT compile=$COMPILE qk
 echo "[orch] sched=$LR_SCHED decay_ep=$LR_DECAY_EPOCHS eta_min=$ETA_MIN_RATIO warmup=$WARMUP"
 echo "[orch] wd=$WD grad_clip=$GRAD_CLIP spike_reject=$GRAD_SPIKE sigma_min=$SIGMA_MIN v_space=$V_SPACE bf16=$BF16"
 echo "[orch] gamma fk=$GAMMA_FK/warm$FK_WARMUP vel=$GAMMA_VEL lock=$GAMMA_LOCK acc=$GAMMA_ACC t_sampler=$T_SAMPLER"
-echo "[orch] demo_rest=$DEMO_REST frames=$DEMO_FRAMES struct=$STRUCT_FEATS dir_bias=$DIR_BIAS spec_rope=$SPEC_ROPE/K$SPEC_ROPE_K"
+echo "[orch] demo_rest=$DEMO_REST frames=$DEMO_FRAMES struct=$STRUCT_FEATS/world_rest$STRUCT_WORLD_REST dir_bias=$DIR_BIAS spec_rope=$SPEC_ROPE/K$SPEC_ROPE_K/hks$SPEC_ROPE_HKS temporal_rope=$TEMPORAL_ROPE/base$TROPE_BASE self_demo_pairs=$SELF_DEMO_PAIRS"
 echo "[orch] heads=$HEADS anchor=$ANCHOR rand_cap=$RANDOM_CAPTION drops=$P_DROP_TEXT/$P_DROP_DEMO/$P_DROP_BOTH"
 for f in "$PERCELL" "$CALIB" "$CUT" "$JOINT_SEM"; do
   [ -f "$f" ] || { echo "[orch] PREFLIGHT FAIL: missing artifact $f"; exit 1; }
@@ -232,8 +249,10 @@ run_rank() {  # $1 jobid  $2 node_rank
       --p_drop_text $P_DROP_TEXT --p_drop_demo $P_DROP_DEMO --p_drop_both $P_DROP_BOTH \
       $([ "$BF16" = 1 ] && echo --bf16) $([ "$V_SPACE" = 1 ] && echo --v_space) \
       $([ "$DEMO_REST" = 1 ] && echo --demo_rest) \
-      $([ "$STRUCT_FEATS" = 1 ] && echo --struct_feats) $([ "$DIR_BIAS" = 1 ] && echo --dir_bias) \
-      $([ "$SPEC_ROPE" = 1 ] && echo --spec_rope --spec_rope_k $SPEC_ROPE_K) \
+      $([ "$STRUCT_FEATS" = 1 ] && echo --struct_feats) $([ "$DIR_BIAS" = 1 ] && echo --dir_bias) $([ "$STRUCT_WORLD_REST" = 1 ] && echo --struct_world_rest) \
+      $([ "$SPEC_ROPE" = 1 ] && echo --spec_rope --spec_rope_k $SPEC_ROPE_K) $([ "$SPEC_ROPE_HKS" = 1 ] && echo --spec_rope_hks) \
+      $([ "$TEMPORAL_ROPE" = 1 ] && echo --temporal_rope --trope_base $TROPE_BASE) \
+      $([ "$SELF_DEMO_PAIRS" = 1 ] && echo --rest_demo_self_pairs) \
       $([ "$RANDOM_CAPTION" = 1 ] && echo --random_caption) \
       --lr_scheduler $LR_SCHED --lr_decay_epochs $LR_DECAY_EPOCHS --eta_min_ratio $ETA_MIN_RATIO \
       $([ "$GRAD_CKPT" = 1 ] && echo --grad_ckpt) $([ "$COMPILE" = 1 ] && echo --compile) \

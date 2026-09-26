@@ -1,128 +1,59 @@
-# noKslot_clean
+# TopoX — text-to-motion for arbitrary skeletons (H1 release branch)
 
-Independent baseline: encoder + slot_norm (identity-passthrough K=Jpad bypass
-of the source K=24 Sinkhorn bottleneck) + TopoFKTreeIK hard-FK decoder +
-IK-derived rotation supervision. Trains same-skeleton self-reconstruction on
-`cs_sparse2full_tgt` (src==tgt full→full).
+This branch (`release/h1-uniml3d-73m`) carries the code that trained and runs the **H1** model: a 73M-parameter
+in-context motion diffusion transformer over the KTJD-17 representation, trained on the UniML3D v2 "common" cut
+(6,747 clips / 5,487 rigs, the split shared with the UniMate comparison). Recipe: heat-kernel-signature spectral
+joint RoPE + temporal RoPE, UniMate-rule skeleton augmentation, rig sampling weight = clips^0.5, rest-pose
+normalisation, 1-frame rest-pose demo, LLM2Vec text conditioning.
 
-Surgical extract from `motion_representation_study` after the K-slot research
-path was REFUTE-with-evidence on 2026-05-19 (5 architectural variants + 2
-diagnostics all GATE FAIL on cross-species motion transfer; user's call after
-viewing held-out animations). Full failure summary at
-`<source_repo>/.codex-research/plan/20260519_214500_kslot_failure_lessons.md`.
+Newer arms (R2: world-frame rest descriptor + rest-convention augmentation; R1: descriptor only) are present in the
+code behind flags that default OFF; with the flags off every served item and every model tensor is byte-identical
+to the H1 code.
 
-This repo is **the diagnostic's clean isolation** — used as a stable baseline
-on top of which new methods can be developed without the K-slot codebase's
-accumulated state (no SlotAssignment, no paired-gate 4-collapse / anchor /
-cross-species memory / Sinkhorn / C2 / C4).
+## Weights
 
-## Install
+Private HuggingFace repo `Tevior/topox-h1-uniml3d-73m` (ask the owner for access):
 
-```
-pip install -r requirements.txt
-```
+| file | what | sha256 |
+|---|---|---|
+| `topox_h1_uniml3d73m_ep239_infer.pt` | H1 checkpoint, optimizer state stripped (model state dict + training args + data bindings), 293 MB | `282b077c8374551ce59b395ab370687c943f56c80b919638e6ff5d3df6004b26` |
+| `pilot_uniml3dv2common_bothrope_aug_d512_hks_gamma_calibration_b16_v1.json` | the run's loss-weight calibration artifact (training only) | — |
 
-Tested with Python 3.10 + PyTorch 2.x + CUDA 11.x.
+Load it with `scripts/_eval_v2_gen_in_evalspace.py::load_gen_model(torch.load(path, map_location="cpu", weights_only=False), device)`
+(builds `InContextMotionDiT` from the checkpoint's own args and loads strictly).
 
-## Quick run
+## Environment
 
-```bash
-# CPU-only invariant smoke (no GPU, no Slurm; ~5 s)
-python -u scripts/self_test.py
-
-# Reproduce the baseline (single-GPU, ~6-8 h on 1× A100)
-python -u scripts/train.py     # defaults locked to baseline config
-
-# Evaluate any ckpt (auto-chains animate.py for visual QA)
-python -u scripts/eval.py --ckpt runs/baseline_noKslot_ep399/last_model.pt
-
-# Render GT-vs-pred gif + dual-view contact sheet only
-python -u scripts/animate.py \
-    --ckpt runs/baseline_noKslot_ep399/last_model.pt \
-    --src_dir data/cs_sparse2full_tgt --tgt_dir data/cs_sparse2full_tgt \
-    --species Bat,Crab,Horse --n_per 3 \
-    --out runs/anim_baseline
-```
-
-PPID=1 setsid srun launcher (HPC clusters):
-```bash
-JOBID=<your_alloc> NODE=<your_node> ssh "$NODE" \
-    "setsid nohup bash $(pwd)/scripts/_deploy_train.sh \
-     > $(pwd)/logs/deploy_train.out 2>&1 < /dev/null &"
-```
-
-## Data layout
-
-```
-data/
-├── cs_sparse2full_tgt/         # full-target dataset (src == tgt for the baseline)
-│   ├── motions/                # *.npz per clip (local_positions etc.)
-│   ├── skeletons/              # *.npz per species
-│   └── splits/                 # train.txt + val.txt
-└── cs_sparse2full_ik_rot/      # offline IK rotation targets
-    ├── *.npz                   # one per clip (ik_rot6d)
-    └── retained_clips.txt      # IK-validated clip basenames
-```
-
-Copy these from the source repo's `data/processed/` once.
-
-## Default reproducible-baseline configuration
-
-`scripts/train.py` argparse defaults are locked to the configuration that
-produced `runs/baseline_noKslot_ep399/last_model.pt`:
-
-| arg | default | source |
-|-----|---------|--------|
-| `--epochs` | 400 | codex NOKSLOT-DESIGN predeclared budget midpoint |
-| `--lr` | 2e-4 | diagnostic launcher |
-| `--batch_size` | 8 | diagnostic launcher |
-| `--max_frames` | 196 | source train_paired_gate.py default |
-| `--max_joints` | 160 | large zoo skeletons (up to ~150 joints) |
-| `--seed` | 42 | diagnostic launcher |
-| `--w_rot_ik` | 0.1 | TreeIK design ③ |
-| `--w_acc` | 0.01 | codex crux Q2 |
-| `--w_vel_consistency` | 0.5 | L6_anchor config |
-| `--freeze_name_embed` | 1 | freeze `encoder.name_embedding` to keep the L6 canonical-name anchor fixed during fine-tune |
-| `--init_ckpt` | `runs/L6_anchor_h100_seed42/best_model.pt` | source default; loaded with `strict=False` so `slot_assignment.*` keys are dropped |
-
-## Known result (baseline is GATE FAIL — diagnostic only)
-
-`runs/baseline_noKslot_ep399/last_model.pt` evaluated on `cs_sparse2full_tgt`
-val split (Bat/Crab/Horse same-skeleton self-recon):
-
-- **pos_nrmse_extent = 0.127** (threshold < 0.10 → **FAIL**)
-- vel_corr = 0.987 (threshold > 0.90 → PASS)
-- vel_nrmse = 0.167 (threshold < 0.30 → PASS)
-- rot_l1_deg = 43.3°
-- edge_ratio_p05 ≈ 0.9999 (hard-FK by construction)
-- bone_len_rel_mean ≈ 0 (hard-FK by construction)
-
-**GATE_PASS = False** (only pos_nrmse_extent breaches). Used as a baseline to
-develop and compare new methods against, not as a SOTA target.
+Python 3.12, PyTorch 2.10 (CUDA 12.8), numpy 2.2, Pillow; text encoding needs `llm2vec` + `transformers` + `peft`
+and the LLM2Vec checkpoints `McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp` (+ `-supervised`) on top of
+`meta-llama/Meta-Llama-3-8B-Instruct` (gated; ~16 GB in bf16). `requirements.txt` is the older baseline list;
+the exact environment is the maintainer's conda env, described in `docs/` where present.
 
 ## Layout
 
-```
-src/
-├── data/
-│   ├── unified_dataset.py    # UnifiedMotionDataset + collate_fn (byte-id from source)
-│   └── skeleton_graph.py     # SkeletonGraph (byte-id from source)
-├── models/
-│   ├── encoder.py            # SkeletonEncoder (renamed from source skeleton_encoder.py)
-│   ├── slot_norm.py          # SlotNorm (extracted from source slot_assignment.py)
-│   ├── motion_decoder.py     # SlotToJointCrossAttention + TemporalRefineBlock + MotionDecoder (byte-id from source decoder.py)
-│   ├── treeik_decoder.py     # TreeIK series + FK helpers (extracted from source topofk_decoder.py)
-│   └── model.py              # Model = encoder + slot_norm + decoder (no SlotAssignment)
-└── utils.py                  # DDP + IK + preflight helpers (byte-id ports from source)
+- `src/models/v2/dit_motion.py` — the model (`InContextMotionDiT`) and the sampler (`sample`).
+- `src/models/v2/spec_rope.py`, `temporal_rope.py`, `src/data/skeleton_spectral.py` — the two rotaries and the spectral / heat-kernel coordinates.
+- `src/data/ktjd17/` — the KTJD-17 representation: schema, codec (encode / decode, FK), skeleton construction.
+- `src/data/ktjd17_incontext.py`, `src/data/incontext_pairs.py` — corpus adapter and the pair dataset (what the model sees).
+- `src/data/ktjd17_augment.py` — skeleton augmentation (UniMate rule; rest-convention channel).
+- `scripts/train_v2_incontext.py`, `scripts/_launch_v2_ddp_2node_h200.sh`, `configs/pilot36m_uniml3dv2common_bothrope_aug_d512_lr15_hks_2node_env.sh` — training (the H1 config is the standing default).
+- `scripts/v2_render_incontext.py` — generation + GIF rendering on corpus rigs (seen or zero-shot).
+- `scripts/_probe_rest_convention.py` — zero-training probe: how much the generated world motion moves when the rig's rest convention is rotated.
 
-scripts/
-├── train.py                  # single-path training
-├── eval.py                   # GATE + REACH metrics; auto-chains animate.py
-├── animate.py                # GT-vs-pred gif + dual-view contact sheet
-├── self_test.py              # CPU-only invariant smoke
-└── _deploy_train.sh          # PPID=1 setsid srun launcher template
+## Generating on corpus rigs
 
-docs/codex_reviews/           # per-step codex review verdicts
-runs/                         # training output + L6 init ckpt + baseline ckpt
-data/                         # cs_sparse2full_tgt + cs_sparse2full_ik_rot
+Needs the KTJD-17 corpus artifacts the checkpoint was trained on (skeleton files, manifests, per-rig statistics,
+LLM2Vec caption cache, joint-description embeddings; not in this repo — ask the owner). Example (the H1 close-out
+renders, `renders/h1_closeout/_render.sh`):
+
+```bash
+python scripts/v2_render_incontext.py --ckpt <ckpt> --out <dir> --corpus ktjd17 --steps 20 --cfg_text 2.0 \
+    --rigs_A <rig ids> --rigs_B= --rigs_T= --pick energetic --seed 7
 ```
+
+## Generating on your own skeleton (deploy)
+
+`scripts/deploy_generate.py` — in progress on this branch: BVH skeleton (or a KTJD-17 skeleton `.npz`) + a text
+prompt → generated motion (positions `.npz`, GIF, BVH). It rebuilds every conditioning tensor from the skeleton file
+alone (graph features, spectral coordinates, joint-description embeddings) and encodes the prompt with LLM2Vec.
+A rig without motion statistics uses a documented fallback for the per-channel normalisation scale.

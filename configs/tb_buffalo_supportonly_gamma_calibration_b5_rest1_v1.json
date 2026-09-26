@@ -1,0 +1,237 @@
+{
+  "version": "pzh312_v1",
+  "generation_id": "20260819T215405576671Z-2d04a8d85638",
+  "target_centering": "percell_meanstd_v3_masked_floor",
+  "percell_sha256": "614334fae52f32231c782fd7f7a699fe295447464aac8432e8816c7fcd2378ca",
+  "residual_saturation_at_init": 0.0001597964376590331,
+  "protocol": {
+    "cohort": "train_all_targets_one_pass",
+    "cohort_windows": 15,
+    "cohort_rigs": 1,
+    "weighting": "clip_balanced",
+    "seed": 0,
+    "batch": 5,
+    "demo_rest": true,
+    "demo_frames": 1,
+    "huber_delta": 10.0,
+    "normalization": "percell",
+    "gamma_solve": "kimodo",
+    "windows": "demo_rest1/target_head",
+    "crop_rebase_active": true,
+    "space": "normalized_model_space",
+    "t_sampler": "uniform",
+    "v_space": true,
+    "sigma_min": 0.2,
+    "gamma_acc": 1.0,
+    "energy_stat": "mean_x1_sq_over_effective_valid_cells",
+    "mapping": "kimodo_eq1_family_shares: share_fam ~ gamma_fam^2 * sum E_i; gamma_fam = sqrt(share_fam / sum E_i)",
+    "families": {
+      "r_p": [
+        "root_pos",
+        "smooth_root"
+      ],
+      "r_a": [
+        "heading"
+      ],
+      "j_p": [
+        "body_pos"
+      ],
+      "j_a": [
+        "body_rot",
+        "root_rot"
+      ],
+      "j_v": [
+        "body_vel",
+        "root_vel"
+      ],
+      "f": [
+        "contact"
+      ]
+    },
+    "empty_groups": [],
+    "representation": "ktjd17",
+    "anchor": {
+      "j_a": 10.0
+    },
+    "mask_policy_version": "ktjd17_effvalid_v2",
+    "verify": {
+      "steps": 30,
+      "tolerance_x": 1.25,
+      "predictor": "batch-wise gamma^2*sum(e2*mm)/(count_g*n_total), same denominators as the loss",
+      "arm_model": {
+        "dim": 384,
+        "depth": 7,
+        "heads": 8,
+        "qk_norm": false,
+        "struct_feats": true,
+        "dir_bias": true,
+        "geo_bias": true,
+        "freeze_zero_joint_sem": false
+      },
+      "arm_grad_ckpt": true
+    }
+  },
+  "counts": {
+    "root_pos": 4716,
+    "root_rot": 9432,
+    "root_vel": 4716,
+    "body_pos": 136764,
+    "body_rot": 273528,
+    "body_vel": 136764,
+    "contact": 17292,
+    "smooth_root": 3144,
+    "heading": 3144
+  },
+  "energies": {
+    "root_pos": 0.681796,
+    "root_rot": 1.0,
+    "root_vel": 1.0,
+    "body_pos": 0.99348,
+    "body_rot": 1.0,
+    "body_vel": 1.0,
+    "contact": 1.0,
+    "smooth_root": 1.0,
+    "heading": 1.0
+  },
+  "target_family_shares": {
+    "j_a": 0.303951,
+    "f": 0.048632,
+    "j_v": 0.027356,
+    "j_p": 0.303951,
+    "r_p": 0.303951,
+    "r_a": 0.012158
+  },
+  "solve_consistency_check": {
+    "statement": "gamma_fam^2 * sum(E_x1) over families, normalized, == the preregistered Kimodo Eq.1 share profile (hard gate, 1e-4)",
+    "scope": "TRUE BY CONSTRUCTION of the solve -- this gate proves the solve ran on the measured energies with the declared family map and anchor, and that nothing was mis-serialized. It is NOT evidence that the profile is attained during training; the profile is a design choice, and the realized gradient share depends on error energies that evolve.",
+    "rationale": "Kimodo's gamma^2 profile holds because its components are unit-variance normalized; gamma_i = gamma_kimodo_i / sqrt(E_i) is the faithful transfer into KTJD units",
+    "achieved": {
+      "j_a": 0.30395,
+      "f": 0.048633,
+      "j_v": 0.027356,
+      "j_p": 0.303952,
+      "r_p": 0.303952,
+      "r_a": 0.012158
+    },
+    "max_deviation": 1.1997296475163566e-06
+  },
+  "acc_diagnostic": {
+    "gamma_acc": 1.0,
+    "acc_match_mean": 0.1002494864165783,
+    "family_shares_with_acc": {
+      "r_p": 0.297912,
+      "r_a": 0.014454,
+      "j_p": 0.283738,
+      "j_a": 0.328835,
+      "j_v": 0.026565,
+      "f": 0.048497
+    },
+    "family_shares_without_acc": {
+      "r_p": 0.298211,
+      "r_a": 0.014467,
+      "j_p": 0.28396,
+      "j_a": 0.32906,
+      "j_v": 0.025901,
+      "f": 0.0484
+    },
+    "note": "diagnostic only -- no analytic prediction exists for the acc term"
+  },
+  "mechanism_check": {
+    "statement": "measured output-grad share == gamma^2 * E_err within 25%/group (diagnostic: catches wiring bugs; CANNOT verify the design target, because init E_err carries an untrained-output-variance transient)",
+    "init_error_energies": {
+      "root_pos": 201.773179,
+      "root_rot": 339.733331,
+      "root_vel": 295.465067,
+      "body_pos": 288.966297,
+      "body_rot": 320.324081,
+      "body_vel": 312.941624,
+      "contact": 283.427354,
+      "smooth_root": 337.982443,
+      "heading": 390.745596
+    },
+    "predicted_grad_shares_init_batchwise": {
+      "root_pos": 0.121503,
+      "root_rot": 0.172621,
+      "root_vel": 0.012394,
+      "body_pos": 0.28396,
+      "body_rot": 0.156438,
+      "body_vel": 0.013507,
+      "contact": 0.0484,
+      "smooth_root": 0.176708,
+      "heading": 0.014467
+    },
+    "predicted_grad_shares_init_pooledEerr_diagnostic": {
+      "root_pos": 0.116459,
+      "root_rot": 0.164888,
+      "root_vel": 0.012906,
+      "body_pos": 0.28234,
+      "body_rot": 0.155468,
+      "body_vel": 0.01367,
+      "contact": 0.04402,
+      "smooth_root": 0.195077,
+      "heading": 0.015171
+    },
+    "measured_grad_shares_init": {
+      "root_pos": 0.121503,
+      "root_rot": 0.172622,
+      "root_vel": 0.012394,
+      "body_pos": 0.28396,
+      "body_rot": 0.156438,
+      "body_vel": 0.013507,
+      "contact": 0.0484,
+      "smooth_root": 0.176708,
+      "heading": 0.014467
+    },
+    "measured_family_shares_init": {
+      "r_p": 0.298211,
+      "r_a": 0.014467,
+      "j_p": 0.28396,
+      "j_a": 0.32906,
+      "j_v": 0.025901,
+      "f": 0.0484
+    },
+    "verify_effective_cells": {
+      "root_pos": 47160,
+      "root_rot": 94320,
+      "root_vel": 47160,
+      "body_pos": 1367640,
+      "body_rot": 2735280,
+      "body_vel": 1367640,
+      "contact": 172920,
+      "smooth_root": 31440,
+      "heading": 31440
+    },
+    "asserted_groups": [
+      "body_pos",
+      "body_rot",
+      "body_vel",
+      "contact",
+      "heading",
+      "root_pos",
+      "root_rot",
+      "root_vel",
+      "smooth_root"
+    ]
+  },
+  "gammas": {
+    "root_pos": 10.9051,
+    "root_rot": 10.0,
+    "root_vel": 3.0,
+    "body_pos": 14.1885,
+    "body_rot": 10.0,
+    "body_vel": 3.0,
+    "contact": 5.6569,
+    "smooth_root": 10.9051,
+    "heading": 2.8284
+  },
+  "hashes": {
+    "gains_sha256": "dcde268e52a6c629475ab7529c666e202904df51729de7792c551f8a5615434b",
+    "schema_sha256": "9132e7b11573062569361d4959e561f84dafac1d3ea25e737506be3bf6da7edf",
+    "joint_sem_sha256": "4b4aaa8793ae12d90a26895c2875be2eeb0c94d92ea1bddbe73498cc0e61695c",
+    "code_sha256": "9f80ba7a8f8dcda41c2eaf3721dd121f5e9b1dcdc1dab3e5eb35ca4e229c23c7",
+    "code_script": "scripts/_measure_ktjd17_gamma_calibration_view.py",
+    "exclusion_sha256": "d8caec8a87c261a8c892ebad56259c07d839bf5a57ac3a89ab7a9c525828a2ad",
+    "train_ids_sha256": "503e433a192128c5b655d48e13f33b6fe06aa6d1b0231d9a31b0d93b7ea52ddf",
+    "manifest_sha256": "254291d47eea32679db2357b882dc49c3aedc264b17c9b6be945054a512c1adc"
+  }
+}

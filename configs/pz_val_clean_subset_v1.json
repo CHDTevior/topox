@@ -1,0 +1,3604 @@
+{
+ "format": "pz-clean-val-subset-v1",
+ "rule": "exact motion sha256 absent from all active train clips AND (rig_id, source_action_name) absent from active train",
+ "ktjd_root": "dataset/ktjd17_pzh312_noik_v2",
+ "exclusions": "configs/pilot_animal_only_exclusions.json",
+ "manifest_sha256": "ee54cd8e18eb04e330a181fae9d6ec5392c957fde1076ba6b20eb2b4517c63c9",
+ "exclusions_sha256": "2ccb142fb896bdc978d430e6d041f13d89847f6eff33f846da3e4340d7697fe2",
+ "generation_id": "20260825T022956388520Z-8b0b435333cb",
+ "n_active_train": 73995,
+ "n_active_val": 3899,
+ "n_val_exact_dup_in_train": 3250,
+ "n_val_same_source_in_train": 3379,
+ "n_val_both": 3242,
+ "n_val_removed": 3387,
+ "n_clean": 512,
+ "n_clean_rigs": 216,
+ "clean": [
+  {
+   "clip_id": "0ad618cee58fe301a7da",
+   "rig_id": "PZ_Aardvark_Female",
+   "source_action_name": "aardvark_female@restloop01",
+   "T_target": 208,
+   "motion_sha256": "2c63f158e07c94663b401a7460bf5a53b2a25a44926cd204b8ce98b5ff59429a"
+  },
+  {
+   "clip_id": "1ccef3bed87ade2c5bb3",
+   "rig_id": "PZ_Aardvark_Female",
+   "source_action_name": "aardvark_female@standturnr180",
+   "T_target": 165,
+   "motion_sha256": "3bc076bd7dd3abea5418d28b69ded15b8a6409a8422163ebe7ed15aa24b54024"
+  },
+  {
+   "clip_id": "5d3c014df8bafb897dc7",
+   "rig_id": "PZ_Aardvark_Female",
+   "source_action_name": "aardvark_female@swimbasetoswimtreadwater",
+   "T_target": 67,
+   "motion_sha256": "e7435e8136c4c976f344d9bf58104fc2c0d8c4707a7f6fa30a77ca6dc229701c"
+  },
+  {
+   "clip_id": "7ecaa0fa3fa8d8ac55e5",
+   "rig_id": "PZ_Aardvark_Female",
+   "source_action_name": "aardvark_female@standtoeat",
+   "T_target": 64,
+   "motion_sha256": "304433c658da35dc3ec60c5b5bde84d1de4296807f70d0253e1fca488e6ac496"
+  },
+  {
+   "clip_id": "d7a13d614c3c06207ac9",
+   "rig_id": "PZ_Aardvark_Female",
+   "source_action_name": "aardvark_female@standturnr000",
+   "T_target": 103,
+   "motion_sha256": "13e9fd1dab2824af738b5c06fa1c5feeb2889e56fcb92c0bf20b8bde2700aaac"
+  },
+  {
+   "clip_id": "00dc6a8742f11cd2984b",
+   "rig_id": "PZ_Aardvark_Juvenile",
+   "source_action_name": "aardvark_juvenile@walktoeatturnl",
+   "T_target": 62,
+   "motion_sha256": "4a1c304f1f6944d6e2c292ddc10c6d67e7156dd7eabe5a4d857382935ad706c5"
+  },
+  {
+   "clip_id": "4f144bc7c8c9bf451dd7",
+   "rig_id": "PZ_Aardvark_Juvenile",
+   "source_action_name": "aardvark_juvenile@fighttaunt",
+   "T_target": 78,
+   "motion_sha256": "628cb035456cdf62aa88b173d0fc28c438ba9de58df84e04baa44d8018ede60a"
+  },
+  {
+   "clip_id": "6d0e00ebbcebad5982a4",
+   "rig_id": "PZ_Aardvark_Juvenile",
+   "source_action_name": "aardvark_juvenile@burrowexitunderground",
+   "T_target": 170,
+   "motion_sha256": "b4cc4c6bd890a18aad1e8fd6ee003f7eb8c0ee706aa5d0b0bbed616e8338ed52"
+  },
+  {
+   "clip_id": "a7620c7f1ad6fe706f06",
+   "rig_id": "PZ_Aardvark_Juvenile",
+   "source_action_name": "aardvark_juvenile@walktostand",
+   "T_target": 62,
+   "motion_sha256": "3e72a49e38df9b362bd229290676e35c2a8276b9f1459be78d377b96877c7647"
+  },
+  {
+   "clip_id": "1157c7778fbc2f06d0e5",
+   "rig_id": "PZ_Aardvark_Male",
+   "source_action_name": "aardvark_male@walkbaseonspot",
+   "T_target": 30,
+   "motion_sha256": "8e75ccf642a85ee78323362e6586466d271e1829045656c74f0a390817899084"
+  },
+  {
+   "clip_id": "9279dfd617640b8eeb26",
+   "rig_id": "PZ_Aardvark_Male",
+   "source_action_name": "aardvark_male@standturnr089",
+   "T_target": 103,
+   "motion_sha256": "7932bf8390accd2ae1e63e5b4ac928754407b343cb5d00952e37372edc58ccde"
+  },
+  {
+   "clip_id": "b5a00de58f3a3fdbceb3",
+   "rig_id": "PZ_Aardvark_Male",
+   "source_action_name": "aardvark_male@walktostandturnr",
+   "T_target": 77,
+   "motion_sha256": "bb6b25e14936612a17a1bd0698d64fda2936ec00c1dd3eb75f08e1d6bf2a8a14"
+  },
+  {
+   "clip_id": "d7661d24bd0a7c5a6dc8",
+   "rig_id": "PZ_Aardvark_Male",
+   "source_action_name": "aardvark_male@swimbasetoswimtreadwaterturnl",
+   "T_target": 67,
+   "motion_sha256": "688c3efb20df54b10d800fb3ace68714d3fe2ca4bdfaf6f18dba12e2de97e76d"
+  },
+  {
+   "clip_id": "e3f38fe8f43f279b4023",
+   "rig_id": "PZ_Aardvark_Male",
+   "source_action_name": "aardvark_male@standturnl090",
+   "T_target": 165,
+   "motion_sha256": "3dc81eb4735113a17e07c01396ad2ca95b54f4654d888e8cd7fb7024395c8ddc"
+  },
+  {
+   "clip_id": "056108452ec512c4516c",
+   "rig_id": "PZ_Addax_Female",
+   "source_action_name": "addax_female@swimtowalkonspot",
+   "T_target": 31,
+   "motion_sha256": "134f01d4342a34d824c5fa465b43efed15d28b21045414b4c55f3163e36a12f3"
+  },
+  {
+   "clip_id": "5e9876cc85b6c5ff6600",
+   "rig_id": "PZ_Addax_Female",
+   "source_action_name": "addax_female@standturnr090",
+   "T_target": 85,
+   "motion_sha256": "7546bffe333fb8e755685f1df74d9bbab528575305542bc3e488dc266b1d7dc7"
+  },
+  {
+   "clip_id": "b631f5b19983e61267ff",
+   "rig_id": "PZ_Addax_Female",
+   "source_action_name": "addax_female@runtostand",
+   "T_target": 58,
+   "motion_sha256": "56b5c43e43aeb799241acb0e5d2d6233dcd5c7f6b3a9f43de72b5491e6e5ca6c"
+  },
+  {
+   "clip_id": "d4213cd588846f7cd611",
+   "rig_id": "PZ_Addax_Female",
+   "source_action_name": "addax_female@swimbase",
+   "T_target": 34,
+   "motion_sha256": "4dc912f65922a4fd6be853e7772b6f9ef99a0d71491e25b16ad01ec69f323b69"
+  },
+  {
+   "clip_id": "ef8feefa68485c399515",
+   "rig_id": "PZ_Addax_Female",
+   "source_action_name": "addax_female@runtowalkonspot",
+   "T_target": 39,
+   "motion_sha256": "3d7bfd74a98f412fd6eea54f9359970289330e6d3f3a40f4f9dc369b1a0a2129"
+  },
+  {
+   "clip_id": "1e3ce8fc858cd760abbe",
+   "rig_id": "PZ_Addax_Juvenile",
+   "source_action_name": "addax_juvenile@fightvictorytaunt",
+   "T_target": 107,
+   "motion_sha256": "5f04e48dd06aa38e13c934c6b60dc6b6cc5ad2a183befb68879c329b580faa22"
+  },
+  {
+   "clip_id": "4e152bfec6d000701e20",
+   "rig_id": "PZ_Addax_Juvenile",
+   "source_action_name": "addax_juvenile@standtowalkonspot",
+   "T_target": 46,
+   "motion_sha256": "6558a2be517044a716c429850ff892f96d6a8378fd200206ffce762a5b2cf5eb"
+  },
+  {
+   "clip_id": "6086c3333b427310ef0e",
+   "rig_id": "PZ_Addax_Juvenile",
+   "source_action_name": "addax_juvenile@resttostand",
+   "T_target": 134,
+   "motion_sha256": "03c793164fc220b11ca7caea1488a0cf4a583a7ce213ef4e393ca7cdfd428c5e"
+  },
+  {
+   "clip_id": "8763ee30dc635115813c",
+   "rig_id": "PZ_Addax_Juvenile",
+   "source_action_name": "addax_juvenile@drinktostand",
+   "T_target": 62,
+   "motion_sha256": "2223cc9b461960fb6844da0a10416abe032d3920522b04234e011891174bd403"
+  },
+  {
+   "clip_id": "e63023558c8499422d2e",
+   "rig_id": "PZ_Addax_Juvenile",
+   "source_action_name": "addax_juvenile@fighttostand",
+   "T_target": 40,
+   "motion_sha256": "e3709257c6fdc6fa75915438915c83995c7499c7d34b7a359cbf502fb98ec688"
+  },
+  {
+   "clip_id": "290035e33f646ce0979d",
+   "rig_id": "PZ_Addax_Male",
+   "source_action_name": "addax_male@fighttostand",
+   "T_target": 50,
+   "motion_sha256": "ca2d9152d778cb3c13adeafc00e6c8a067a91f44fb2565938a531a7d314d7af4"
+  },
+  {
+   "clip_id": "3933f1345d656e01d60c",
+   "rig_id": "PZ_Addax_Male",
+   "source_action_name": "addax_male@walktodrinktroughonspot",
+   "T_target": 90,
+   "motion_sha256": "97e8483f4400cab02b966ec3fa244394c5517dbbef37fb9dcbd3c1f7e4ebcaf2"
+  },
+  {
+   "clip_id": "83af275f7ace2ea922d5",
+   "rig_id": "PZ_Addax_Male",
+   "source_action_name": "addax_male@walktorunturnl",
+   "T_target": 42,
+   "motion_sha256": "74a562f027b62e9d88c199caed2d498408cf25bfaaebb2acfd6e5c78012747b8"
+  },
+  {
+   "clip_id": "c85dcaa755bce5546bc5",
+   "rig_id": "PZ_Addax_Male",
+   "source_action_name": "addax_male@walkbaseturnr",
+   "T_target": 32,
+   "motion_sha256": "3de3be48731001b7ac616bc054b29098408a61cc0c7c63a9bfdeb8a4c8006d91"
+  },
+  {
+   "clip_id": "d584fe8b36a0fb6f4bdc",
+   "rig_id": "PZ_Addax_Male",
+   "source_action_name": "addax_male@drinktostand",
+   "T_target": 70,
+   "motion_sha256": "40a07d1abbad708cfbd46a614eb07514959db4a6c1ee0aebd23a896825cd7545"
+  },
+  {
+   "clip_id": "52db7477e47a4d2ba4cf",
+   "rig_id": "PZ_African_Buffalo_Female",
+   "source_action_name": "african_buffalo_female@grazetostand",
+   "T_target": 60,
+   "motion_sha256": "e10d7ec20c037fb126719684c63ae983597a83c0f44764a2050047de8ecd86a7"
+  },
+  {
+   "clip_id": "5c10c978b4d703efda06",
+   "rig_id": "PZ_African_Buffalo_Female",
+   "source_action_name": "african_buffalo_female@swimturnr180",
+   "T_target": 200,
+   "motion_sha256": "0ae501db9eb10720a99ce385520d10bf2b6deecee481b8aaaf000640aba8dc18"
+  },
+  {
+   "clip_id": "b968d8fa259939e4acd6",
+   "rig_id": "PZ_African_Buffalo_Female",
+   "source_action_name": "african_buffalo_female@swimtreadwatertoswimbase",
+   "T_target": 83,
+   "motion_sha256": "6721e5a32a5e3a1ad43698dfed8c335e1e17d1c241d15323b85f55c3ff103133"
+  },
+  {
+   "clip_id": "fa94ec4673733cf81f29",
+   "rig_id": "PZ_African_Buffalo_Female",
+   "source_action_name": "african_buffalo_female@standgimmick01",
+   "T_target": 105,
+   "motion_sha256": "4db0fabd49d6d316017fcbe8dfdb487e45ae031b300886954e1196538f554e20"
+  },
+  {
+   "clip_id": "ffd8a5083917a1cd153e",
+   "rig_id": "PZ_African_Buffalo_Female",
+   "source_action_name": "african_buffalo_female@swimturnl000",
+   "T_target": 200,
+   "motion_sha256": "86b87ea44adfbe1622e2900462929c4ae0836a5cdf839c3208d816786978c5df"
+  },
+  {
+   "clip_id": "2e867fdf5646487701f5",
+   "rig_id": "PZ_African_Buffalo_Juvenile",
+   "source_action_name": "african_buffalo_juvenile@standtofight",
+   "T_target": 52,
+   "motion_sha256": "015ca498a2426116a907509e1759e3a7b5656cf4e1efd9b6aa31b53393aeb2b2"
+  },
+  {
+   "clip_id": "4a441c06cf9420d023ba",
+   "rig_id": "PZ_African_Buffalo_Juvenile",
+   "source_action_name": "african_buffalo_juvenile@runtowalkturnl",
+   "T_target": 46,
+   "motion_sha256": "c19b36dd13eda8f8928ae85742111abccef5b4affb97b7e81697a61bee70bce0"
+  },
+  {
+   "clip_id": "c4f61e8755fa6dd18f5d",
+   "rig_id": "PZ_African_Buffalo_Juvenile",
+   "source_action_name": "african_buffalo_juvenile@swimtreadwatertoswimbaseonspot",
+   "T_target": 83,
+   "motion_sha256": "b339a4f6f1b82a650f25b9c41c7a3724af5ef28d0a8e0c350e9bdf22c46fd8da"
+  },
+  {
+   "clip_id": "d51adc978e83c44da0bc",
+   "rig_id": "PZ_African_Buffalo_Juvenile",
+   "source_action_name": "african_buffalo_juvenile@standtowalkturnl",
+   "T_target": 66,
+   "motion_sha256": "afa910a9bc6378652dd78d81d410fd9070287490c27d50e590b5cdca8aa425d3"
+  },
+  {
+   "clip_id": "f90eb680b3ee7d2ddede",
+   "rig_id": "PZ_African_Buffalo_Juvenile",
+   "source_action_name": "african_buffalo_juvenile@jumptoswim",
+   "T_target": 55,
+   "motion_sha256": "4cbd2289fcb5d8259b3a7db8dca89c581effc0948f349fb6f27f3d0af811c33a"
+  },
+  {
+   "clip_id": "3380cdd73c9f948affdf",
+   "rig_id": "PZ_African_Buffalo_Male",
+   "source_action_name": "african_buffalo_male@swimtowalkturnr",
+   "T_target": 46,
+   "motion_sha256": "c35b448e760315dc6050ff48bd8e5bb84f12fe4fd3e4a3b26a89af91bf6e3659"
+  },
+  {
+   "clip_id": "52c2eb2fda7d99d06307",
+   "rig_id": "PZ_African_Buffalo_Male",
+   "source_action_name": "african_buffalo_male@standtowalk",
+   "T_target": 66,
+   "motion_sha256": "394f52940bad0379c308fcfff1f4c129b12646bcd038352ee449bc5d5e114e2a"
+  },
+  {
+   "clip_id": "900153a2524d0cf6be49",
+   "rig_id": "PZ_African_Buffalo_Male",
+   "source_action_name": "african_buffalo_male@standturnr180",
+   "T_target": 120,
+   "motion_sha256": "48d312c920913fb6f7202aecc04cd83ebf04207237b51ba8c14c26aa1da84f2b"
+  },
+  {
+   "clip_id": "a4e5a03731d17e1534fc",
+   "rig_id": "PZ_African_Buffalo_Male",
+   "source_action_name": "african_buffalo_male@restpreen01",
+   "T_target": 190,
+   "motion_sha256": "d992b721ee45a77898ac4336d26e1313f5f0ee0050f7428f4a3e14f7b8af00cd"
+  },
+  {
+   "clip_id": "eb173c15b673c5678102",
+   "rig_id": "PZ_African_Buffalo_Male",
+   "source_action_name": "african_buffalo_male@fighttauntreact",
+   "T_target": 101,
+   "motion_sha256": "a11c6ff4bdd6d33a21cdecce2e68de9e645a3e2d7acbc6ad07f245a03489c34e"
+  },
+  {
+   "clip_id": "02d9a60245f4e0104bb4",
+   "rig_id": "PZ_African_Crested_Porcupine_Juvenile",
+   "source_action_name": "african_crested_porcupine_juvenile@walktoclimbuponspot2",
+   "T_target": 26,
+   "motion_sha256": "52e57d4b6f651780008f902cb0656ee8b8fe64a26e9249a7594206bc5d3c06b8"
+  },
+  {
+   "clip_id": "20f88ada1d6a6497b112",
+   "rig_id": "PZ_African_Crested_Porcupine_Juvenile",
+   "source_action_name": "african_crested_porcupine_juvenile@swimturnl180",
+   "T_target": 90,
+   "motion_sha256": "fcde3e71e40da3f20af06e8e0f03be1dce55c2dd3054a08d48b5887c4b031081"
+  },
+  {
+   "clip_id": "60ba26f52fa434a57705",
+   "rig_id": "PZ_African_Crested_Porcupine_Juvenile",
+   "source_action_name": "african_crested_porcupine_juvenile@climbuptowalkonspot1",
+   "T_target": 22,
+   "motion_sha256": "6eed10888f33fdf64567ceeb02b783dfc9231c2561273c5148932bde0a3ed4a4"
+  },
+  {
+   "clip_id": "ce88a9804d59cfe56676",
+   "rig_id": "PZ_African_Crested_Porcupine_Juvenile",
+   "source_action_name": "african_crested_porcupine_juvenile@exitburrowoverground",
+   "T_target": 106,
+   "motion_sha256": "91561cf02401c1b65a296c45be889e43f62c0b54f421835b341c0ed94090cd69"
+  },
+  {
+   "clip_id": "008c53ddc5030c06a4ef",
+   "rig_id": "PZ_African_Elephant_Female",
+   "source_action_name": "african_elephant_female@runtowalkonspot",
+   "T_target": 88,
+   "motion_sha256": "9e8fed21702ede6f17cd5c66461cdbfd73ee5cfdd96ee83d892dcb536a1d6576"
+  },
+  {
+   "clip_id": "41acac2215743033c146",
+   "rig_id": "PZ_African_Elephant_Female",
+   "source_action_name": "african_elephant_female@walktoswimturnr",
+   "T_target": 92,
+   "motion_sha256": "255ce8a5e8f8123d770791d5d93f3d97bba7985935f43bb278ae3ba5ce3871e3"
+  },
+  {
+   "clip_id": "8254bcc488db33a6ffd1",
+   "rig_id": "PZ_African_Elephant_Female",
+   "source_action_name": "african_elephant_female@restdie",
+   "T_target": 145,
+   "motion_sha256": "025e6b30c91de0c3789f5f6cbd4e785dbff32fadd4d9a061cb7dbe6f3904fda4"
+  },
+  {
+   "clip_id": "d996fb737016cdf65ce3",
+   "rig_id": "PZ_African_Elephant_Female",
+   "source_action_name": "african_elephant_female@swimbasetoswimtreadwaterturnr",
+   "T_target": 72,
+   "motion_sha256": "e9c42684ee2a4fa9222ea98c6dd1ebb40f667841c95f9482d2e6fc85b15e3df3"
+  },
+  {
+   "clip_id": "8d295e6a5ceb635a1b51",
+   "rig_id": "PZ_African_Elephant_Juvenile",
+   "source_action_name": "african_elephant_juvenile@swimtreadwatertoswimbaseturnr",
+   "T_target": 90,
+   "motion_sha256": "444acdfce254c25978af992678ab87786e7f7316efbe0f82ae81c96184967a66"
+  },
+  {
+   "clip_id": "b3714bfdfb418c87c26a",
+   "rig_id": "PZ_African_Elephant_Juvenile",
+   "source_action_name": "african_elephant_juvenile@standtowalkturnl",
+   "T_target": 44,
+   "motion_sha256": "63fc111879ac14b1d43b21e795da7dff6e7982f1a7a8c1261f75816e791d3684"
+  },
+  {
+   "clip_id": "bfa2d5eb085ca8259ec4",
+   "rig_id": "PZ_African_Elephant_Juvenile",
+   "source_action_name": "african_elephant_juvenile@swimbasetoswimtreadwaterturnr",
+   "T_target": 120,
+   "motion_sha256": "5dc63b2bdd75c58d5e813c9e04e6d7065a5e4feb6bb1055fbc22086f5d73ab4c"
+  },
+  {
+   "clip_id": "e1030cb9139dec3ff2ab",
+   "rig_id": "PZ_African_Elephant_Juvenile",
+   "source_action_name": "african_elephant_juvenile@walktodrinkturnl",
+   "T_target": 54,
+   "motion_sha256": "5d41d7ef17f1ea50ef35da4838117d5ee5e935928385e0236ca84a4628918593"
+  },
+  {
+   "clip_id": "4f7584cb3ab6396f486d",
+   "rig_id": "PZ_African_Elephant_Male",
+   "source_action_name": "african_elephant_male@walktostandturnr",
+   "T_target": 144,
+   "motion_sha256": "c3b8d8ed58a1e8b6bfd12766f8cd52a7a0bba5b79d020b0109f846c7e182ebf7"
+  },
+  {
+   "clip_id": "7a59394a8786fc6a97c3",
+   "rig_id": "PZ_African_Elephant_Male",
+   "source_action_name": "african_elephant_male@walktorunturnr",
+   "T_target": 96,
+   "motion_sha256": "bb01dc82bfc3b9c0c4d04239d94aa207fe61fa56add6a070240961b62d8feaad"
+  },
+  {
+   "clip_id": "7d7923d46e810d71292b",
+   "rig_id": "PZ_African_Elephant_Male",
+   "source_action_name": "african_elephant_male@fightreact",
+   "T_target": 160,
+   "motion_sha256": "db1fab676494bd83c34c2155a70734b512397bc5afa6888c3f50ac420e057752"
+  },
+  {
+   "clip_id": "8cfaf8161dc6e862284c",
+   "rig_id": "PZ_African_Elephant_Male",
+   "source_action_name": "african_elephant_male@walktostandonspot",
+   "T_target": 144,
+   "motion_sha256": "742d9fab436a41688c6fbab691bad7447ceaeed02f65c34f33cba28b4b80b5e0"
+  },
+  {
+   "clip_id": "a4c2482530cc97d17eb0",
+   "rig_id": "PZ_African_Elephant_Male",
+   "source_action_name": "african_elephant_male@fightchaseoff",
+   "T_target": 169,
+   "motion_sha256": "672f197b6880fda009fe1a00b2581adbbdaaa927be6d0ea2c54fd5f0fece6e70"
+  },
+  {
+   "clip_id": "248651e084c4760448be",
+   "rig_id": "PZ_African_Wild_Dog_Female",
+   "source_action_name": "african_wild_dog_female@walktostand",
+   "T_target": 47,
+   "motion_sha256": "21868432b66d2cd24141c63bae3a2eb7e3c27f6ab2cf1c1ed53d3e69160830e2"
+  },
+  {
+   "clip_id": "640ff6861ac9caca9dc4",
+   "rig_id": "PZ_African_Wild_Dog_Female",
+   "source_action_name": "african_wild_dog_female@standturnl000",
+   "T_target": 48,
+   "motion_sha256": "2fcc2c959cee06d8d2a40b8b65f4a7716c9e442ecd091974f7900ce7fed84af7"
+  },
+  {
+   "clip_id": "8c858b9b353f4575a49e",
+   "rig_id": "PZ_African_Wild_Dog_Female",
+   "source_action_name": "african_wild_dog_female@standtorest",
+   "T_target": 190,
+   "motion_sha256": "4db8fafa8c31cc96a8f954976db7f3e9d2042db8e8c8fc367c7cb649d8a467e8"
+  },
+  {
+   "clip_id": "cc4c50c23cda70e6fc19",
+   "rig_id": "PZ_African_Wild_Dog_Female",
+   "source_action_name": "african_wild_dog_female@jumpinonspot",
+   "T_target": 21,
+   "motion_sha256": "62f51cf5428457d1d4e0cc33e17ea48fd38383d452a15e3bdee33ab3f8a181b2"
+  },
+  {
+   "clip_id": "ecdd2ac54dbc3cbe72c3",
+   "rig_id": "PZ_African_Wild_Dog_Female",
+   "source_action_name": "african_wild_dog_female@walktoswimturnr",
+   "T_target": 31,
+   "motion_sha256": "e89826ae9f2e0f4619ceb6b06f41cb6ea8a8c1fff3a34f6c955f963e936c4ab8"
+  },
+  {
+   "clip_id": "0a0cf3dab40d199509be",
+   "rig_id": "PZ_African_Wild_Dog_Juvenile",
+   "source_action_name": "african_wild_dog_juvenile@standroar",
+   "T_target": 120,
+   "motion_sha256": "cbb1d5c69a0cdd1b756f7930f40a6adfb90212d3ef48020b0661e9454aed7303"
+  },
+  {
+   "clip_id": "0b9ef67efedda2cbc7c9",
+   "rig_id": "PZ_African_Wild_Dog_Juvenile",
+   "source_action_name": "african_wild_dog_juvenile@swimturnl180",
+   "T_target": 82,
+   "motion_sha256": "dc827515c52de6f64317f9a4dcb8ae30a480a87cad23fecdeec3623aa3de757e"
+  },
+  {
+   "clip_id": "36d40c7b3af13a0e0c4c",
+   "rig_id": "PZ_African_Wild_Dog_Juvenile",
+   "source_action_name": "african_wild_dog_juvenile@standtorest",
+   "T_target": 137,
+   "motion_sha256": "15ef72cfc5be7802b287ba3be3801c4fc50a11f4c70820f8ff7a7f09e2d1ee06"
+  },
+  {
+   "clip_id": "92fc9ee2121d375dd8ee",
+   "rig_id": "PZ_African_Wild_Dog_Juvenile",
+   "source_action_name": "african_wild_dog_juvenile@drinktostand",
+   "T_target": 58,
+   "motion_sha256": "1115c72d7fc968c74f383eae68578fafa0fc4f61071f865b5e35e11d5bf30369"
+  },
+  {
+   "clip_id": "f06d6a944297b051e585",
+   "rig_id": "PZ_African_Wild_Dog_Juvenile",
+   "source_action_name": "african_wild_dog_juvenile@standtowalkturnr",
+   "T_target": 44,
+   "motion_sha256": "4de2a05b84ba715f07dddc7d1e9dc764d4c48fe50a23b864222213b3c830d2c5"
+  },
+  {
+   "clip_id": "23b4f986e374abcf55fc",
+   "rig_id": "PZ_African_Wild_Dog_Male",
+   "source_action_name": "african_wild_dog_male@swimtreadwatertoswimbaseturnr",
+   "T_target": 46,
+   "motion_sha256": "a3738663f9ab8c7332890d9789610bf73ea3d4a7d7f30c5a8977ac686234f9e1"
+  },
+  {
+   "clip_id": "410ab476fd2385e8a75b",
+   "rig_id": "PZ_African_Wild_Dog_Male",
+   "source_action_name": "african_wild_dog_male@runtowalkturnr",
+   "T_target": 31,
+   "motion_sha256": "e4f64924e702b3c8feb58ad56df453b4b9f38cf93e032eb471b29c8252b9a422"
+  },
+  {
+   "clip_id": "96e0169f6859bfb326f1",
+   "rig_id": "PZ_African_Wild_Dog_Male",
+   "source_action_name": "african_wild_dog_male@jumpout",
+   "T_target": 47,
+   "motion_sha256": "e26218da618aa0583e42daeaf08214fd76ee6a4970ed42e57b408f4c5f0f9bf6"
+  },
+  {
+   "clip_id": "c3dc4614a82a4ba580d5",
+   "rig_id": "PZ_African_Wild_Dog_Male",
+   "source_action_name": "african_wild_dog_male@restpreen01",
+   "T_target": 246,
+   "motion_sha256": "b0353eb6f9ba5a41c469f6d15bc4e97681d11eddce4f91b2fda285131a268b11"
+  },
+  {
+   "clip_id": "daa2c000e481f148144a",
+   "rig_id": "PZ_African_Wild_Dog_Male",
+   "source_action_name": "african_wild_dog_male@jumptoswimonspot",
+   "T_target": 38,
+   "motion_sha256": "6cc74ae87096ca95474bdca4a7cb767432b2501a525be51a0d075f11445c00ac"
+  },
+  {
+   "clip_id": "35408b2fe5a3e365c740",
+   "rig_id": "PZ_Alaskan_Moose_Female",
+   "source_action_name": "alaskan_moose_female@runtostandonspot",
+   "T_target": 83,
+   "motion_sha256": "ecabb0c6a6ae3a8bcad6eaf84f002716aee90b534dcccaa71d9434a137d1153c"
+  },
+  {
+   "clip_id": "43c893832b5c88e8a22d",
+   "rig_id": "PZ_Alaskan_Moose_Female",
+   "source_action_name": "alaskan_moose_female@walkbaseturnl",
+   "T_target": 50,
+   "motion_sha256": "b5067ff60511827d326a96d6c64a09ed84012e4b5f91c6d21d21cdc6d4613142"
+  },
+  {
+   "clip_id": "7040ddd252434fa9d603",
+   "rig_id": "PZ_Alaskan_Moose_Female",
+   "source_action_name": "alaskan_moose_female@swimturnr180",
+   "T_target": 200,
+   "motion_sha256": "5e4c26a4e5e97223616a2d8e50f3b94f40ca96cde1e81333e1fcc0ac01713615"
+  },
+  {
+   "clip_id": "d34d76e2c0a3e5b0d5e3",
+   "rig_id": "PZ_Alaskan_Moose_Female",
+   "source_action_name": "alaskan_moose_female@runtowalk",
+   "T_target": 68,
+   "motion_sha256": "37730665ed5fd2c1d03e957b8af8345022f689225d672146a73f604b05121823"
+  },
+  {
+   "clip_id": "f2d76b31c5b91611f152",
+   "rig_id": "PZ_Alaskan_Moose_Female",
+   "source_action_name": "alaskan_moose_female@fightchaseoff",
+   "T_target": 119,
+   "motion_sha256": "8955c561dbdd20f168f58de0631dce26363740e2ee597d582ccb9cec41695338"
+  },
+  {
+   "clip_id": "0f842b59f46bf7a7def1",
+   "rig_id": "PZ_Alaskan_Moose_Juvenile",
+   "source_action_name": "alaskan_moose_juvenile@runtowalk",
+   "T_target": 54,
+   "motion_sha256": "2c0b79ced622d4bb1e00494fe2d112f3402afd45604c1517640db78be43dec9d"
+  },
+  {
+   "clip_id": "4ba7ba18e8fa4fa80769",
+   "rig_id": "PZ_Alaskan_Moose_Juvenile",
+   "source_action_name": "alaskan_moose_juvenile@sleeptorest",
+   "T_target": 107,
+   "motion_sha256": "30c788517a42c4833c3d9c5fd2d469640ce1107edca558aa82261f387646ea03"
+  },
+  {
+   "clip_id": "55c568571c90409b153a",
+   "rig_id": "PZ_Alaskan_Moose_Juvenile",
+   "source_action_name": "alaskan_moose_juvenile@resttosleep",
+   "T_target": 115,
+   "motion_sha256": "138635589815ad447b4fef3c50c26dde099365e43f5aa1895d9a9afa5b35a41c"
+  },
+  {
+   "clip_id": "d55cc4a0f611ff2e18e9",
+   "rig_id": "PZ_Alaskan_Moose_Juvenile",
+   "source_action_name": "alaskan_moose_juvenile@swimtreadwatertoswimbaseturnr",
+   "T_target": 66,
+   "motion_sha256": "04d15ec1c8ea3bd55f009388fd41b1ed7bc9722a4508027b5650094f43570da8"
+  },
+  {
+   "clip_id": "224483a6779bae125499",
+   "rig_id": "PZ_Alaskan_Moose_Male",
+   "source_action_name": "alaskan_moose_male@walktodrinkturnl",
+   "T_target": 140,
+   "motion_sha256": "16a0661a09918ae20aa0e9b2fee69ce65e142c5b1156f6ceb07263cf0ecdf160"
+  },
+  {
+   "clip_id": "2e297d503c7b72946a0b",
+   "rig_id": "PZ_Alaskan_Moose_Male",
+   "source_action_name": "alaskan_moose_male@fightreacttodie",
+   "T_target": 230,
+   "motion_sha256": "84b4b5b0b095662e71f4ddb15c53b08932ac43f8563cfed07683c5a341baeb09"
+  },
+  {
+   "clip_id": "8a9bac6328d19c21d0d6",
+   "rig_id": "PZ_Alaskan_Moose_Male",
+   "source_action_name": "alaskan_moose_male@swimtreadwatertoswimbaseonspot",
+   "T_target": 116,
+   "motion_sha256": "8a31f763a94048b1e524b3d9e93d1e2df2bb5de9e3484b130dc7bb408aeac656"
+  },
+  {
+   "clip_id": "c9c37d171a5c37c8a315",
+   "rig_id": "PZ_Alaskan_Moose_Male",
+   "source_action_name": "alaskan_moose_male@swimbasetoswimtreadwaterturnr",
+   "T_target": 167,
+   "motion_sha256": "699655ea219b0ba51dcdf0dc97df2ab519c4e3f3a86a287c4be2b1e5c4e80c55"
+  },
+  {
+   "clip_id": "df94a72c74cb6310acdb",
+   "rig_id": "PZ_Alaskan_Moose_Male",
+   "source_action_name": "alaskan_moose_male@jumptoswim",
+   "T_target": 77,
+   "motion_sha256": "881b04be4d1d37e35aed30be5e5e4c5a64d9160600ca14329c864e2ae54ccf1b"
+  },
+  {
+   "clip_id": "2f4068dd8471010ef828",
+   "rig_id": "PZ_Aldabra_Giant_Tortoise_Female",
+   "source_action_name": "aldabra_giant_tortoise_female@walktoswim",
+   "T_target": 62,
+   "motion_sha256": "5133f1b09e8fa6a78b782de50211230820c1dd9df62d9cc14734e2291afc4160"
+  },
+  {
+   "clip_id": "44b0bfcea06d96fb4a01",
+   "rig_id": "PZ_Aldabra_Giant_Tortoise_Female",
+   "source_action_name": "aldabra_giant_tortoise_female@runtostandturnr",
+   "T_target": 126,
+   "motion_sha256": "6ed2b18697f2e4ff0751bebe55e46e5b453b9dcd333472e577ad376f7a47e742"
+  },
+  {
+   "clip_id": "8145ea4d2beb5f4407c6",
+   "rig_id": "PZ_Aldabra_Giant_Tortoise_Female",
+   "source_action_name": "aldabra_giant_tortoise_female@swimbaseturnl",
+   "T_target": 35,
+   "motion_sha256": "a9b682cdf8a783325ed3a63bf17226cbcb9f291a498ce7830e7484be2f91920e"
+  },
+  {
+   "clip_id": "af5b96d20c898a06491f",
+   "rig_id": "PZ_Aldabra_Giant_Tortoise_Female",
+   "source_action_name": "aldabra_giant_tortoise_female@walktoswimturnr",
+   "T_target": 62,
+   "motion_sha256": "c3dc72617c19864f1aa25327bc6a65ace161a50f81b4bfd9a0dc7b51c0fb0433"
+  },
+  {
+   "clip_id": "134e1ac9d6372bd5939a",
+   "rig_id": "PZ_Aldabra_Giant_Tortoise_Juvenile",
+   "source_action_name": "aldabra_giant_tortoise_juvenile@walkbaseturnl",
+   "T_target": 55,
+   "motion_sha256": "074056276250831fefd1bbfac3f91c6dd0c81330499ad794904f1d37fd8c6530"
+  },
+  {
+   "clip_id": "2c1c6ce51fe82c348b99",
+   "rig_id": "PZ_Aldabra_Giant_Tortoise_Juvenile",
+   "source_action_name": "aldabra_giant_tortoise_juvenile@walktodrinktroughturnl",
+   "T_target": 89,
+   "motion_sha256": "a034e657087d642c1b57f83c4615922300b7c97a625310553f8e62b61d031214"
+  },
+  {
+   "clip_id": "5a351aa4143b797e6384",
+   "rig_id": "PZ_Aldabra_Giant_Tortoise_Juvenile",
+   "source_action_name": "aldabra_giant_tortoise_juvenile@swimbasetoswimtreadwater",
+   "T_target": 66,
+   "motion_sha256": "144dd4ecd4a9c623c7db41795409d8d10073dfcdfa8b82e02a4643b7bfd18933"
+  },
+  {
+   "clip_id": "bc3f358be123babfba8e",
+   "rig_id": "PZ_Aldabra_Giant_Tortoise_Juvenile",
+   "source_action_name": "aldabra_giant_tortoise_juvenile@jumpoutonspot",
+   "T_target": 47,
+   "motion_sha256": "d3af995c7a1e29b31bfcb97fcf3e27ef865e56f576df50e8209d955188395073"
+  },
+  {
+   "clip_id": "1caa614d9a683a7f2ee8",
+   "rig_id": "PZ_Aldabra_Giant_Tortoise_Male",
+   "source_action_name": "aldabra_giant_tortoise_male@runbaseturnr",
+   "T_target": 70,
+   "motion_sha256": "31ee0c98c82fec0da697a176aaeb0443fd8eafcb953dff43b2088c4cf73a7ddb"
+  },
+  {
+   "clip_id": "2b0bac942b46656d1c23",
+   "rig_id": "PZ_Aldabra_Giant_Tortoise_Male",
+   "source_action_name": "aldabra_giant_tortoise_male@swimtreadwatertoswimbase",
+   "T_target": 127,
+   "motion_sha256": "30fab2d51c28b21c6bfd33636c1c257e0f3dbea1e12221861884e5f0f002a6ef"
+  },
+  {
+   "clip_id": "4dac19f1337197874892",
+   "rig_id": "PZ_Aldabra_Giant_Tortoise_Male",
+   "source_action_name": "aldabra_giant_tortoise_male@standturnl180",
+   "T_target": 266,
+   "motion_sha256": "73aa6b53baf1d8e6240c5a8158f5bb87834a6e18e3531ac2b420c724c69874fe"
+  },
+  {
+   "clip_id": "9323ee211f04ee87609c",
+   "rig_id": "PZ_Aldabra_Giant_Tortoise_Male",
+   "source_action_name": "aldabra_giant_tortoise_male@runtowalkonspot",
+   "T_target": 87,
+   "motion_sha256": "038eae1d40c6331f914924ddea448ee41f1f492a67b67f0f2dfb2f47c0d5895b"
+  },
+  {
+   "clip_id": "0b28e3dc34d349806643",
+   "rig_id": "PZ_Alpaca_Juvenile",
+   "source_action_name": "alpaca_juvenile@swimtowalk",
+   "T_target": 32,
+   "motion_sha256": "1745a10a833ddf675ae8c3be3d279bf87e8e4b78e96093b4a4e8f3746a9ede3b"
+  },
+  {
+   "clip_id": "1545747141fdc76a8d76",
+   "rig_id": "PZ_Alpaca_Juvenile",
+   "source_action_name": "alpaca_juvenile@walktoswim",
+   "T_target": 32,
+   "motion_sha256": "1bd83f248bbf8660f2940913d1fe9e6aadac8bf537dcc4eeb7afd10361bf5491"
+  },
+  {
+   "clip_id": "42224afc64787fa7dd08",
+   "rig_id": "PZ_Alpaca_Juvenile",
+   "source_action_name": "alpaca_juvenile@resttosleep",
+   "T_target": 170,
+   "motion_sha256": "805d4efedd71deb0bd10919e64d5efda380c91d19ad135856d62818341a65080"
+  },
+  {
+   "clip_id": "94ef693a4eb4b39b877c",
+   "rig_id": "PZ_Alpaca_Juvenile",
+   "source_action_name": "alpaca_juvenile@runtostand",
+   "T_target": 61,
+   "motion_sha256": "d6e1a531cb9ab50668a8463a561f92de06ec37a7dba248f92a2b0a68ca9e5c44"
+  },
+  {
+   "clip_id": "a03aa032432ff75a37dc",
+   "rig_id": "PZ_Alpaca_Juvenile",
+   "source_action_name": "alpaca_juvenile@walkbaseturnr",
+   "T_target": 32,
+   "motion_sha256": "0da34d42376ec8cddf47084119db5c8b76f805bdac7e82b742e70528680f988e"
+  },
+  {
+   "clip_id": "6072c51933298223e75a",
+   "rig_id": "PZ_Alpaca_Male",
+   "source_action_name": "alpaca_male@attackfence",
+   "T_target": 122,
+   "motion_sha256": "e81f079f4f488e94c77fbeed5b4f493b5de70605b39ec71ac23aeafbd4068e46"
+  },
+  {
+   "clip_id": "22b5a9e8191373df9d70",
+   "rig_id": "PZ_Alpine_Goat_Female",
+   "source_action_name": "alpine_goat_female@walktoeatturnr",
+   "T_target": 69,
+   "motion_sha256": "c644d19508b23c36e96123508cb5f204376d69acf3ec02853b71c1e939145af4"
+  },
+  {
+   "clip_id": "3503d777a9ff974da032",
+   "rig_id": "PZ_Alpine_Goat_Female",
+   "source_action_name": "alpine_goat_female@runtostandonspot",
+   "T_target": 61,
+   "motion_sha256": "c04a7aa8f7f7764527c5c6a45809f8652d9b016b6e868499325de85c91f956d2"
+  },
+  {
+   "clip_id": "6b3a6fbf4402cef29c71",
+   "rig_id": "PZ_Alpine_Goat_Female",
+   "source_action_name": "alpine_goat_female@walktoswim",
+   "T_target": 32,
+   "motion_sha256": "e494af48565372481e02cfa6f0d92467ca0dfa26b845a0e0a4f03491c6ff7f75"
+  },
+  {
+   "clip_id": "ad9e87c8ce04fd0ddf99",
+   "rig_id": "PZ_Alpine_Goat_Female",
+   "source_action_name": "alpine_goat_female@swimbaseonspot",
+   "T_target": 31,
+   "motion_sha256": "763012fc48e082e17fafa069d5f65ead3e535d067d18236cec19463f5c6419d6"
+  },
+  {
+   "clip_id": "d6df252cece3d8add3d2",
+   "rig_id": "PZ_Alpine_Goat_Female",
+   "source_action_name": "alpine_goat_female@standtograze",
+   "T_target": 54,
+   "motion_sha256": "aa73c41184cf3b0a84616999426623c7000995eca66a91daef3e8618ba58632a"
+  },
+  {
+   "clip_id": "88bf60c1692feb622f79",
+   "rig_id": "PZ_Alpine_Goat_Juvenile",
+   "source_action_name": "alpine_goat_juvenile@walktostandonspot",
+   "T_target": 52,
+   "motion_sha256": "715488a2b2a9ce18a5540c5afdbc17dd40082ee40d831b1d84a7574bc4cf40c7"
+  },
+  {
+   "clip_id": "8c0655c9302925a88cf0",
+   "rig_id": "PZ_Alpine_Goat_Juvenile",
+   "source_action_name": "alpine_goat_juvenile@jumptoswimonspot",
+   "T_target": 44,
+   "motion_sha256": "ef1a878c267b16fb83f0b520c6f14a712e36f785b5b6575c8256b13314d8f07f"
+  },
+  {
+   "clip_id": "c2606ec886f79a3713cf",
+   "rig_id": "PZ_Alpine_Goat_Juvenile",
+   "source_action_name": "alpine_goat_juvenile@standtorunturnr",
+   "T_target": 37,
+   "motion_sha256": "71bd71fdb358df3a0577c284d86dc3095039d5e3a5355e6d134f3426c3279ba5"
+  },
+  {
+   "clip_id": "debd0197f1408398b6e7",
+   "rig_id": "PZ_Alpine_Goat_Juvenile",
+   "source_action_name": "alpine_goat_juvenile@standturnr000",
+   "T_target": 60,
+   "motion_sha256": "5f89af87b09b031c120ebf83fdd48dd4da77e6a187141e1a3705441d334b0e46"
+  },
+  {
+   "clip_id": "f64309f84939fdb85783",
+   "rig_id": "PZ_Alpine_Goat_Juvenile",
+   "source_action_name": "alpine_goat_juvenile@standtowalkturnr",
+   "T_target": 50,
+   "motion_sha256": "c408dc0c36479f4b8666c6e74400a1ed519a73a7c16cb9e5d5422d7cebc1514d"
+  },
+  {
+   "clip_id": "7e190bdd6b3d9494ee41",
+   "rig_id": "PZ_Alpine_Goat_Male",
+   "source_action_name": "alpine_goat_male@walktoswimturnr",
+   "T_target": 34,
+   "motion_sha256": "0a5dab0ee0de958ab3682686be2958c93cf1915ff94f30c23232ef1337d243b8"
+  },
+  {
+   "clip_id": "bb8b4b785ebecba75734",
+   "rig_id": "PZ_Alpine_Goat_Male",
+   "source_action_name": "alpine_goat_male@swimbasetoswimtreadwateronspot",
+   "T_target": 110,
+   "motion_sha256": "4c6e03224def7bb2a5147e87429fa77f5f88c70c3efde859944f1e2724bf7ba1"
+  },
+  {
+   "clip_id": "c0384ca98cfcebc9a3ab",
+   "rig_id": "PZ_Alpine_Goat_Male",
+   "source_action_name": "alpine_goat_male@standgimmick01",
+   "T_target": 84,
+   "motion_sha256": "1b942aabe4e3ef55c43514b948d973a0c8eb9f50075873150b115dc794072818"
+  },
+  {
+   "clip_id": "ca7835ea622d5f47351e",
+   "rig_id": "PZ_Alpine_Goat_Male",
+   "source_action_name": "alpine_goat_male@standturnr089",
+   "T_target": 76,
+   "motion_sha256": "7b0a37b93e8e5ad5e6f49e87c539ad0f62f46bf734b2619c660fe5d58357aa18"
+  },
+  {
+   "clip_id": "ea3e74921047de617b4a",
+   "rig_id": "PZ_Alpine_Goat_Male",
+   "source_action_name": "alpine_goat_male@shake",
+   "T_target": 105,
+   "motion_sha256": "7d2ef587cf81d0abaf495741e3164b366762b68e2da489a6b3e17e33eef51be4"
+  },
+  {
+   "clip_id": "27546261111e8bffc701",
+   "rig_id": "PZ_Alpine_Ibex_Juvenile",
+   "source_action_name": "alpine_ibex_juvenile@standtowalkturnl",
+   "T_target": 53,
+   "motion_sha256": "3d6800d78d509fd8b0cc44e8389df449c1f3f20a1024a1223282dc2f83415444"
+  },
+  {
+   "clip_id": "3e8d193679892165c796",
+   "rig_id": "PZ_Alpine_Ibex_Juvenile",
+   "source_action_name": "alpine_ibex_juvenile@swimbasetoswimtreadwaterturnr",
+   "T_target": 93,
+   "motion_sha256": "fff147a4d07630949d05afb30e373c03beaae05e0e0dded9cedec113bd640f1f"
+  },
+  {
+   "clip_id": "91d628fc9c21d0db7f73",
+   "rig_id": "PZ_Alpine_Ibex_Juvenile",
+   "source_action_name": "alpine_ibex_juvenile@jumptoswim",
+   "T_target": 44,
+   "motion_sha256": "4daba37461b23598da2cb07e876bfd9c3015223150a7cabe3a138873f6616080"
+  },
+  {
+   "clip_id": "cbf66a257299d148bd39",
+   "rig_id": "PZ_Alpine_Ibex_Juvenile",
+   "source_action_name": "alpine_ibex_juvenile@standpickup",
+   "T_target": 69,
+   "motion_sha256": "3c2d4b151ee34c5c4e502b87521cab8723e5d1e323abf9cbd2464687e836d61a"
+  },
+  {
+   "clip_id": "d3c398080efb8b401fa6",
+   "rig_id": "PZ_Alpine_Ibex_Juvenile",
+   "source_action_name": "alpine_ibex_juvenile@fightvictorytaunt",
+   "T_target": 86,
+   "motion_sha256": "2f6a69a8bdb046b2db3c31ff6b875e219ac98d0d4a58b97fa1374b060a72d4a8"
+  },
+  {
+   "clip_id": "1a5ed96bb3ae85dae6d9",
+   "rig_id": "PZ_American_Alligator_Female",
+   "source_action_name": "american_alligator_female@standturnl000",
+   "T_target": 210,
+   "motion_sha256": "b23b1384ce51d735105ef31d258ac2d67c7e9341fe0a32ded8f41b71a3c3ae8d"
+  },
+  {
+   "clip_id": "3e2feef8d60bc8a45a37",
+   "rig_id": "PZ_American_Alligator_Female",
+   "source_action_name": "american_alligator_female@walktostandturnr",
+   "T_target": 165,
+   "motion_sha256": "5ee89a868fb776ebce8386af50fce70e24cab86362724996f363859d29b3e671"
+  },
+  {
+   "clip_id": "6d8a490844afdc3b8cfe",
+   "rig_id": "PZ_American_Alligator_Female",
+   "source_action_name": "american_alligator_female@swimtowalk",
+   "T_target": 72,
+   "motion_sha256": "1cb96b249ec76057713276cd9bee252dbb0082b6ae6039a32cd585feac443d28"
+  },
+  {
+   "clip_id": "f4e49a5e61bc6b949482",
+   "rig_id": "PZ_American_Alligator_Female",
+   "source_action_name": "american_alligator_female@standtorun",
+   "T_target": 72,
+   "motion_sha256": "a6465a76769756be9808be54ef52307c5038c0fe16e29aa36a9a2eebe3b2258b"
+  },
+  {
+   "clip_id": "6bc003eee0200a57ef67",
+   "rig_id": "PZ_American_Alligator_Juvenile",
+   "source_action_name": "american_alligator_juvenile@swimbasetoswimtreadwaterturnr",
+   "T_target": 84,
+   "motion_sha256": "8611dec9e135156894e5b4378a8ccdb8d5ba50bbb36e04038aac646d2d4341ac"
+  },
+  {
+   "clip_id": "7d1782bbca476fe1feef",
+   "rig_id": "PZ_American_Alligator_Juvenile",
+   "source_action_name": "american_alligator_juvenile@swimbasetoswimtreadwater",
+   "T_target": 84,
+   "motion_sha256": "3342241f0f292ddede78c752dcfed520dd69ebc7fa89f84fd3c5df9ed1494349"
+  },
+  {
+   "clip_id": "a354bc8dd36e18a7b81b",
+   "rig_id": "PZ_American_Alligator_Juvenile",
+   "source_action_name": "american_alligator_juvenile@walktoswim",
+   "T_target": 34,
+   "motion_sha256": "beba085a08340e08e15881c544ab0b27899179e712a84ca8b23601fd9d9c1215"
+  },
+  {
+   "clip_id": "a46e952e9131873a2eac",
+   "rig_id": "PZ_American_Alligator_Juvenile",
+   "source_action_name": "american_alligator_juvenile@standturnr180",
+   "T_target": 98,
+   "motion_sha256": "b139e9457ba9c9d6ea9b954ab97318ac70cfca5989850acd532819d3908b1e68"
+  },
+  {
+   "clip_id": "0f035b50a9d9d1278dc4",
+   "rig_id": "PZ_American_Alligator_Male",
+   "source_action_name": "american_alligator_male@swimtowalkturnl",
+   "T_target": 72,
+   "motion_sha256": "06ef4f468717405df5ef65e73559c2b817bac231d627a86aeacf73a141b81135"
+  },
+  {
+   "clip_id": "493df6330ea3cab0f30a",
+   "rig_id": "PZ_American_Alligator_Male",
+   "source_action_name": "american_alligator_male@standtowalk",
+   "T_target": 114,
+   "motion_sha256": "f3cc5750e5e0e2ab5c03341f701fc31e9ed438c634f4ce2a2139d8e4b4325375"
+  },
+  {
+   "clip_id": "4f3f78176e51c8f3a9c1",
+   "rig_id": "PZ_American_Alligator_Male",
+   "source_action_name": "american_alligator_male@runbase",
+   "T_target": 21,
+   "motion_sha256": "29749a9958dd23ece53918170bc9ce4c0d78f0f4d6e6401ebbf7be33834c6399"
+  },
+  {
+   "clip_id": "acb626a985fd61eb832e",
+   "rig_id": "PZ_American_Alligator_Male",
+   "source_action_name": "american_alligator_male@swimbaseonspot",
+   "T_target": 72,
+   "motion_sha256": "9fff114d6ae976a37392341cce8d9411b7c19ea167495de2289c44200e4545d2"
+  },
+  {
+   "clip_id": "006ef69948a7ce9534eb",
+   "rig_id": "PZ_American_Bison_Female",
+   "source_action_name": "american_bison_female@runtowalkonspot",
+   "T_target": 55,
+   "motion_sha256": "72e22685b2af1e24cb9e344d70c488e56bcd752fb110a51f327621fb89c654c7"
+  },
+  {
+   "clip_id": "24e61a9845a027fbb0cc",
+   "rig_id": "PZ_American_Bison_Female",
+   "source_action_name": "american_bison_female@walkbaseturnl",
+   "T_target": 43,
+   "motion_sha256": "dfce845d839c684cb49ce134a1576b834436a2c79a4e91d0a24510eb6e8a5610"
+  },
+  {
+   "clip_id": "2dea43af5cdfa110f36c",
+   "rig_id": "PZ_American_Bison_Female",
+   "source_action_name": "american_bison_female@swimturnl180",
+   "T_target": 200,
+   "motion_sha256": "4ffb368aa0b1dec95b717548ac8479db713266369fe8c544b710c8c4a8a6342b"
+  },
+  {
+   "clip_id": "ade9542d5a52ef2a2a7c",
+   "rig_id": "PZ_American_Bison_Female",
+   "source_action_name": "american_bison_female@walktostandturnr",
+   "T_target": 97,
+   "motion_sha256": "0e737c2a7c9b7d3815518eb8b83bd9927520a1e3bddd0d186c05fd57a2c9fbc9"
+  },
+  {
+   "clip_id": "d74c8bbdefe4d005ebca",
+   "rig_id": "PZ_American_Bison_Female",
+   "source_action_name": "american_bison_female@runtostandturnl",
+   "T_target": 82,
+   "motion_sha256": "e446fd8bff9a7cefae4d7c0af77cad80ee27e06a9cd6f078d0fb2016948a934f"
+  },
+  {
+   "clip_id": "3c94256ebf1fafc4473e",
+   "rig_id": "PZ_American_Bison_Juvenile",
+   "source_action_name": "american_bison_juvenile@runtostandturnl",
+   "T_target": 68,
+   "motion_sha256": "102f227487d8a00f2d61114120f83f46457c40877857f10357ff322592bd72c3"
+  },
+  {
+   "clip_id": "84482005b3128a8f1598",
+   "rig_id": "PZ_American_Bison_Juvenile",
+   "source_action_name": "american_bison_juvenile@walktoswimturnr",
+   "T_target": 36,
+   "motion_sha256": "c7cff1a72acc95863ef75768eb689adc7945014c2fca5f874a4eac1968275c4d"
+  },
+  {
+   "clip_id": "c25653e4e6437893b711",
+   "rig_id": "PZ_American_Bison_Juvenile",
+   "source_action_name": "american_bison_juvenile@walktoeatturnl",
+   "T_target": 85,
+   "motion_sha256": "5e5c6e346f0b6379b5db9c2eaaebf85338ed165a3a1b3ba9873ef4dfc363bd99"
+  },
+  {
+   "clip_id": "e2a0bc110538c87b3e3a",
+   "rig_id": "PZ_American_Bison_Juvenile",
+   "source_action_name": "american_bison_juvenile@swimturnl180",
+   "T_target": 200,
+   "motion_sha256": "357ab056f8496ae80ecebae6340c0b447a42ec68225c848e0aa241260300fa05"
+  },
+  {
+   "clip_id": "eee8d7f398dbd6ef6795",
+   "rig_id": "PZ_American_Bison_Juvenile",
+   "source_action_name": "american_bison_juvenile@grazetostand",
+   "T_target": 60,
+   "motion_sha256": "79de2d0bcb1769933090986258fd94ee530640b22eb92d860b11e724fb04ba0f"
+  },
+  {
+   "clip_id": "413db76443c41bdd642d",
+   "rig_id": "PZ_American_Bison_Male",
+   "source_action_name": "american_bison_male@walktoswimonspot",
+   "T_target": 36,
+   "motion_sha256": "bf7d14e8425a0688b8c498c3d947026e166c47a1e5851d96c4eae5661257d9a7"
+  },
+  {
+   "clip_id": "6c3d55a845d139dedd3a",
+   "rig_id": "PZ_American_Bison_Male",
+   "source_action_name": "american_bison_male@standdie",
+   "T_target": 122,
+   "motion_sha256": "2e641647f389a6e1c8248f44c3ea6dc52e63a383d00ec82d6e4ce904e6d7d1df"
+  },
+  {
+   "clip_id": "7a569fc208b31470552c",
+   "rig_id": "PZ_American_Bison_Male",
+   "source_action_name": "american_bison_male@restpreen01",
+   "T_target": 190,
+   "motion_sha256": "d1e4d69b2ff10407840a125a1a799fbd9e6b62c50da3179f61fee7fd05288368"
+  },
+  {
+   "clip_id": "b8d377155afac14c54f5",
+   "rig_id": "PZ_American_Bison_Male",
+   "source_action_name": "american_bison_male@resttostand",
+   "T_target": 165,
+   "motion_sha256": "c4ccca1c8c1ae008994c3e6c46fdbebd8095d611c00a06f2652a7d7757abf9ef"
+  },
+  {
+   "clip_id": "c3e5688314cf3b8f34b5",
+   "rig_id": "PZ_American_Bison_Male",
+   "source_action_name": "american_bison_male@walktoswimturnl",
+   "T_target": 36,
+   "motion_sha256": "5aa62c23034c6cbd314370014925958ce69dab80b588e9d11b228b4cebff3e5b"
+  },
+  {
+   "clip_id": "01b4930803c11eaf1653",
+   "rig_id": "PZ_Amur_Leopard_Juvenile",
+   "source_action_name": "amur_leopard_juvenile@resttosleep",
+   "T_target": 203,
+   "motion_sha256": "1fc22b5eb50d5010171e87c4a713eccba58f65de1793df479fe94136d191a4bc"
+  },
+  {
+   "clip_id": "32732ab7e4babd7b4fbd",
+   "rig_id": "PZ_Amur_Leopard_Juvenile",
+   "source_action_name": "amur_leopard_juvenile@standturnr000",
+   "T_target": 50,
+   "motion_sha256": "74736e18c1904f8f21f17117285a9007557a18caad7073e31c20e60d6e1b7c40"
+  },
+  {
+   "clip_id": "41d627cf113a9cee50a0",
+   "rig_id": "PZ_Amur_Leopard_Juvenile",
+   "source_action_name": "amur_leopard_juvenile@standroar",
+   "T_target": 180,
+   "motion_sha256": "bb91aee98cd4b7968d86cf689482fc2997c449881f1f6e34cd7dbc94184310eb"
+  },
+  {
+   "clip_id": "c9d3477e06e42d8fca0a",
+   "rig_id": "PZ_Amur_Leopard_Juvenile",
+   "source_action_name": "amur_leopard_juvenile@climbbeamtowalk1",
+   "T_target": 38,
+   "motion_sha256": "8ae33fadd240f384804211a500c541e431458b491d1a209c4f613495b978f5e0"
+  },
+  {
+   "clip_id": "f04351d0d05f8b69fb94",
+   "rig_id": "PZ_Amur_Leopard_Juvenile",
+   "source_action_name": "amur_leopard_juvenile@standherocall",
+   "T_target": 141,
+   "motion_sha256": "f44d8196fabe84f6afb883827528ebe937c2a1615cc119e96e59882dbe4d3926"
+  },
+  {
+   "clip_id": "fd787376aa8986772a09",
+   "rig_id": "PZ_Amur_Leopard_Juvenile",
+   "source_action_name": "amur_leopard_juvenile@swimtowalkonspot",
+   "T_target": 32,
+   "motion_sha256": "0e5bef05b342070e90ae6ede013dfcec1f2b01ae1a7c912a959827875304bf95"
+  },
+  {
+   "clip_id": "ff4e3d6e88f19fe7bb41",
+   "rig_id": "PZ_Amur_Leopard_Juvenile",
+   "source_action_name": "amur_leopard_juvenile@climbbeamtoclimbdown1",
+   "T_target": 25,
+   "motion_sha256": "e20d96eca52e434607325b9c5ec06daeea34441e052bf1a64ac36635f3527a1e"
+  },
+  {
+   "clip_id": "509103a306213e17672f",
+   "rig_id": "PZ_Arctic_Fox_Male",
+   "source_action_name": "arctic_fox_male@standturnr089",
+   "T_target": 53,
+   "motion_sha256": "d717c492fc8ca6765f3866e9e67f49276212c2af29b40d59b8e32204b6ae4315"
+  },
+  {
+   "clip_id": "9e44eb431e66c85c23ff",
+   "rig_id": "PZ_Arctic_Fox_Male",
+   "source_action_name": "arctic_fox_male@swimbaseturnr",
+   "T_target": 20,
+   "motion_sha256": "2192fc4247f3d143968fb140abeb108ad079a778480bf676748fbee8d3e774f1"
+  },
+  {
+   "clip_id": "596cc7acdd5261fc0e43",
+   "rig_id": "PZ_Arctic_Wolf_Female",
+   "source_action_name": "arctic_wolf_female@walkbaseonspot",
+   "T_target": 34,
+   "motion_sha256": "5d43797b6e010d49c970626a90fa58997a042d45b7ac67c58b40f37372ec56de"
+  },
+  {
+   "clip_id": "38efb5746c8926ccc22f",
+   "rig_id": "PZ_Asian_Small_Clawed_Otter_Juvenile",
+   "source_action_name": "asian_small_clawed_otter_juvenile@walktostandonspot",
+   "T_target": 32,
+   "motion_sha256": "4ceef8861610f224d9ba57012ad680a5e43f0be0a1fdd2dc7cd0cbc0629e488f"
+  },
+  {
+   "clip_id": "876b6873e4a60595c87b",
+   "rig_id": "PZ_Asian_Small_Clawed_Otter_Juvenile",
+   "source_action_name": "asian_small_clawed_otter_juvenile@walktoswimonspot",
+   "T_target": 31,
+   "motion_sha256": "2831f2e4b4220c130b6fe52f79da2f7950a7d910200bd148966bafce64fdf621"
+  },
+  {
+   "clip_id": "4437c23d2309fae2175d",
+   "rig_id": "PZ_Asian_Small_Clawed_Otter_Male",
+   "source_action_name": "asian_small_clawed_otter_male@walkbaseonspot",
+   "T_target": 20,
+   "motion_sha256": "27a9fe356b04962326bb2d89fb3bcd86d1b382e38f32c2e7119307d52e32c3de"
+  },
+  {
+   "clip_id": "6c20ce74ceadc9ece299",
+   "rig_id": "PZ_Asian_Small_Clawed_Otter_Male",
+   "source_action_name": "asian_small_clawed_otter_male@walktorunonspot",
+   "T_target": 20,
+   "motion_sha256": "188174b96f405a452ca1140124913805936bac177ce0d9f7f503bf854e16b065"
+  },
+  {
+   "clip_id": "933c2efb015a58ec50bf",
+   "rig_id": "PZ_Asian_Small_Clawed_Otter_Male",
+   "source_action_name": "asian_small_clawed_otter_male@swimturnl000",
+   "T_target": 59,
+   "motion_sha256": "17e16c0c5b1e4d8bc535d55d7312160ed2123a1a9587056098874503ee894d97"
+  },
+  {
+   "clip_id": "a94164288d37c3820b05",
+   "rig_id": "PZ_Asian_Water_Monitor_Juvenile",
+   "source_action_name": "asian_water_monitor_juvenile@walktoswimonspot",
+   "T_target": 38,
+   "motion_sha256": "a0c8f3246c3b5ded21665e5a5861786ed87d711fdf28318089a0f21521e24941"
+  },
+  {
+   "clip_id": "b1e208fdf2ac632c96b7",
+   "rig_id": "PZ_Asian_Water_Monitor_Juvenile",
+   "source_action_name": "asian_water_monitor_juvenile@standturnr000",
+   "T_target": 112,
+   "motion_sha256": "ddbaafe15f02b8b2b4d1366c7651015bb8fb448956221f293d9bf91acf6e0468"
+  },
+  {
+   "clip_id": "1f068a4a7c18f324b662",
+   "rig_id": "PZ_B_W_Ruffed_Lemur_Female",
+   "source_action_name": "b_w_ruffed_lemur_female@climbdowntowalkonspot2",
+   "T_target": 34,
+   "motion_sha256": "27e53be60b8fd13f9fecc8c972dee4ef552e4761549589926cb391b4efb1e9d3"
+  },
+  {
+   "clip_id": "70d14d641f44f8945e34",
+   "rig_id": "PZ_B_W_Ruffed_Lemur_Female",
+   "source_action_name": "b_w_ruffed_lemur_female@runtowalkonspot",
+   "T_target": 42,
+   "motion_sha256": "a406469a7faa84f7d5399efead223dbba4a3e3e4612e97fff0166aace8680052"
+  },
+  {
+   "clip_id": "8d3f6a12f72128217929",
+   "rig_id": "PZ_B_W_Ruffed_Lemur_Female",
+   "source_action_name": "b_w_ruffed_lemur_female@climbbeamtoclimbuponspot1",
+   "T_target": 19,
+   "motion_sha256": "2d76529872d2500124d61fd8a84cf8d2568a7d59e662961baf52afe869fdd6a5"
+  },
+  {
+   "clip_id": "448c6b668c667fc70e3d",
+   "rig_id": "PZ_B_W_Ruffed_Lemur_Juvenile",
+   "source_action_name": "b_w_ruffed_lemur_juvenile@climbdownbaseonspot",
+   "T_target": 24,
+   "motion_sha256": "cca9604aee40312b1a794cc67275a49b3cd9b23c910a7c920c112cd439db6fb9"
+  },
+  {
+   "clip_id": "beacd58ad7d09397dd49",
+   "rig_id": "PZ_B_W_Ruffed_Lemur_Juvenile",
+   "source_action_name": "b_w_ruffed_lemur_juvenile@climbbeamtoclimbuponspot2",
+   "T_target": 21,
+   "motion_sha256": "cf3776e47bbede70e2639a38d80f609517b194764019bb911eb1ee741d3df194"
+  },
+  {
+   "clip_id": "28443f6e898aa80809e8",
+   "rig_id": "PZ_Babirusa_Female",
+   "source_action_name": "babirusa_female@swimtreadwater",
+   "T_target": 148,
+   "motion_sha256": "c0d5525a51a3fb7a75ef57bd7b5a9bf4751c6856c9b7fdf45d05189f9b85136a"
+  },
+  {
+   "clip_id": "63d45ede6a30b340bfa6",
+   "rig_id": "PZ_Babirusa_Juvenile",
+   "source_action_name": "babirusa_juvenile@jumptoswimonspot",
+   "T_target": 76,
+   "motion_sha256": "57754b8513b7690d6bd08123618b128ce8bedb2591e40321f426f9c9abcd3218"
+  },
+  {
+   "clip_id": "b616c75de1537c29b99b",
+   "rig_id": "PZ_Babirusa_Juvenile",
+   "source_action_name": "babirusa_juvenile@walktorunonspot",
+   "T_target": 58,
+   "motion_sha256": "19d841fc97f316618fcfac3ef5fa9a86835551a18670e9809ea35ab07e28d5bf"
+  },
+  {
+   "clip_id": "24bb0172d494d8ef5042",
+   "rig_id": "PZ_Bactrian_Camel_Female",
+   "source_action_name": "bactrian_camel_female@standtowalkonspot",
+   "T_target": 79,
+   "motion_sha256": "250607bcb035d5cf6def6cb0c9587e61e4c7eed508f196ab5782d3e0f5e832d7"
+  },
+  {
+   "clip_id": "a318a401d1ddc3dbffca",
+   "rig_id": "PZ_Bairds_Tapir_Juvenile",
+   "source_action_name": "bairds_tapir_juvenile@walkbaseonspot",
+   "T_target": 32,
+   "motion_sha256": "fa33b7089c923ede75da1e34fbfb4cda40edcc368de0405566f46c1d9faf954b"
+  },
+  {
+   "clip_id": "bf9ecb3414451af92cdb",
+   "rig_id": "PZ_Bairds_Tapir_Juvenile",
+   "source_action_name": "bairds_tapir_juvenile@runtostandonspot",
+   "T_target": 56,
+   "motion_sha256": "7d2d83bd977f804ca26110445c7d4d82bd034d46d7e253a345506edd08f4ae8c"
+  },
+  {
+   "clip_id": "03f43f58abb06445ebee",
+   "rig_id": "PZ_Bairds_Tapir_Male",
+   "source_action_name": "bairds_tapir_male@jumpinonspot",
+   "T_target": 77,
+   "motion_sha256": "e5d997fcc412e536a8001ec4a87d31c4e0c9a38c227e934c528ef11943482d65"
+  },
+  {
+   "clip_id": "297cf0492cd7af662d64",
+   "rig_id": "PZ_Bengal_Tiger_Female",
+   "source_action_name": "bengal_tiger_female@jumpdown5x1monspot",
+   "T_target": 100,
+   "motion_sha256": "b3c6f492f1c69085294a7f463f4915b90e932219e8a55b06b6c167e04fe4a970"
+  },
+  {
+   "clip_id": "59ce28f3cc74a6d9cf60",
+   "rig_id": "PZ_Bengal_Tiger_Female",
+   "source_action_name": "bengal_tiger_female@walkbaseonspot",
+   "T_target": 46,
+   "motion_sha256": "28d276f47525730a3f52b38e3daf84e48738b0bef14b9fdd3c05e87627a86472"
+  },
+  {
+   "clip_id": "861f6fedf0382d10aa8f",
+   "rig_id": "PZ_Bengal_Tiger_Female",
+   "source_action_name": "bengal_tiger_female@walktodrinkonspot",
+   "T_target": 74,
+   "motion_sha256": "15761bacff9e6df1b6384c7a9ae7ad705109d356af3a28aade7756c80f60da59"
+  },
+  {
+   "clip_id": "094a2b283f136ce369bc",
+   "rig_id": "PZ_Bengal_Tiger_Juvenile",
+   "source_action_name": "bengal_tiger_juvenile@climbbeamtoclimbdownonspot1",
+   "T_target": 25,
+   "motion_sha256": "cf387c8216692e3edda52587e4b8a6eeeffbf833fed1cd4276171fac224a8f4b"
+  },
+  {
+   "clip_id": "afba600cbd5472df576c",
+   "rig_id": "PZ_Bengal_Tiger_Juvenile",
+   "source_action_name": "bengal_tiger_juvenile@climbbeamtowalkonspot2",
+   "T_target": 32,
+   "motion_sha256": "6bd2bda83cb8c4d3934f9d29c0306a4afd095fbd284143ca4b41a66f2db80e1a"
+  },
+  {
+   "clip_id": "1ced6948f292af36b729",
+   "rig_id": "PZ_Bengal_Tiger_Male",
+   "source_action_name": "bengal_tiger_male@walktoeatonspot",
+   "T_target": 80,
+   "motion_sha256": "31cb5f7d00458973536e92c86e252e0a07684e5af1aec994d69eeea3514c7337"
+  },
+  {
+   "clip_id": "76e7d1207d8c911511ab",
+   "rig_id": "PZ_Bengal_Tiger_Male",
+   "source_action_name": "bengal_tiger_male@walktoclimbdown1onspot",
+   "T_target": 25,
+   "motion_sha256": "27b84d8b2387fb53d651de43dfda10c9ea5f646eca2635b168e2ae5d21830570"
+  },
+  {
+   "clip_id": "abdf11741878ea34b989",
+   "rig_id": "PZ_Bengal_Tiger_Male",
+   "source_action_name": "bengal_tiger_male@jumpdown5x1monspot",
+   "T_target": 105,
+   "motion_sha256": "b87213d3aad9e7d4509946913fa101172880f7e9d910795b6a829a44c4f1fb7a"
+  },
+  {
+   "clip_id": "cf364e6644481a4d54b4",
+   "rig_id": "PZ_Bengal_Tiger_Male",
+   "source_action_name": "bengal_tiger_male@swimturnr000",
+   "T_target": 181,
+   "motion_sha256": "87887d65c58a99f61a686030a9810ca8c0306e7d9d98ed1a7af40e1227c46303"
+  },
+  {
+   "clip_id": "903e1ff4384c0955be74",
+   "rig_id": "PZ_Binturong_Female",
+   "source_action_name": "binturong_female@jumptoclimbbeamonspot2",
+   "T_target": 24,
+   "motion_sha256": "6cabe470c81277148d167f5495bdc9b88f297ba20c587ab9d0b32ce21162fdf7"
+  },
+  {
+   "clip_id": "17ef717088450c2dd306",
+   "rig_id": "PZ_Binturong_Juvenile",
+   "source_action_name": "binturong_juvenile@walktostandonspot",
+   "T_target": 87,
+   "motion_sha256": "f0698cb50030ac142d01bd17f0220bf087f1f542503046dd67a03059cf77e449"
+  },
+  {
+   "clip_id": "b6a258570bb99a481d85",
+   "rig_id": "PZ_Binturong_Juvenile",
+   "source_action_name": "binturong_juvenile@climbuponspot",
+   "T_target": 28,
+   "motion_sha256": "a9e474f1c0a8a59b8331c9c05d22013131ec76a1367d203a3e2e5144b72b1431"
+  },
+  {
+   "clip_id": "3631a6871d97d6056c69",
+   "rig_id": "PZ_Black_Rhino_Juvenile",
+   "source_action_name": "black_rhino_juvenile@walktoswimonspot",
+   "T_target": 52,
+   "motion_sha256": "5f64fafdbb4c0a2b2aafc447c65bac4dd2e25154f8c4b5982dce5fed5233d7c3"
+  },
+  {
+   "clip_id": "ba801b16883630ff8524",
+   "rig_id": "PZ_Black_Wildebeest_Female",
+   "source_action_name": "black_wildebeest_female@standtofight",
+   "T_target": 39,
+   "motion_sha256": "ade1da0b673a8d08e12e547d5139d00e7b22a081c146a5252ca8aab82f6de63d"
+  },
+  {
+   "clip_id": "f6a0f2f8cfc75cf1ac2b",
+   "rig_id": "PZ_Black_Wildebeest_Female",
+   "source_action_name": "black_wildebeest_female@standtofight",
+   "T_target": 39,
+   "motion_sha256": "ade1da0b673a8d08e12e547d5139d00e7b22a081c146a5252ca8aab82f6de63d"
+  },
+  {
+   "clip_id": "837965a1c01217af24c2",
+   "rig_id": "PZ_Bongo_Female",
+   "source_action_name": "bongo_female@walktoswimonspot",
+   "T_target": 39,
+   "motion_sha256": "aa46ae814f28de8a3bef44522d949eefc6c6099a3bd7c6b87a979ed9f4d8cd14"
+  },
+  {
+   "clip_id": "ad39c4b5b33064b7d331",
+   "rig_id": "PZ_California_Sea_Lion_Female",
+   "source_action_name": "california_sea_lion_female@standturnr000",
+   "T_target": 74,
+   "motion_sha256": "b401d4cbf0af7d750a936b81e4d757ee2722b9f2a71e2c814f2de61c3215bda6"
+  },
+  {
+   "clip_id": "2917a694d60e7af18e3c",
+   "rig_id": "PZ_California_Sea_Lion_Male",
+   "source_action_name": "california_sea_lion_male@runtowalkonspot",
+   "T_target": 32,
+   "motion_sha256": "552a55ede595b7ba068fb986c6c574f84370aabbe4e0dac56c4ff0bd073bac44"
+  },
+  {
+   "clip_id": "f6f1a3c288a9bccbce81",
+   "rig_id": "PZ_California_Sea_Lion_Male",
+   "source_action_name": "california_sea_lion_male@walkbaseonspot",
+   "T_target": 27,
+   "motion_sha256": "6271e285ca69a3813f16485683a03e02a9e6126da6b6daca5c78e466fc2c4652"
+  },
+  {
+   "clip_id": "1fd52042a8a0e1ddac56",
+   "rig_id": "PZ_Capuchin_Monkey_Female",
+   "source_action_name": "capuchin_monkey_female@climbidleverticaltoclimbuponspot",
+   "T_target": 28,
+   "motion_sha256": "1433b217382d08336db226dbd6d2a7eddf7804f9d74728d878f73052d36d0aeb"
+  },
+  {
+   "clip_id": "6cf2601623939bf9f8c8",
+   "rig_id": "PZ_Capuchin_Monkey_Female",
+   "source_action_name": "capuchin_monkey_female@walktoclimbuponspot1",
+   "T_target": 38,
+   "motion_sha256": "e6e7cf60f0f623270fcd42d49aa7468be54c3953e3cfab5fe526f687d47c936f"
+  },
+  {
+   "clip_id": "91deb055cae930ca761c",
+   "rig_id": "PZ_Capuchin_Monkey_Female",
+   "source_action_name": "capuchin_monkey_female@standtorunonspot",
+   "T_target": 22,
+   "motion_sha256": "5d8a7e80654f2f596d886293760102532ac94e3bca64a702fd5d2d88cd51dfa9"
+  },
+  {
+   "clip_id": "6842276ee70281569826",
+   "rig_id": "PZ_Capuchin_Monkey_Juvenile",
+   "source_action_name": "capuchin_monkey_juvenile@climbdowntoclimbbeamonspot1",
+   "T_target": 20,
+   "motion_sha256": "8261da493921bed5299c23b125a0a07b419faffff3a7a473936acc58c539786a"
+  },
+  {
+   "clip_id": "8755e12e7de25aee01ec",
+   "rig_id": "PZ_Capuchin_Monkey_Juvenile",
+   "source_action_name": "capuchin_monkey_juvenile@climbidleverticaltoclimbdownonspot",
+   "T_target": 25,
+   "motion_sha256": "aea1ce70f6592fc489f1395ff6def8ddf3110aec9cb3424353173692dc60cc3c"
+  },
+  {
+   "clip_id": "9c62c1cfdeb61abab11c",
+   "rig_id": "PZ_Capuchin_Monkey_Juvenile",
+   "source_action_name": "capuchin_monkey_juvenile@climbdownbaseonspot",
+   "T_target": 27,
+   "motion_sha256": "6cba3d6dcade82e35bc4e13a39ef96798eb139e9988e787573b8eb24c9502253"
+  },
+  {
+   "clip_id": "af8fad32a1d6435879d8",
+   "rig_id": "PZ_Capuchin_Monkey_Juvenile",
+   "source_action_name": "capuchin_monkey_juvenile@walktoclimbbeamonspot2",
+   "T_target": 19,
+   "motion_sha256": "d2c834e23b4e3358063da5ee05c2881faa092ef17b27406bd9f14f0c971cef8e"
+  },
+  {
+   "clip_id": "d8eb5cc6e439992f4a3e",
+   "rig_id": "PZ_Capuchin_Monkey_Male",
+   "source_action_name": "capuchin_monkey_male@jumpoutonspot",
+   "T_target": 29,
+   "motion_sha256": "2e23c38071580f09cfdde150e880fe6a74654783dfe60d591993ce9baa0acdea"
+  },
+  {
+   "clip_id": "53145f4dc7caf987ce84",
+   "rig_id": "PZ_Caracal_Juvenile",
+   "source_action_name": "caracal_juvenile@climbdowntowalk2onspot",
+   "T_target": 23,
+   "motion_sha256": "2cc13e4b251a41c0968dcc139a2d5b2a6c953abaa29f1e95412ec07c977d0fc8"
+  },
+  {
+   "clip_id": "c372d10e5bd0244ee063",
+   "rig_id": "PZ_Caracal_Juvenile",
+   "source_action_name": "caracal_juvenile@walktoclimbuponspot1",
+   "T_target": 68,
+   "motion_sha256": "1814fa40191ab9c5344f16f13689c85e230335ea74fb573fb3e47c6ac4b99c26"
+  },
+  {
+   "clip_id": "2f96c7b87003e6c3b2c9",
+   "rig_id": "PZ_Cheetah_Female",
+   "source_action_name": "cheetah_female@climbidletoclimbbeamonspot",
+   "T_target": 45,
+   "motion_sha256": "bdbc983c7908b05d9cb009b44a496de6c43e4c5ca21a66d96e18017ec87b2bfe"
+  },
+  {
+   "clip_id": "e80c143bdf155d607187",
+   "rig_id": "PZ_Cheetah_Female",
+   "source_action_name": "cheetah_female@jumpoutonspot",
+   "T_target": 45,
+   "motion_sha256": "41faa7b667cab4669517261b0ef1448f140bca740dc67e358903d89530b356c7"
+  },
+  {
+   "clip_id": "204a0b718e939bebc97e",
+   "rig_id": "PZ_Cheetah_Juvenile",
+   "source_action_name": "cheetah_juvenile@standtowalkonspot",
+   "T_target": 40,
+   "motion_sha256": "e9f8b6d91f594ed22aa6d2dd9fe0e1d1e7dce3868034c9963ab9577ade5156c5"
+  },
+  {
+   "clip_id": "f4016a3109dce44a6cfa",
+   "rig_id": "PZ_Cheetah_Male",
+   "source_action_name": "cheetah_male@swimturnr000",
+   "T_target": 90,
+   "motion_sha256": "bf44bb5b7a152b4455d60dfc537406d1f0f2731d83abd4412e4f250bb04ea353"
+  },
+  {
+   "clip_id": "14cf64f911b9e7a3a727",
+   "rig_id": "PZ_Chinese_Pangolin_Female",
+   "source_action_name": "chinese_pangolin_female@walktodrinktroughonspot",
+   "T_target": 76,
+   "motion_sha256": "471befc36d274b0201272b3263f56059f169839bcb64d46d102e3d81b931537e"
+  },
+  {
+   "clip_id": "c653a1d1cb829373642d",
+   "rig_id": "PZ_Chinese_Pangolin_Juvenile",
+   "source_action_name": "chinese_pangolin_juvenile@walktodrinktroughonspot",
+   "T_target": 83,
+   "motion_sha256": "46111501578d22f10da226e454437a93346eec986dbae3fe0b89458340ba0f7c"
+  },
+  {
+   "clip_id": "410b3e47039bac124f42",
+   "rig_id": "PZ_Chinese_Pangolin_Male",
+   "source_action_name": "chinese_pangolin_male@swimturnr000",
+   "T_target": 159,
+   "motion_sha256": "0239e4043d3a679e575d98a32c5b731bfe57fb58c7d524f076f1a6daf62704a6"
+  },
+  {
+   "clip_id": "013db2deab270bcc3405",
+   "rig_id": "PZ_Clouded_Leopard_Female",
+   "source_action_name": "clouded_leopard_female@jumpoutonspot",
+   "T_target": 45,
+   "motion_sha256": "a9e58a54f7ea4b43ad6eb06d64a6ef2c707f2d268f890a36bdeaa38f4884885c"
+  },
+  {
+   "clip_id": "d3bf14c3085af47cf513",
+   "rig_id": "PZ_Clouded_Leopard_Female",
+   "source_action_name": "clouded_leopard_female@swimtreadwatertoswimbaseonspot",
+   "T_target": 45,
+   "motion_sha256": "0fa0cb43355d2ec20ba82afbd4c497a2690f9a56b4f634e2d2f650fb443535d6"
+  },
+  {
+   "clip_id": "0226b9727dbf3fd15d25",
+   "rig_id": "PZ_Clouded_Leopard_Juvenile",
+   "source_action_name": "clouded_leopard_juvenile@walktoeatonspot",
+   "T_target": 64,
+   "motion_sha256": "8835c400957dbf958c6f7ef3311b41966d9c2935cf0812f12a9200a6d013511e"
+  },
+  {
+   "clip_id": "1350e362d0958612ed0f",
+   "rig_id": "PZ_Clouded_Leopard_Juvenile",
+   "source_action_name": "clouded_leopard_juvenile@swimtreadwatertoswimbaseonspot",
+   "T_target": 37,
+   "motion_sha256": "ce2004f4ee6e39f5b5bdd4204799451015f769cf92ca65bc5932745d0e01c47b"
+  },
+  {
+   "clip_id": "da72c3a2804b90bd0f01",
+   "rig_id": "PZ_Clouded_Leopard_Juvenile",
+   "source_action_name": "clouded_leopard_juvenile@jump5monspot",
+   "T_target": 105,
+   "motion_sha256": "cf197cb45a983e7663cd1e39f2cfda7472000667088e8b1abaef5e1bc7a22230"
+  },
+  {
+   "clip_id": "5873791b16e5fa88ceba",
+   "rig_id": "PZ_Clouded_Leopard_Male",
+   "source_action_name": "clouded_leopard_male@climbuptoclimbdownonspot2",
+   "T_target": 46,
+   "motion_sha256": "02288012bf5f3ed91778164a5b6dc382c00516bdb7659351fbd2ade8d107050e"
+  },
+  {
+   "clip_id": "b0bf6f114cc054ae4d0d",
+   "rig_id": "PZ_Common_Warthog_Male",
+   "source_action_name": "common_warthog_male@walktodrinkonspot",
+   "T_target": 67,
+   "motion_sha256": "d44aaa639874c99513396b860f7cae5523103ca8fd674882118ecb4ee38dad46"
+  },
+  {
+   "clip_id": "5c5e4e2aa2d5778d30a3",
+   "rig_id": "PZ_Cougar_Female",
+   "source_action_name": "cougar_female@climbbeamtowalkonspot1",
+   "T_target": 34,
+   "motion_sha256": "e46f527f5624ec80adf4d1b5e8666efc0a01adf4fbf6f8e5f551610c4a924f85"
+  },
+  {
+   "clip_id": "6ab3a1ef58acd98ace52",
+   "rig_id": "PZ_Cougar_Female",
+   "source_action_name": "cougar_female@climbbeamonspot",
+   "T_target": 34,
+   "motion_sha256": "fb252210c38287f4269c4c929d245b2176db252ab32b14e657d4e7b3d4cae79f"
+  },
+  {
+   "clip_id": "cbb33dd7f50eea7b7978",
+   "rig_id": "PZ_Cougar_Female",
+   "source_action_name": "cougar_female@swimtreadwatertoswimbaseonspot",
+   "T_target": 54,
+   "motion_sha256": "b4feb106065a008aca53fa116f071fcb4dfa7f7a6115f8d52bea081ddcfc5554"
+  },
+  {
+   "clip_id": "72897164dce6c6bcd22e",
+   "rig_id": "PZ_Cougar_Juvenile",
+   "source_action_name": "cougar_juvenile@swimtreadwater",
+   "T_target": 28,
+   "motion_sha256": "893c14f991d2e03cfe5d51d0df2a7a9d95ee90d7b1962ac505a38d7076ed475c"
+  },
+  {
+   "clip_id": "5ea88c664048e96bd9f3",
+   "rig_id": "PZ_Cougar_Male",
+   "source_action_name": "cougar_male@standturnr000",
+   "T_target": 64,
+   "motion_sha256": "b10fcc35778c46c1322e67e55e772f59d88d8f849474c33686a7f96e6d1b22a4"
+  },
+  {
+   "clip_id": "ac49e5c1cac8b03d6942",
+   "rig_id": "PZ_Cougar_Male",
+   "source_action_name": "cougar_male@standturnl000",
+   "T_target": 54,
+   "motion_sha256": "e96f2979d8963479107b86e307abbd499772521adf27092b263ca7e2496bfee9"
+  },
+  {
+   "clip_id": "f8210aebeae6460b5c13",
+   "rig_id": "PZ_Cougar_Male",
+   "source_action_name": "cougar_male@swimbaseonspot",
+   "T_target": 40,
+   "motion_sha256": "c2479c9b6a35432d79c605b88741c140d3b2faef6fe08ea7591cb391bc1d4d83"
+  },
+  {
+   "clip_id": "185fc764b002b57072a7",
+   "rig_id": "PZ_Cuviers_Dwarf_Caiman_Juvenile",
+   "source_action_name": "cuviers_dwarf_caiman_juvenile@walkbaseonspot",
+   "T_target": 38,
+   "motion_sha256": "aea235881cb58be60b803eb613c091b6e01f8af9b8b36b6cb76aefd4281dd036"
+  },
+  {
+   "clip_id": "a0db0c6df8a82f9fd3f4",
+   "rig_id": "PZ_Cuviers_Dwarf_Caiman_Juvenile",
+   "source_action_name": "cuviers_dwarf_caiman_juvenile@standpoop",
+   "T_target": 207,
+   "motion_sha256": "1845022829528f8d78c8f0bf34499a1f739ce0a1031dabb5b09f206439b776ab"
+  },
+  {
+   "clip_id": "c7d179d42a79c76468f4",
+   "rig_id": "PZ_Cuviers_Dwarf_Caiman_Juvenile",
+   "source_action_name": "cuviers_dwarf_caiman_juvenile@standpoop",
+   "T_target": 207,
+   "motion_sha256": "1845022829528f8d78c8f0bf34499a1f739ce0a1031dabb5b09f206439b776ab"
+  },
+  {
+   "clip_id": "606f7c132ccbe94a603b",
+   "rig_id": "PZ_Dall_Sheep_Juvenile",
+   "source_action_name": "dall_sheep_juvenile@standturnl000",
+   "T_target": 72,
+   "motion_sha256": "dd8fa2a4e8e19b4715c8afb097d3d8ad7e24dc8851f8e2be80466cf237359406"
+  },
+  {
+   "clip_id": "869cb3978f8eaef4a822",
+   "rig_id": "PZ_Dama_Gazelle_Female",
+   "source_action_name": "dama_gazelle_female@jumptoswimonspot",
+   "T_target": 47,
+   "motion_sha256": "5f0e97b038ddbaf6b0c8fe450618140dcd19fcd787bed5e1b74aa93317b17747"
+  },
+  {
+   "clip_id": "5b841cefb298066f6714",
+   "rig_id": "PZ_Dama_Gazelle_Male",
+   "source_action_name": "dama_gazelle_male@fightreact",
+   "T_target": 185,
+   "motion_sha256": "ea83583bec527472b568b1c2f0c9548fc7c7b10e3b48d4b1bea9989fe518806a"
+  },
+  {
+   "clip_id": "7abd612a159259b5a5cd",
+   "rig_id": "PZ_Dama_Gazelle_Male",
+   "source_action_name": "dama_gazelle_male@fightreact",
+   "T_target": 185,
+   "motion_sha256": "ea83583bec527472b568b1c2f0c9548fc7c7b10e3b48d4b1bea9989fe518806a"
+  },
+  {
+   "clip_id": "15d985050d39177f16e8",
+   "rig_id": "PZ_Dhole_Female",
+   "source_action_name": "dhole_female@walktoswimonspot",
+   "T_target": 34,
+   "motion_sha256": "97a58ce78caee9606469de88af963b6d744e1dd3dff9464c97f5e8380f0bd95d"
+  },
+  {
+   "clip_id": "74a0c14f48d7bd561961",
+   "rig_id": "PZ_Dhole_Female",
+   "source_action_name": "dhole_female@swimturnr000",
+   "T_target": 82,
+   "motion_sha256": "302aa1037ab75508b94779edcfe6a4ad3b2069b330e23c15ace51c92dce36bf0"
+  },
+  {
+   "clip_id": "b7cd3218a93f6eb750e0",
+   "rig_id": "PZ_Dhole_Juvenile",
+   "source_action_name": "dhole_juvenile@standdie",
+   "T_target": 200,
+   "motion_sha256": "635e69595389d6d18c184a53c8625df62eaf40fddf0f46d2cb52fb826ae50dc4"
+  },
+  {
+   "clip_id": "f347f8d2a03fb9be9a97",
+   "rig_id": "PZ_Dhole_Male",
+   "source_action_name": "dhole_male@walktodrinkturnr",
+   "T_target": 91,
+   "motion_sha256": "729174b6a95fb717d483b912f06c47441e4687c53bf4798ca0d284ad119a3a9c"
+  },
+  {
+   "clip_id": "804add5a8cd650876fdd",
+   "rig_id": "PZ_Dingo_Female",
+   "source_action_name": "dingo_female@swimtreadwatertoswimbaseonspot",
+   "T_target": 51,
+   "motion_sha256": "6086d6fd4464b061a0e9e2996e006f028b23055525dcdfdb322a838a65f21e49"
+  },
+  {
+   "clip_id": "9d5c9c86336476d7eb44",
+   "rig_id": "PZ_Dingo_Female",
+   "source_action_name": "dingo_female@swimtreadwatertoswimbaseturnr",
+   "T_target": 51,
+   "motion_sha256": "1ba9a0b433abe809769e472c8ffdca933529358a260e62a3ddaafe9a5e0b0af2"
+  },
+  {
+   "clip_id": "a773bf221979de3932da",
+   "rig_id": "PZ_Dingo_Female",
+   "source_action_name": "dingo_female@jumpin",
+   "T_target": 23,
+   "motion_sha256": "d5293865a67e06aeb4feaab6ee42cd4de1e103eacfbc53ad296b15675407370b"
+  },
+  {
+   "clip_id": "3fc0a1d762a49666bdf6",
+   "rig_id": "PZ_Dingo_Juvenile",
+   "source_action_name": "dingo_juvenile@walktoeatonspot",
+   "T_target": 57,
+   "motion_sha256": "9b962bc4ed11c64b0a17f0f4f7fab254f85f6ccb1651a1336a2f86221fcbef9e"
+  },
+  {
+   "clip_id": "5be4dd1dfeb64e9b4fdf",
+   "rig_id": "PZ_Dingo_Juvenile",
+   "source_action_name": "dingo_juvenile@swimbasetoswimtreadwater",
+   "T_target": 57,
+   "motion_sha256": "bd6c848657bfbf444376a43c8d39484983f57a25f7fe0988efe72638d439b5f5"
+  },
+  {
+   "clip_id": "6989a978242873556d9a",
+   "rig_id": "PZ_Dingo_Juvenile",
+   "source_action_name": "dingo_juvenile@walktostandonspot",
+   "T_target": 46,
+   "motion_sha256": "338a1360ecafb8bb1fcc08b3ad020b24fb38e193213f53e1e029ce8c52e41c94"
+  },
+  {
+   "clip_id": "38e1df4377c7205b9fc8",
+   "rig_id": "PZ_Dromedary_Camel_Female",
+   "source_action_name": "dromedary_camel_female@walktostandonspot",
+   "T_target": 120,
+   "motion_sha256": "c5f1d0943a08b63b9a1f57122fec4d7f671cf1e789b0850771cb4d78e5d10277"
+  },
+  {
+   "clip_id": "ee686e584956f3a8d0ea",
+   "rig_id": "PZ_Dromedary_Camel_Female",
+   "source_action_name": "dromedary_camel_female@runtowalkonspot",
+   "T_target": 45,
+   "motion_sha256": "a914ccdcb602b3f78a0c07ace8a8c9c0d5f8454800a8458f9631e872057db5b9"
+  },
+  {
+   "clip_id": "97583ae005bf5bd5727e",
+   "rig_id": "PZ_Dromedary_Camel_Juvenile",
+   "source_action_name": "dromedary_camel_juvenile@sleeptorest",
+   "T_target": 135,
+   "motion_sha256": "0f280ed5685dbea4667a4a357de456d19bb9066a52d76aac1f6ccb44dc2c366c"
+  },
+  {
+   "clip_id": "cf2e5d6623038b087e7e",
+   "rig_id": "PZ_Dromedary_Camel_Juvenile",
+   "source_action_name": "dromedary_camel_juvenile@standturnl000",
+   "T_target": 100,
+   "motion_sha256": "d6cbad7dd111d2fa52fe840db6ce9c4ed6ec770117167c91f55e75193aa54808"
+  },
+  {
+   "clip_id": "f86f66e073c3f65240d0",
+   "rig_id": "PZ_Dromedary_Camel_Male",
+   "source_action_name": "dromedary_camel_male@swimtowalkonspot",
+   "T_target": 36,
+   "motion_sha256": "8fb852cdb06e08a6c3a8c6e2ad5cf57811be08005b9c76a8c4c0ef4bfa310fd0"
+  },
+  {
+   "clip_id": "e2548c93eb955b50b328",
+   "rig_id": "PZ_Eurasian_Lynx_Female",
+   "source_action_name": "eurasian_lynx_female@standtowalkonspot",
+   "T_target": 44,
+   "motion_sha256": "c4b9fe127d3aadf4b87dc01edbeb425a5a2d8e88638cb75dc16cb2addc4def0b"
+  },
+  {
+   "clip_id": "006fa56ba90928d76ceb",
+   "rig_id": "PZ_Eurasian_Lynx_Male",
+   "source_action_name": "eurasian_lynx_male@walktorunonspot",
+   "T_target": 21,
+   "motion_sha256": "6009e0313b016b85fdc877d3c2d2468e1c362ea2843a6e5ffae44804ef353a31"
+  },
+  {
+   "clip_id": "4c1e6d8f8106ef8a93f1",
+   "rig_id": "PZ_Eurasian_Lynx_Male",
+   "source_action_name": "eurasian_lynx_male@deepswimidle",
+   "T_target": 140,
+   "motion_sha256": "e35692a1adaa95e596b22c90a777ae3f84f2cbff14bd33787a32db35f347b7fc"
+  },
+  {
+   "clip_id": "d1a321aa9ff12fd66dee",
+   "rig_id": "PZ_Eurasian_Lynx_Male",
+   "source_action_name": "eurasian_lynx_male@climbbeamtoclimbdownonspot2",
+   "T_target": 30,
+   "motion_sha256": "3de45f5987079332a48ae0a1f026e39c20b3fa59ab77a0e48dae603cf418e578"
+  },
+  {
+   "clip_id": "54a66258533d9d6624dd",
+   "rig_id": "PZ_European_Badger_Juvenile",
+   "source_action_name": "european_badger_juvenile@swimtowalkonspot",
+   "T_target": 29,
+   "motion_sha256": "ad50854451aad311cc644f9596c6ced0e2c0b499982e6023f28c26d10ae5eaa5"
+  },
+  {
+   "clip_id": "0890782d811db7502bb3",
+   "rig_id": "PZ_European_Badger_Male",
+   "source_action_name": "european_badger_male@walktoeatonspot",
+   "T_target": 49,
+   "motion_sha256": "e712a0eb4155a2663e2af073273f7b1e9b1820ab8ee98b071c9fdc26b0e9b7e5"
+  },
+  {
+   "clip_id": "0efa6e59d13a718ac922",
+   "rig_id": "PZ_European_Badger_Male",
+   "source_action_name": "european_badger_male@climbbeam",
+   "T_target": 24,
+   "motion_sha256": "3a4217c5025970a3e7453cc9121cd904aadf09f0b3a12068c6057242ea279d89"
+  },
+  {
+   "clip_id": "5cb2b8f80a12f7404e9e",
+   "rig_id": "PZ_European_Badger_Male",
+   "source_action_name": "european_badger_male@climbbeam",
+   "T_target": 24,
+   "motion_sha256": "0d98e4167cf2c4a4681415a07590d0a4cd6788cbc8570e1e8f0a10f1fd8f643d"
+  },
+  {
+   "clip_id": "951e95ac61a7e214a8a9",
+   "rig_id": "PZ_European_Fallow_Deer_Female",
+   "source_action_name": "european_fallow_deer_female@walktoswimonspot",
+   "T_target": 30,
+   "motion_sha256": "86af29441ad7c60cbb8d29a8a3292d2038437750aa24de7c3a2fce63bf86bc98"
+  },
+  {
+   "clip_id": "83fe71aef76bd5089499",
+   "rig_id": "PZ_European_Fallow_Deer_Male",
+   "source_action_name": "european_fallow_deer_male@standturnl000",
+   "T_target": 95,
+   "motion_sha256": "17cc6dfd67e9100f293234070a20aa2f88b4a4f43b266b582185c2d91bcf9182"
+  },
+  {
+   "clip_id": "5102aa22166215c35ebf",
+   "rig_id": "PZ_Fennec_Fox_Female",
+   "source_action_name": "fennec_fox_female@drinktostand",
+   "T_target": 47,
+   "motion_sha256": "27281dd3f98c0f51a3e9e2329ccafcb1202c06ee162f5ba737271896fca8fdec"
+  },
+  {
+   "clip_id": "2fb48bf144d35eb2410e",
+   "rig_id": "PZ_Fennec_Fox_Male",
+   "source_action_name": "fennec_fox_male@resttosleep",
+   "T_target": 95,
+   "motion_sha256": "5365c8f9e9cdd9540cef07bc667ff8456f172543afd2881e51890298182db117"
+  },
+  {
+   "clip_id": "3306c13329a85417a1ea",
+   "rig_id": "PZ_Fossa_Juvenile",
+   "source_action_name": "fossa_juvenile@climbuptowalkonspot2",
+   "T_target": 31,
+   "motion_sha256": "c72e670234a6f3cc02044ac8ca95f7ca73093057206db45c2e3748f21cc4acc8"
+  },
+  {
+   "clip_id": "5883140db0aa74a739ef",
+   "rig_id": "PZ_Fossa_Juvenile",
+   "source_action_name": "fossa_juvenile@walktoclimbdown2onspot",
+   "T_target": 25,
+   "motion_sha256": "5ceeb3f9d7cd786b0587ea3bdb0361654dfed4abd9538fb9329d9d3bf5aae724"
+  },
+  {
+   "clip_id": "d26f2f6cf3c7693cf1ea",
+   "rig_id": "PZ_Fossa_Juvenile",
+   "source_action_name": "fossa_juvenile@swimturnr000",
+   "T_target": 61,
+   "motion_sha256": "708849f3868146732af4386f213fc7fb1489e45b15fd933c4ec4c55f03b2022c"
+  },
+  {
+   "clip_id": "347b2581486acf16d3fd",
+   "rig_id": "PZ_Galapagos_Giant_Tortoise_Juvenile",
+   "source_action_name": "galapagos_giant_tortoise_juvenile@runtowalkonspot",
+   "T_target": 87,
+   "motion_sha256": "91af0c43b2d06c19e2283a0df4a045857ae62c9542bcfc938d46a0e31af1b3ef"
+  },
+  {
+   "clip_id": "53e21a319a895f0fd507",
+   "rig_id": "PZ_Gemsbok_Female",
+   "source_action_name": "gemsbok_female@standturnl000",
+   "T_target": 110,
+   "motion_sha256": "ba78ac6c4e647d2673df1cb93a97d7903300b710d1d4751a23143fb302089f97"
+  },
+  {
+   "clip_id": "b867a1638df3dd8bd452",
+   "rig_id": "PZ_Gemsbok_Juvenile",
+   "source_action_name": "gemsbok_juvenile@resttostand",
+   "T_target": 165,
+   "motion_sha256": "8e27b19c000f2a5990eca41feb09033d895341c4d972c2f2db6258447de9b17e"
+  },
+  {
+   "clip_id": "6b8004988d98b47396f9",
+   "rig_id": "PZ_Gharial_Female",
+   "source_action_name": "gharial_female@swimbasetoswimtreadwateronspot",
+   "T_target": 98,
+   "motion_sha256": "4d8587818d1bd9fd6215f45772d61497da8436eae973209bcf68afca0db3dee6"
+  },
+  {
+   "clip_id": "8f3b9cb436396f3c5920",
+   "rig_id": "PZ_Gharial_Female",
+   "source_action_name": "gharial_female@standturnl000",
+   "T_target": 114,
+   "motion_sha256": "5a153f11b7884f013df8c9ad6c72267ce64d51952ad1fb7f2ff093ff0c94e821"
+  },
+  {
+   "clip_id": "3f9b9c593e7c226b876c",
+   "rig_id": "PZ_Gharial_Male",
+   "source_action_name": "gharial_male@swimbasetoswimtreadwaterturnr",
+   "T_target": 132,
+   "motion_sha256": "eedb6e63ce4ea3cbb515ed4750e87c1cad075f19cbf1d485d2553855fcdc6a98"
+  },
+  {
+   "clip_id": "cb6cfe73503d961c1bb7",
+   "rig_id": "PZ_Gharial_Male",
+   "source_action_name": "gharial_male@swimbaseturnl",
+   "T_target": 52,
+   "motion_sha256": "8f5ee1929026650e646e01a0422781b8682aebf4a54c93dc094c091191cb954f"
+  },
+  {
+   "clip_id": "dcf3d7906ad92bdcb1b0",
+   "rig_id": "PZ_Giant_Anteater_Female",
+   "source_action_name": "giant_anteater_female@swimtreadwatertoswimbaseonspot",
+   "T_target": 80,
+   "motion_sha256": "5f71fadbe0e38b8ab755071582bbe692b29b6ddd4057a0d93ff221ebe409f447"
+  },
+  {
+   "clip_id": "7d8ca250986a413f3951",
+   "rig_id": "PZ_Giant_Anteater_Juvenile",
+   "source_action_name": "giant_anteater_juvenile@walktoeatonspot",
+   "T_target": 61,
+   "motion_sha256": "4fc17a4e00e002bd94dbecf4e9ab7bb887973ed191d481d24526e9af67b3578f"
+  },
+  {
+   "clip_id": "201bde271e7b6996f903",
+   "rig_id": "PZ_Giant_Anteater_Male",
+   "source_action_name": "giant_anteater_male@swimtowalkonspot",
+   "T_target": 45,
+   "motion_sha256": "d07969d8aa90ab6f4fc129ec1561262b548a1614699873589b2720fc9b5c0d79"
+  },
+  {
+   "clip_id": "4868eabd43a131694518",
+   "rig_id": "PZ_Giant_Anteater_Male",
+   "source_action_name": "giant_anteater_male@drinktostand",
+   "T_target": 61,
+   "motion_sha256": "feace154aca219c7aec2a9bd943ee82b53ceb9ca8d31070f43cf9b4f2691fc40"
+  },
+  {
+   "clip_id": "bb58af021b2723cf7684",
+   "rig_id": "PZ_Giant_Anteater_Male",
+   "source_action_name": "giant_anteater_male@swimbaseturnl",
+   "T_target": 60,
+   "motion_sha256": "8f0e2d69da9cf8385b7dd4919e22acd62743b06fd6b6abcc354e6da725b7cb93"
+  },
+  {
+   "clip_id": "e8995bb1265012c6f22f",
+   "rig_id": "PZ_Giant_Anteater_Male",
+   "source_action_name": "giant_anteater_male@fighttauntreact",
+   "T_target": 134,
+   "motion_sha256": "9861054f8b69d24c7bfa7fbf339111c030c5383df488e3ea6111e38b07e1af8c"
+  },
+  {
+   "clip_id": "4e12b1d886e4dd1146c8",
+   "rig_id": "PZ_Giant_Otter_Female",
+   "source_action_name": "giant_otter_female@walktoeatonspot",
+   "T_target": 44,
+   "motion_sha256": "fe514e9de76315e720ae1d6ce91bcc2876a7592f7edfac9355ab572ab1fd80a9"
+  },
+  {
+   "clip_id": "4577fdcc11ed5f2f8853",
+   "rig_id": "PZ_Giant_Otter_Juvenile",
+   "source_action_name": "giant_otter_juvenile@standtodrink",
+   "T_target": 49,
+   "motion_sha256": "aa996e07b7e00141bd7a0aab73bb39a025690625563ba6273a0b631d411480b3"
+  },
+  {
+   "clip_id": "895d7d260a97fb27c487",
+   "rig_id": "PZ_Giant_Otter_Juvenile",
+   "source_action_name": "giant_otter_juvenile@swimbasetoswimtreadwateronspot",
+   "T_target": 71,
+   "motion_sha256": "02da1fa77c24b7c5a9d5ed8f12285385607c00c545f1b81e0c217cb68c4048ef"
+  },
+  {
+   "clip_id": "1a11a2d4d29bff75958a",
+   "rig_id": "PZ_Giant_Otter_Male",
+   "source_action_name": "giant_otter_male@swimtreadwater",
+   "T_target": 53,
+   "motion_sha256": "cf00e3a3bd3fb9041fa29048ba03260c608780596f5436ada3a418503360bf98"
+  },
+  {
+   "clip_id": "19bd6e7796b674f5aaa5",
+   "rig_id": "PZ_Giant_Panda_Female",
+   "source_action_name": "giant_panda_female@walktostandturnl",
+   "T_target": 44,
+   "motion_sha256": "d8604c82c483136b68837c1025877fcc61b42ba09f97089718acf5a0c9e5388b"
+  },
+  {
+   "clip_id": "303c567c98972ea7ba27",
+   "rig_id": "PZ_Giant_Panda_Female",
+   "source_action_name": "giant_panda_female@attackfence",
+   "T_target": 203,
+   "motion_sha256": "649788a1ac371849ef5489a763eddf1e476642a12787aca54f7f82c5c1603534"
+  },
+  {
+   "clip_id": "472a41ed0f5ee88a8c82",
+   "rig_id": "PZ_Giant_Panda_Female",
+   "source_action_name": "giant_panda_female@walktoclimbdownonspot1",
+   "T_target": 74,
+   "motion_sha256": "e81c1a0a9f6ed6a1d78aa035a2069516abac8cf372a553253c7fa26f61655a8e"
+  },
+  {
+   "clip_id": "3be23e2ba1edde0acc96",
+   "rig_id": "PZ_Giant_Panda_Juvenile",
+   "source_action_name": "giant_panda_juvenile@climbidletoclimbbeamturnl",
+   "T_target": 44,
+   "motion_sha256": "ad7e3632568fc2fc5f8bebd60f96d7aff9a749d4ddfa35dc1a7944180056d2c0"
+  },
+  {
+   "clip_id": "66a34ac207cc16eed1a3",
+   "rig_id": "PZ_Giant_Panda_Juvenile",
+   "source_action_name": "giant_panda_juvenile@walktorunonspot",
+   "T_target": 28,
+   "motion_sha256": "1994f7522b6cecc88b1a25d6676c5f261168fe7e13f24397a87839e4d6ff91a5"
+  },
+  {
+   "clip_id": "97cb2a6b68e3313409bd",
+   "rig_id": "PZ_Giant_Panda_Juvenile",
+   "source_action_name": "giant_panda_juvenile@climbuptowalkonspot2",
+   "T_target": 48,
+   "motion_sha256": "592100de65f60f65ad61302c75fb1812696ce5f3520cf719efb7307377f4994c"
+  },
+  {
+   "clip_id": "bc263b00f4161c73c207",
+   "rig_id": "PZ_Giant_Panda_Juvenile",
+   "source_action_name": "giant_panda_juvenile@climbuponspot",
+   "T_target": 25,
+   "motion_sha256": "b118238a4b1b357b2461146cd6729f6b59fc6af96d0c1ab629ca02e7938b77da"
+  },
+  {
+   "clip_id": "15f96ebfc8e92be8f064",
+   "rig_id": "PZ_Giant_Panda_Male",
+   "source_action_name": "giant_panda_male@climbbeamtoclimbuponspot2",
+   "T_target": 22,
+   "motion_sha256": "36fd7d55e940fcfa57ffde56e728064c85397b8155e34c1352225245b3aac046"
+  },
+  {
+   "clip_id": "49c417f7750081009f9e",
+   "rig_id": "PZ_Giant_Panda_Male",
+   "source_action_name": "giant_panda_male@walktoclimbuponspot2",
+   "T_target": 22,
+   "motion_sha256": "11662a8782c757839c673e493d4a904a152e33ba4825ca0ffd3f27d071542653"
+  },
+  {
+   "clip_id": "326be1aa3f986318f8a0",
+   "rig_id": "PZ_Gray_Wolf_Female",
+   "source_action_name": "gray_wolf_female@jumpoutonspot",
+   "T_target": 52,
+   "motion_sha256": "73c9db3a49d428a90d8e116e292c19e21840cd2ba64d1b11bd05367a89e85498"
+  },
+  {
+   "clip_id": "82c52ff97dbea103f10f",
+   "rig_id": "PZ_Gray_Wolf_Female",
+   "source_action_name": "gray_wolf_female@walktoeatonspot",
+   "T_target": 86,
+   "motion_sha256": "27204691d3174d94f6420151db2657931a1095db08206476856d5c189cde8ef6"
+  },
+  {
+   "clip_id": "00e12a620753b590f2bb",
+   "rig_id": "PZ_Gray_Wolf_Juvenile",
+   "source_action_name": "gray_wolf_juvenile@restdie",
+   "T_target": 71,
+   "motion_sha256": "3368f803496d2c72845e9d7cea53daadd980ca290ac1fa6cd94cdcc2ecf8bd0e"
+  },
+  {
+   "clip_id": "500d4d8163a4d36c3325",
+   "rig_id": "PZ_Gray_Wolf_Juvenile",
+   "source_action_name": "gray_wolf_juvenile@standtorest",
+   "T_target": 137,
+   "motion_sha256": "f3c8d9bb3d4dd4a1eaecbc9e793c4fc4cd6842e88794829dc5e4553bee514387"
+  },
+  {
+   "clip_id": "e722b6299de8d2ad2fb4",
+   "rig_id": "PZ_Gray_Wolf_Male",
+   "source_action_name": "gray_wolf_male@swimbaseonspot",
+   "T_target": 20,
+   "motion_sha256": "71839e5c480ec516b88263e59932d10a46f13d2f3143c9f48633b9369b62ba01"
+  },
+  {
+   "clip_id": "c9a3e094b437cea0431e",
+   "rig_id": "PZ_Grey_Seal_Female",
+   "source_action_name": "grey_seal_female@walktodrink",
+   "T_target": 100,
+   "motion_sha256": "0715d23ed3dad99b7d3b18746b5bb675786871a5fa225ae1553be69c789bb599"
+  },
+  {
+   "clip_id": "82743d9f7070130c4514",
+   "rig_id": "PZ_Grey_Seal_Male",
+   "source_action_name": "grey_seal_male@standturnl000",
+   "T_target": 90,
+   "motion_sha256": "690aefedd25a5af92298bcf5b33fb7807993cffe4078ad4c9bc5bebd9b9077a8"
+  },
+  {
+   "clip_id": "331768519b7971276ccd",
+   "rig_id": "PZ_Highland_Cattle_Juvenile",
+   "source_action_name": "highland_cattle_juvenile@swimtowalkonspot",
+   "T_target": 26,
+   "motion_sha256": "673243f0d7e6f78d8d19d5f292351b630ac6b4b227aed7e3f6f8bc41aa8fe79e"
+  },
+  {
+   "clip_id": "6c983fbefa8bcecca973",
+   "rig_id": "PZ_Highland_Cattle_Juvenile",
+   "source_action_name": "highland_cattle_juvenile@standturnl000",
+   "T_target": 80,
+   "motion_sha256": "a13efaf1bc0d8427e7136c7c9e8ddee56191e369da62acb5bb3ca7b3df547374"
+  },
+  {
+   "clip_id": "9acea6ac777114e46c59",
+   "rig_id": "PZ_Highland_Cattle_Juvenile",
+   "source_action_name": "highland_cattle_juvenile@standtorunonspot",
+   "T_target": 47,
+   "motion_sha256": "4011d23eae0623f0efef265ba462015e5dab36554d056662eefe4342caa532ed"
+  },
+  {
+   "clip_id": "9138c8fb96d2734aec64",
+   "rig_id": "PZ_Highland_Cattle_Male",
+   "source_action_name": "highland_cattle_male@standturnr000",
+   "T_target": 100,
+   "motion_sha256": "36e71b93d5168eaf8d78821641313657920f7c2d21f96676948fcb8b6896091f"
+  },
+  {
+   "clip_id": "dfeb287103156f679226",
+   "rig_id": "PZ_Highland_Cattle_Male",
+   "source_action_name": "highland_cattle_male@jumpoutonspot",
+   "T_target": 46,
+   "motion_sha256": "133e51908826e19e4e02faf5c39d83168990876c78fbc05c44dd0cee27527e9f"
+  },
+  {
+   "clip_id": "8179153854c4d771ac33",
+   "rig_id": "PZ_Hill_Radnor_Sheep_Juvenile",
+   "source_action_name": "hill_radnor_sheep_juvenile@standtorunonspot",
+   "T_target": 37,
+   "motion_sha256": "5a0549e9bc31c40eef902bad8faaa2e4bac76b7ccfa1f4ed074680835fb34fb0"
+  },
+  {
+   "clip_id": "c021e37bca818da000f1",
+   "rig_id": "PZ_Hill_Radnor_Sheep_Male",
+   "source_action_name": "hill_radnor_sheep_male@runtostandonspot",
+   "T_target": 68,
+   "motion_sha256": "2a59a41fcc75d1ccda07c8e5f7c6c33f7c73dec88b7f5c019a9a15cb69c877cf"
+  },
+  {
+   "clip_id": "1afe554086210b44fef9",
+   "rig_id": "PZ_Hippopotamus_Female",
+   "source_action_name": "hippopotamus_female@swimlowtreadwatertoswimlowbase",
+   "T_target": 191,
+   "motion_sha256": "9f9a8afd7f55186f8e73c9a814bb7a87e5ff0f191925da89d7541bf23ea3d812"
+  },
+  {
+   "clip_id": "2542dc074cc1ee5b4a5b",
+   "rig_id": "PZ_Hippopotamus_Female",
+   "source_action_name": "hippopotamus_female@runtostandonspot",
+   "T_target": 52,
+   "motion_sha256": "6a1d8300a1f6639ffb7eaa0cc3888368914d75bdf958d74b5181c9844d379eed"
+  },
+  {
+   "clip_id": "8f8b09afcaf03a8ad434",
+   "rig_id": "PZ_Hippopotamus_Female",
+   "source_action_name": "hippopotamus_female@jumptoswimonspot",
+   "T_target": 45,
+   "motion_sha256": "ae3519cbba341e7b816c6e91f2a72eefc83b0e8ac358f06fd81ec290ff24b4bd"
+  },
+  {
+   "clip_id": "7b9e8a65048f8492df41",
+   "rig_id": "PZ_Hippopotamus_Juvenile",
+   "source_action_name": "hippopotamus_juvenile@swimbasetoswimtreadwaterturnl",
+   "T_target": 70,
+   "motion_sha256": "5837b0e6c0854b9d5f1eebf6ceecbde7ea0074f1ff608edd9d54c1d64323af2d"
+  },
+  {
+   "clip_id": "8ea5cd589e21d0113608",
+   "rig_id": "PZ_Hippopotamus_Male",
+   "source_action_name": "hippopotamus_male@walkbaseonspot",
+   "T_target": 40,
+   "motion_sha256": "0ee91bb69d59aaded6fdc7d21f5c244953f21701fd261b55d58540d1be262bfd"
+  },
+  {
+   "clip_id": "a17d2645801ebdcb5623",
+   "rig_id": "PZ_Hippopotamus_Male",
+   "source_action_name": "hippopotamus_male@walktostandonspot",
+   "T_target": 94,
+   "motion_sha256": "94f04ed3e7ef5352c4afbcb8142f499ba8a1e39518346f9e705d9ae82b849b00"
+  },
+  {
+   "clip_id": "c32ca83392277e36508c",
+   "rig_id": "PZ_Indian_Elephant_Female",
+   "source_action_name": "indian_elephant_female@swimturnr000",
+   "T_target": 240,
+   "motion_sha256": "9d0cfd33d4891d02e69bbe001e1eac0b180e89c84fa1b4ad64728cace7eb93ff"
+  },
+  {
+   "clip_id": "2f6de8cc6837ce485b93",
+   "rig_id": "PZ_Indian_Rhinoceros_Female",
+   "source_action_name": "indian_rhinoceros_female@standtoeat",
+   "T_target": 89,
+   "motion_sha256": "4b48acdb00f8e24de4ca49f913fd188f655891e7928559ff8e84a193e79734f5"
+  },
+  {
+   "clip_id": "7c27af92395d6c9de8d5",
+   "rig_id": "PZ_Indian_Rhinoceros_Female",
+   "source_action_name": "indian_rhinoceros_female@walkbase",
+   "T_target": 74,
+   "motion_sha256": "0a972309550f482278612df6a68cb8ce87e1d58e2f0f4d1caa1444ae193c0114"
+  },
+  {
+   "clip_id": "9927c7efb99f3d385d3a",
+   "rig_id": "PZ_Indian_Rhinoceros_Female",
+   "source_action_name": "indian_rhinoceros_female@standheroresponse",
+   "T_target": 250,
+   "motion_sha256": "22bfbd7b2a2c0d20e100f435d9942d15df4d897b8d8542392135f563dd805808"
+  },
+  {
+   "clip_id": "f0944032a9473b9a7f66",
+   "rig_id": "PZ_Indian_Rhinoceros_Female",
+   "source_action_name": "indian_rhinoceros_female@restpreen01",
+   "T_target": 166,
+   "motion_sha256": "5a3b94cafb14288d29979def83dfefa5b5dd1a6d44ed073ad61cb7956b25045e"
+  },
+  {
+   "clip_id": "db46f25d10fb7f814ed8",
+   "rig_id": "PZ_Indian_Rhinoceros_Male",
+   "source_action_name": "indian_rhinoceros_male@swimbasetoswimtreadwateronspot",
+   "T_target": 72,
+   "motion_sha256": "e01d361cea0d72310c98b2c795dd06d378444c8a47fd21094599167af76c2e26"
+  },
+  {
+   "clip_id": "1521f245f46031e6103b",
+   "rig_id": "PZ_Jaguar_Female",
+   "source_action_name": "jaguar_female@climbdowntowalk2onspot",
+   "T_target": 23,
+   "motion_sha256": "47c6fc051656d0ef34ad657fdf098afee12d2dff72ee791380d40674dc62e0a4"
+  },
+  {
+   "clip_id": "df89ae8c303575dc7abb",
+   "rig_id": "PZ_Jaguar_Female",
+   "source_action_name": "jaguar_female@climbtojumponspot1",
+   "T_target": 44,
+   "motion_sha256": "77d40fa9f7cf1252f990a8d1f8244c2ff5dd82fd3583ed75fe2575e6de363d8e"
+  },
+  {
+   "clip_id": "79d6b99ba0a7a56f671e",
+   "rig_id": "PZ_Jaguar_Juvenile",
+   "source_action_name": "jaguar_juvenile@deepswimdivein",
+   "T_target": 60,
+   "motion_sha256": "7aff07a8067f560a56f44dba1c091179fe8459857edc4cc57f95bb57791baea6"
+  },
+  {
+   "clip_id": "c5f101744cd02f5f1be7",
+   "rig_id": "PZ_Jaguar_Juvenile",
+   "source_action_name": "jaguar_juvenile@swimbaseturnr",
+   "T_target": 32,
+   "motion_sha256": "65b612e4227a4ea2f794f56ef42da33b4f5985052a3a4c11085a40502bd6f463"
+  },
+  {
+   "clip_id": "d0eee3d32c4ae7625dce",
+   "rig_id": "PZ_Jaguar_Male",
+   "source_action_name": "jaguar_male@standtodrinktrough",
+   "T_target": 65,
+   "motion_sha256": "797b00c62a1a738428c06b9faee2ca75d1151af91295547608ba8fa2dc3fbf0f"
+  },
+  {
+   "clip_id": "e4b4251d59c493432227",
+   "rig_id": "PZ_Jaguar_Male",
+   "source_action_name": "jaguar_male@climbbeamtoclimbdownonspot1",
+   "T_target": 25,
+   "motion_sha256": "e9435591cdffda636faa1e653ff08079732dc05591fb662f62c29c4ccd9d5b6f"
+  },
+  {
+   "clip_id": "d9a9cfea99dd68c66cda",
+   "rig_id": "PZ_Japanese_Macaque_Female",
+   "source_action_name": "japanese_macaque_female@runtostandonspot",
+   "T_target": 59,
+   "motion_sha256": "4d6b8869f2be9523e7a0f0dcd84b7462b18c003e3aecb6e608f80a54420b6101"
+  },
+  {
+   "clip_id": "518a5b301b2003028703",
+   "rig_id": "PZ_Japanese_Macaque_Juvenile",
+   "source_action_name": "japanese_macaque_juvenile@standidle02",
+   "T_target": 180,
+   "motion_sha256": "92d83e7e8b16fa1d3f3de85eb7bca1177492f11abc2b47c3d94e640e9c71e38f"
+  },
+  {
+   "clip_id": "f7179396e4c1a96fa613",
+   "rig_id": "PZ_Japanese_Macaque_Juvenile",
+   "source_action_name": "japanese_macaque_juvenile@climbuptoclimbbeamonspot2",
+   "T_target": 21,
+   "motion_sha256": "cc96e6415240d8b8482bd68ae5e5d1b0d0ff8b7ac4228ac45b532f0322e822a3"
+  },
+  {
+   "clip_id": "ccca10d0db6a54417091",
+   "rig_id": "PZ_Komodo_Dragon_Female",
+   "source_action_name": "komodo_dragon_female@swimtowalkonspot",
+   "T_target": 48,
+   "motion_sha256": "1a9d2d21e7d3a816bc8db1c8f6f0c202ea82247b3b3160881a14608f2cb55809"
+  },
+  {
+   "clip_id": "0487720f64fffd63f39a",
+   "rig_id": "PZ_Llama_Juvenile",
+   "source_action_name": "llama_juvenile@resttostand",
+   "T_target": 108,
+   "motion_sha256": "27fc5c559ff5f4d22dae2dbe017910f6bd841b3cb72c52bbe1067820c41ce884"
+  },
+  {
+   "clip_id": "1bcac3fba34d733cf3d1",
+   "rig_id": "PZ_Llama_Juvenile",
+   "source_action_name": "llama_juvenile@walktostandonspot",
+   "T_target": 65,
+   "motion_sha256": "89a1089c6df33f0013b6b12f868d7eb1521ac7f159fa08c0a51407026116acf3"
+  },
+  {
+   "clip_id": "dab6b1050379234833ab",
+   "rig_id": "PZ_Llama_Juvenile",
+   "source_action_name": "llama_juvenile@standidle02",
+   "T_target": 244,
+   "motion_sha256": "c1fe124176f96e72726bb36a387b70e202c7d830835e67d114644e69dc7c09c9"
+  },
+  {
+   "clip_id": "dccaf2e7300aa7ee7bec",
+   "rig_id": "PZ_Llama_Juvenile",
+   "source_action_name": "llama_juvenile@walktoeatonspot",
+   "T_target": 65,
+   "motion_sha256": "fa82db9e038004cb95e171353b7f758fc3cf246a416cafb917319ea5e27a3311"
+  },
+  {
+   "clip_id": "477665ef4bc57dcb38f2",
+   "rig_id": "PZ_Mandrill_Female",
+   "source_action_name": "mandrill_female@climbtojumponspot1",
+   "T_target": 38,
+   "motion_sha256": "31a731f7a0d21a88bfb7827c54cfc2b840220670ed7d16c7d5d262b7c1191963"
+  },
+  {
+   "clip_id": "526e2cb09c3703a520ce",
+   "rig_id": "PZ_Mandrill_Female",
+   "source_action_name": "mandrill_female@runtowalkonspot",
+   "T_target": 29,
+   "motion_sha256": "02c1d99f1f3f63687760b91096898cb58e9b54791d1bc55c20a242786412357f"
+  },
+  {
+   "clip_id": "e1d30481c4e3c8f77491",
+   "rig_id": "PZ_Mandrill_Juvenile",
+   "source_action_name": "mandrill_juvenile@walktoclimbbeamonspot1",
+   "T_target": 33,
+   "motion_sha256": "f7562794375f845a659b28de21d6b0a819082bf51d271f2bcccddb9871c306d3"
+  },
+  {
+   "clip_id": "e97df16b1d1b2f3610e1",
+   "rig_id": "PZ_Mandrill_Juvenile",
+   "source_action_name": "mandrill_juvenile@standpoop01",
+   "T_target": 178,
+   "motion_sha256": "0bed91c2ef647f2ca10699fc6f6a147b7a9601cb26285f02ca2635b7e939b11a"
+  },
+  {
+   "clip_id": "2e151e62d7ad1bdef35c",
+   "rig_id": "PZ_Mandrill_Male",
+   "source_action_name": "mandrill_male@climbdowntowalkonspot2",
+   "T_target": 19,
+   "motion_sha256": "597705c554688c4a6e6ff68ce6f1c24c2c412fd691bef12015cb7d2f17ce5cb3"
+  },
+  {
+   "clip_id": "cf76d3a14b3b48560f10",
+   "rig_id": "PZ_Mandrill_Male",
+   "source_action_name": "mandrill_male@drinktroughtostand",
+   "T_target": 110,
+   "motion_sha256": "4d15fa946f58c5971cdb9f71abef96283761f4c4c27078dec11a1be20df6d486"
+  },
+  {
+   "clip_id": "52c785799d31214e8e64",
+   "rig_id": "PZ_Maned_Wolf_Juvenile",
+   "source_action_name": "maned_wolf_juvenile@walktostandturnr",
+   "T_target": 64,
+   "motion_sha256": "845a95e4facb4499d7c705068dfa8083abe63d896322fe3215bd0c0a7bcee5ff"
+  },
+  {
+   "clip_id": "593698ec1c1a59c32e33",
+   "rig_id": "PZ_Maned_Wolf_Juvenile",
+   "source_action_name": "maned_wolf_juvenile@runtowalkonspot",
+   "T_target": 44,
+   "motion_sha256": "084aea5ae7b18889c6c092b957e9ec26f7c43b7b79a6ea612e43655443d7f200"
+  },
+  {
+   "clip_id": "2d7ae4f0a3db6af67435",
+   "rig_id": "PZ_Meerkat_Juvenile",
+   "source_action_name": "meerkat_juvenile@standtofight",
+   "T_target": 34,
+   "motion_sha256": "8bd414ba5186efa0fcb3ffbfa497896338c59a600b489ab7dbd8cc09fc2ac3cc"
+  },
+  {
+   "clip_id": "ab74105526b3c93a1421",
+   "rig_id": "PZ_Meerkat_Juvenile",
+   "source_action_name": "meerkat_juvenile@standtofight",
+   "T_target": 34,
+   "motion_sha256": "8bd414ba5186efa0fcb3ffbfa497896338c59a600b489ab7dbd8cc09fc2ac3cc"
+  },
+  {
+   "clip_id": "902d86ab6914f0fc36ae",
+   "rig_id": "PZ_Nile_Lechwe_Female",
+   "source_action_name": "nile_lechwe_female@standturnl000",
+   "T_target": 100,
+   "motion_sha256": "069b2964028e278e92523d8acf66d67887602feea75c79c50cf6a3bf76786476"
+  },
+  {
+   "clip_id": "ab88a08ee66f528d5b36",
+   "rig_id": "PZ_Nile_Lechwe_Female",
+   "source_action_name": "nile_lechwe_female@runtostandonspot",
+   "T_target": 68,
+   "motion_sha256": "babcc0ee752c8237f426c31d6f2600e80c1e006c41be2c626a70134692791108"
+  },
+  {
+   "clip_id": "1fae182a2476028d0c9a",
+   "rig_id": "PZ_Nile_Lechwe_Juvenile",
+   "source_action_name": "nile_lechwe_juvenile@drinktroughtostand",
+   "T_target": 78,
+   "motion_sha256": "ba249fe883bd01ca97ec08b8d741f129dad694733c18d2bc8f78f93f4fc2f45a"
+  },
+  {
+   "clip_id": "444f510c21f614c6da52",
+   "rig_id": "PZ_Nile_Lechwe_Male",
+   "source_action_name": "nile_lechwe_male@swimtowalkonspot",
+   "T_target": 36,
+   "motion_sha256": "ca2307ad569d3d8f5d127abda2742f2f7e57fa66e9d9012b50acb41e9841c181"
+  },
+  {
+   "clip_id": "710d3aeb3bb92ee0f7cc",
+   "rig_id": "PZ_Nile_Lechwe_Male",
+   "source_action_name": "nile_lechwe_male@standturnl000",
+   "T_target": 100,
+   "motion_sha256": "87d4e8a9953135da026cd1d415a442c51615a4028f6f4d64edbde655f66f4265"
+  },
+  {
+   "clip_id": "ec7093192c7f98f4b558",
+   "rig_id": "PZ_Nile_Lechwe_Male",
+   "source_action_name": "nile_lechwe_male@swimbasetoswimtreadwateronspot",
+   "T_target": 119,
+   "motion_sha256": "fe17f5e19c964611745a38b28a3ed81e3e3bccb7010e24e60d2d56e7fde2947f"
+  },
+  {
+   "clip_id": "78fac7dfcdd8df422b2e",
+   "rig_id": "PZ_Nile_Monitor_Juvenile",
+   "source_action_name": "nile_monitor_juvenile@standtowalkonspot",
+   "T_target": 76,
+   "motion_sha256": "202ae4df5959689a59f0937f89e429e75ea287591674a1f6e5faf8b82fc51640"
+  },
+  {
+   "clip_id": "7ba177f5f444b2c51dc3",
+   "rig_id": "PZ_Nile_Monitor_Male",
+   "source_action_name": "nile_monitor_male@walktoswimonspot",
+   "T_target": 48,
+   "motion_sha256": "c17f726b75d9e248efb9385a0ececa8e5d5d79c131d1119b688159c63b3008d6"
+  },
+  {
+   "clip_id": "858a8a1b8212bbf4b902",
+   "rig_id": "PZ_North_American_Beaver_Juvenile",
+   "source_action_name": "north_american_beaver_juvenile@standtodrinktrough",
+   "T_target": 24,
+   "motion_sha256": "c9f7ab5eb52f04ea5164eff71ae75b2a9fd49710e85c0d769daa92e55ac01528"
+  },
+  {
+   "clip_id": "a52e37cf965c1cbc95e4",
+   "rig_id": "PZ_North_American_Beaver_Juvenile",
+   "source_action_name": "north_american_beaver_juvenile@swimturnl000",
+   "T_target": 62,
+   "motion_sha256": "de5e0df19e0bc5a4d72c2afbde424834ffd53121b9295b7d0ce2ab2d1ac96132"
+  },
+  {
+   "clip_id": "eb56bc4f649961a69ea6",
+   "rig_id": "PZ_Nyala_Female",
+   "source_action_name": "nyala_female@walktodrinkonspot",
+   "T_target": 70,
+   "motion_sha256": "f56b1b72bdc33ae5910e946fe9aef36df7bb6be1a321c2867c0ec46c6007efb1"
+  },
+  {
+   "clip_id": "5776a3231b0969af9ed4",
+   "rig_id": "PZ_Nyala_Juvenile",
+   "source_action_name": "nyala_juvenile@standgimmick01",
+   "T_target": 105,
+   "motion_sha256": "153a6fa6d00f0d5e3892c11eaf47ed3ff8c29778199dc6668d35328212878ae3"
+  },
+  {
+   "clip_id": "9e59219443b1e3dd15e5",
+   "rig_id": "PZ_Nyala_Juvenile",
+   "source_action_name": "nyala_juvenile@standtograze",
+   "T_target": 67,
+   "motion_sha256": "f13627cdda8c684d82604c87d94e23f4ac7840efe4f678941f299be84c2f2510"
+  },
+  {
+   "clip_id": "c7e248c37f2ef943c4a7",
+   "rig_id": "PZ_Nyala_Juvenile",
+   "source_action_name": "nyala_juvenile@standgimmick01",
+   "T_target": 105,
+   "motion_sha256": "f910d267243f2055f55f4ee51dbe0f34483b24e017569e378b0667fee69d7eef"
+  },
+  {
+   "clip_id": "f55ee17c562702ea57cc",
+   "rig_id": "PZ_Nyala_Juvenile",
+   "source_action_name": "nyala_juvenile@jumpinonspot",
+   "T_target": 28,
+   "motion_sha256": "8f54665d1349b8bf74165dcb693663ea3eae7add0d9a2ce6628eddbbd459cc9e"
+  },
+  {
+   "clip_id": "4f692782660e05a36745",
+   "rig_id": "PZ_Nyala_Male",
+   "source_action_name": "nyala_male@jumpoutonspot",
+   "T_target": 74,
+   "motion_sha256": "20d2d33e0597fcef78a88f07285a3e81ef74716153149fb1d86b96f5fb3aecc5"
+  },
+  {
+   "clip_id": "616f119e312cd7e41d15",
+   "rig_id": "PZ_Nyala_Male",
+   "source_action_name": "nyala_male@grazetostand",
+   "T_target": 96,
+   "motion_sha256": "ee80c78f091f7c863a1a0ff0aece2d44617f7620145e6bb38b887918c191564f"
+  },
+  {
+   "clip_id": "53657dcda117af5b46cb",
+   "rig_id": "PZ_Okapi_Female",
+   "source_action_name": "okapi_female@walktorunonspot",
+   "T_target": 47,
+   "motion_sha256": "89661a3ddc7569f4ce52990294aecc48c5607f5d23eed53fb65c2f23115a607f"
+  },
+  {
+   "clip_id": "7222352906216c2d171f",
+   "rig_id": "PZ_Okapi_Female",
+   "source_action_name": "okapi_female@standturnr000",
+   "T_target": 100,
+   "motion_sha256": "4bda08439ed3e2c71cc3193d3dab5871b07753d7fbb2368df36809fe6ab800a1"
+  },
+  {
+   "clip_id": "3d86d69980a82d05731b",
+   "rig_id": "PZ_Okapi_Juvenile",
+   "source_action_name": "okapi_juvenile@walkbaseonspot",
+   "T_target": 28,
+   "motion_sha256": "f95da47f0ac17070ac8b131435a692e16933a483af85afc550ee0d5bbfdec1de"
+  },
+  {
+   "clip_id": "9d71cda4082fc880fc69",
+   "rig_id": "PZ_Okapi_Juvenile",
+   "source_action_name": "okapi_juvenile@runtostandturnl",
+   "T_target": 54,
+   "motion_sha256": "f1e8c58418ca9bd4d2159581fb664f0bc66fc64a34a1aac08be1d4f861b796d9"
+  },
+  {
+   "clip_id": "fb813386c08d2ed92d0b",
+   "rig_id": "PZ_Plains_Zebra_Female",
+   "source_action_name": "plains_zebra_female@standturnl000",
+   "T_target": 100,
+   "motion_sha256": "660a656b4948cc4eb9f94cb990c3dd09a52eb026065555e859337c6fc5999715"
+  },
+  {
+   "clip_id": "8260f80e3acff0c0ffab",
+   "rig_id": "PZ_Plains_Zebra_Juvenile",
+   "source_action_name": "plains_zebra_juvenile@walktoeatonspot",
+   "T_target": 106,
+   "motion_sha256": "c56e47ec844c2295d1b0e9211d933b4bf2aa7b3dd814fcb003a2de6ccaaedbab"
+  },
+  {
+   "clip_id": "f646303736260e63266d",
+   "rig_id": "PZ_Plains_Zebra_Juvenile",
+   "source_action_name": "plains_zebra_juvenile@fightidle",
+   "T_target": 132,
+   "motion_sha256": "1d2fcf0a69aa7f7931a0bf4641c7104e4fbddb44ded6cc10e7d6f6c86b4f627b"
+  },
+  {
+   "clip_id": "53f77778c7582cd40739",
+   "rig_id": "PZ_Plains_Zebra_Male",
+   "source_action_name": "plains_zebra_male@walktostand",
+   "T_target": 81,
+   "motion_sha256": "4c58f0a2897850eb8bdc7dd785da8f62cbdbb18a50b249caf3efc6c00affa8ab"
+  },
+  {
+   "clip_id": "356deca832450fb3c737",
+   "rig_id": "PZ_Prairie_Dog_Juvenile",
+   "source_action_name": "prairie_dog_juvenile@fighttostand",
+   "T_target": 24,
+   "motion_sha256": "bd4a8bc720d34bdb72c7d0beea85e2368f1747f888f5f72aa88a93185a2a10b7"
+  },
+  {
+   "clip_id": "4862cb57a560e442b314",
+   "rig_id": "PZ_Proboscis_Monkey_Female",
+   "source_action_name": "proboscis_monkey_female@walktodrinkonspot",
+   "T_target": 67,
+   "motion_sha256": "5c2a2c51545b52319611212d534355e04558567d9aa741b911bf1c37fbc500e3"
+  },
+  {
+   "clip_id": "f0690cadeaabb0999af3",
+   "rig_id": "PZ_Proboscis_Monkey_Female",
+   "source_action_name": "proboscis_monkey_female@jumpoutonspot",
+   "T_target": 38,
+   "motion_sha256": "afedde595ae5570bccdbb1607bdf0e7492540046768c9690f61d65b9352d13c0"
+  },
+  {
+   "clip_id": "936a4b6e88ac607251b2",
+   "rig_id": "PZ_Proboscis_Monkey_Juvenile",
+   "source_action_name": "proboscis_monkey_juvenile@swimtowalkturnl",
+   "T_target": 48,
+   "motion_sha256": "5945f64ac2bfc8bf7a19fdb36332fbf8cdb11bfaa59b88ddbf47ed25cd128d2d"
+  },
+  {
+   "clip_id": "9cfec31642044f7107a1",
+   "rig_id": "PZ_Proboscis_Monkey_Juvenile",
+   "source_action_name": "proboscis_monkey_juvenile@swimturnl000",
+   "T_target": 52,
+   "motion_sha256": "783c778ad34f62649cd7ca7843c0060f0f7f458c801d87e923a641f1a4ddae34"
+  },
+  {
+   "clip_id": "b4b0a08bcba6677745b3",
+   "rig_id": "PZ_Proboscis_Monkey_Juvenile",
+   "source_action_name": "proboscis_monkey_juvenile@fighttauntreact",
+   "T_target": 127,
+   "motion_sha256": "539f6ae0956a4f5eefdd693088623e09660e6605a143185b4a52499001fe0ff8"
+  },
+  {
+   "clip_id": "e11d4b6dd6d0f02b9b1f",
+   "rig_id": "PZ_Proboscis_Monkey_Juvenile",
+   "source_action_name": "proboscis_monkey_juvenile@climbdowntoclimbuponspot2",
+   "T_target": 20,
+   "motion_sha256": "86bdeae57980b7011a1291677e086e8599b71424d9ee9989bd7e2ae7d81ea0f5"
+  },
+  {
+   "clip_id": "2665c6f4eda2b6ec179d",
+   "rig_id": "PZ_Proboscis_Monkey_Male",
+   "source_action_name": "proboscis_monkey_male@climbidletoclimbbeamturnl",
+   "T_target": 31,
+   "motion_sha256": "8c4acb6882a82ef95c41fe9928c722da757b5e8e87a141a2d723ac5dff21e5d1"
+  },
+  {
+   "clip_id": "66928e280f4b202b57d1",
+   "rig_id": "PZ_Proboscis_Monkey_Male",
+   "source_action_name": "proboscis_monkey_male@climbidletoclimbbeamturnl",
+   "T_target": 31,
+   "motion_sha256": "8c4acb6882a82ef95c41fe9928c722da757b5e8e87a141a2d723ac5dff21e5d1"
+  },
+  {
+   "clip_id": "b21d27274e319719cdf8",
+   "rig_id": "PZ_Proboscis_Monkey_Male",
+   "source_action_name": "proboscis_monkey_male@treeforagerin",
+   "T_target": 138,
+   "motion_sha256": "d88c0964b8631ff0fb0e72219c46cb366cb1914fd36668643cd609223ddddf3f"
+  },
+  {
+   "clip_id": "ef723e8bf54a777acf72",
+   "rig_id": "PZ_Proboscis_Monkey_Male",
+   "source_action_name": "proboscis_monkey_male@climbuptoclimbdown1",
+   "T_target": 33,
+   "motion_sha256": "39a4f5e42e653d075e3a23106cc00789fbcaaa51493fefa1a406e3ab330c032a"
+  },
+  {
+   "clip_id": "491977e6152e943be51e",
+   "rig_id": "PZ_Pronghorn_Antelope_Female",
+   "source_action_name": "pronghorn_antelope_female@standtowalk",
+   "T_target": 66,
+   "motion_sha256": "01f77427c0f81911819beb98cafd17e3d72a8197846fc4ea63a148405be83165"
+  },
+  {
+   "clip_id": "9b23ba535d7af034bd05",
+   "rig_id": "PZ_Pronghorn_Antelope_Female",
+   "source_action_name": "pronghorn_antelope_female@standturnl000",
+   "T_target": 83,
+   "motion_sha256": "ecdf418faa41721bbe057c1df42daa8f50db3459fa20e3a979bf1bd6aade2808"
+  },
+  {
+   "clip_id": "a0c8d30e702968a8b3e3",
+   "rig_id": "PZ_Pronghorn_Antelope_Female",
+   "source_action_name": "pronghorn_antelope_female@walktodrinkonspot",
+   "T_target": 73,
+   "motion_sha256": "dc58baf1a4de0e215fed7db7294680a533400c826b97a77861f0dbdfc673dd52"
+  },
+  {
+   "clip_id": "d00e2cce6eb41003ce5a",
+   "rig_id": "PZ_Pronghorn_Antelope_Female",
+   "source_action_name": "pronghorn_antelope_female@swimtreadwatertoswimbase",
+   "T_target": 83,
+   "motion_sha256": "0e706b984ab24a6db92c8fb48823665100ee6b3cc24b9ab4ab540dd4274dd69a"
+  },
+  {
+   "clip_id": "e98e15f95fbfb016e6e4",
+   "rig_id": "PZ_Pronghorn_Antelope_Female",
+   "source_action_name": "pronghorn_antelope_female@walktorunonspot",
+   "T_target": 41,
+   "motion_sha256": "515b5f9eca88e985a11310d6999618c8bf8de81568186f1d0e119501a46251a5"
+  },
+  {
+   "clip_id": "4b9faeb885bf0b67d735",
+   "rig_id": "PZ_Pronghorn_Antelope_Juvenile",
+   "source_action_name": "pronghorn_antelope_juvenile@jumpin",
+   "T_target": 26,
+   "motion_sha256": "81a7dfc79fd38ef728aacd422e56b5e01c81974b7594918798af389a55af22a8"
+  },
+  {
+   "clip_id": "5bd479bd1be91d309e10",
+   "rig_id": "PZ_Pronghorn_Antelope_Juvenile",
+   "source_action_name": "pronghorn_antelope_juvenile@jumpin",
+   "T_target": 26,
+   "motion_sha256": "81a7dfc79fd38ef728aacd422e56b5e01c81974b7594918798af389a55af22a8"
+  },
+  {
+   "clip_id": "9eefedbf66a43ff4c26a",
+   "rig_id": "PZ_Pronghorn_Antelope_Juvenile",
+   "source_action_name": "pronghorn_antelope_juvenile@swimtowalkturnl",
+   "T_target": 31,
+   "motion_sha256": "f0f19b3a18b1f861b85d184ffdad55380a6ef15c372d8d77b7a47621863502a2"
+  },
+  {
+   "clip_id": "dfd032ca70e9df7cce22",
+   "rig_id": "PZ_Pronghorn_Antelope_Male",
+   "source_action_name": "pronghorn_antelope_male@standtograze",
+   "T_target": 89,
+   "motion_sha256": "495d4224f95d5a6c465efef81ef5d6397eebb6ecd53d44a562f6dfcf41711b58"
+  },
+  {
+   "clip_id": "9e95af44e8389df73d13",
+   "rig_id": "PZ_Przewalskis_Horse_Female",
+   "source_action_name": "przewalskis_horse_female@swimturnr180",
+   "T_target": 199,
+   "motion_sha256": "ba059f56b61cb3e1b11c1802d9e0d708ea192c45cc21736de8cdaf03527b8ec5"
+  },
+  {
+   "clip_id": "fb80e12bab159353176c",
+   "rig_id": "PZ_Przewalskis_Horse_Juvenile",
+   "source_action_name": "przewalskis_horse_juvenile@fightvictorytaunt",
+   "T_target": 86,
+   "motion_sha256": "389baefd32bd419b4a9f49c6a4c1218f6c6d892e6066fa3bb1ee8eb8a4e2436e"
+  },
+  {
+   "clip_id": "34ba4ef41b89cd7a518c",
+   "rig_id": "PZ_Przewalskis_Horse_Male",
+   "source_action_name": "przewalskis_horse_male@jumpinonspot",
+   "T_target": 30,
+   "motion_sha256": "b415afce76c914cbcb2d3bd97b7e6bffe2f38fb37fbde5841293257ffa156e07"
+  },
+  {
+   "clip_id": "a16d6628af60da81b6b9",
+   "rig_id": "PZ_Przewalskis_Horse_Male",
+   "source_action_name": "przewalskis_horse_male@jumptoswimonspot",
+   "T_target": 46,
+   "motion_sha256": "8a766f3f6ab10d9adcde0f933d756edd307e43613e1e0817a2a51628b5adf187"
+  },
+  {
+   "clip_id": "cf449bd2376b1b6af1f7",
+   "rig_id": "PZ_Przewalskis_Horse_Male",
+   "source_action_name": "przewalskis_horse_male@swimbasetoswimtreadwateronspot",
+   "T_target": 119,
+   "motion_sha256": "7fdda4e064d9e9680500a7c2253eb348923f962ef636b25c389ba309a89266ef"
+  },
+  {
+   "clip_id": "5524b48d98be6e7e28b6",
+   "rig_id": "PZ_Pygmy_Hippo_Juvenile",
+   "source_action_name": "pygmy_hippo_juvenile@runtostandonspot",
+   "T_target": 47,
+   "motion_sha256": "7a02f08a35f924d9a555f1b1a1c01ac6e93ef75a5192293e6c5440bb36dc9b00"
+  },
+  {
+   "clip_id": "6221dc8fd0370f537a8f",
+   "rig_id": "PZ_Pygmy_Hippo_Male",
+   "source_action_name": "pygmy_hippo_male@walktodrinkonspot",
+   "T_target": 60,
+   "motion_sha256": "88327950ed281b9f2f42d9c6ed6d2b6e703417cf8047fd234b61327707b9037d"
+  },
+  {
+   "clip_id": "b0bc20dc3e40d341813c",
+   "rig_id": "PZ_Pygmy_Hippo_Male",
+   "source_action_name": "pygmy_hippo_male@swimbasetoswimtreadwaterturnr",
+   "T_target": 79,
+   "motion_sha256": "ecff00235da77092e801eca5eb9f410a05a2a67f36eb765c641605c78ce7f201"
+  },
+  {
+   "clip_id": "d5570fbf51ac179ae290",
+   "rig_id": "PZ_Pygmy_Hippo_Male",
+   "source_action_name": "pygmy_hippo_male@swimtreadwatertoswimbaseonspot",
+   "T_target": 79,
+   "motion_sha256": "64d79d4e124f66ad1f9b580e940d994a6340c05ba973675892b1b6737cebe15c"
+  },
+  {
+   "clip_id": "046e41987cb8b72ca06d",
+   "rig_id": "PZ_Quokka_Female",
+   "source_action_name": "quokka_female@standturnl000",
+   "T_target": 44,
+   "motion_sha256": "e26f9564d4459f4935bf2b674c82def9b792009af61e8b2f3cfca5636df99b0a"
+  },
+  {
+   "clip_id": "659fc819488a221a75eb",
+   "rig_id": "PZ_Quokka_Juvenile",
+   "source_action_name": "quokka_juvenile@standturnr000",
+   "T_target": 40,
+   "motion_sha256": "18c7e829bdd6721f4de1e6b316a4e9136d1e8ba627b6986fb73a27b3436a5c1a"
+  },
+  {
+   "clip_id": "079f1e7c64ec1bf3671e",
+   "rig_id": "PZ_Raccoon_Juvenile",
+   "source_action_name": "raccoon_juvenile@swimturnr000",
+   "T_target": 57,
+   "motion_sha256": "27b8b19beacd5b71927b12b41e274bb3410257a1a483816e6b2991df9c200fae"
+  },
+  {
+   "clip_id": "8e2d50a647da4c569457",
+   "rig_id": "PZ_Raccoon_Juvenile",
+   "source_action_name": "raccoon_juvenile@fightreact",
+   "T_target": 160,
+   "motion_sha256": "2db622de8d8be1d8d5552377172927c2a4ebb6a36e2cb00572b73b1ce6fe664d"
+  },
+  {
+   "clip_id": "29003e9c22209b9adc0a",
+   "rig_id": "PZ_Raccoon_Male",
+   "source_action_name": "raccoon_male@climbuptoclimbbeam2",
+   "T_target": 30,
+   "motion_sha256": "badcc1fd3ea9d032801b576751cce10e2554095b6b88645594dca234301f266e"
+  },
+  {
+   "clip_id": "69193ecf4defbba20ca5",
+   "rig_id": "PZ_Raccoon_Male",
+   "source_action_name": "raccoon_male@walktostandturnl",
+   "T_target": 70,
+   "motion_sha256": "b2cf814e897747d7732ca5e802384e827ea7f63670d967c8cdf4b0f8d761fcc5"
+  },
+  {
+   "clip_id": "bd91bfb9aff74aecd83a",
+   "rig_id": "PZ_Raccoon_Male",
+   "source_action_name": "raccoon_male@climbbeamtoclimbidleturnl",
+   "T_target": 87,
+   "motion_sha256": "baf7630a03a345011744b119cd402cc4dfc65e9c834a1f5c9090d3f666f68bac"
+  },
+  {
+   "clip_id": "cf64b3274ae74fb4ea2a",
+   "rig_id": "PZ_Raccoon_Male",
+   "source_action_name": "raccoon_male@walktoclimbdownonspot1",
+   "T_target": 30,
+   "motion_sha256": "d2891ffb0a741c431d4f7f0ee238e626fe510d7872317df5f7cc25171304bc1b"
+  },
+  {
+   "clip_id": "eb55f9bd490af360ec3f",
+   "rig_id": "PZ_Raccoon_Male",
+   "source_action_name": "raccoon_male@climbbeamtoclimbidleonspot",
+   "T_target": 87,
+   "motion_sha256": "071a47fbbdacc7bf7cb784203cc4d385e52554eac4e8647920d9c8bd68329c8d"
+  },
+  {
+   "clip_id": "4b1ae18983522376976d",
+   "rig_id": "PZ_Red_Deer_Female",
+   "source_action_name": "red_deer_female@standpoop",
+   "T_target": 218,
+   "motion_sha256": "30962d24547734ee29175f0c4f41fec6477157897d2fa72971bebce73434a935"
+  },
+  {
+   "clip_id": "693211619572173a19a7",
+   "rig_id": "PZ_Red_Deer_Female",
+   "source_action_name": "red_deer_female@standgimmick01",
+   "T_target": 105,
+   "motion_sha256": "02944aa5895345ea749bd05013ec356f204216ebd67a738687a37c6a7aa9e095"
+  },
+  {
+   "clip_id": "71fa4b56934c23116f25",
+   "rig_id": "PZ_Red_Deer_Female",
+   "source_action_name": "red_deer_female@swimtowalkturnl",
+   "T_target": 30,
+   "motion_sha256": "a1a25c98c94421498baf45cacc5aa0272b409ef79fd9971b08c21af9f5b6b260"
+  },
+  {
+   "clip_id": "dae6ee28f1c3857a496b",
+   "rig_id": "PZ_Red_Deer_Female",
+   "source_action_name": "red_deer_female@shake",
+   "T_target": 105,
+   "motion_sha256": "eb0ce74b7e5977e16e9bfaf9067905235744ef25f2226a5709661ddb7c8fd241"
+  },
+  {
+   "clip_id": "acc3d755c625331677ac",
+   "rig_id": "PZ_Red_Deer_Male",
+   "source_action_name": "red_deer_male@fightattack",
+   "T_target": 178,
+   "motion_sha256": "420ced9b5201743746b22ee9e9bd58e355a1f160801edcc03d0a23e438df4fa1"
+  },
+  {
+   "clip_id": "f5f6cd3396f36ca67df9",
+   "rig_id": "PZ_Red_Deer_Male",
+   "source_action_name": "red_deer_male@fightreact",
+   "T_target": 178,
+   "motion_sha256": "45fe0945ddebfda63e62d5e62dd1f16eed64c5854be9e531accbf48b0b2757ff"
+  },
+  {
+   "clip_id": "89c222aa3d41b3e3054f",
+   "rig_id": "PZ_Red_Kangaroo_Female",
+   "source_action_name": "red_kangaroo_female@climbdowntoclimbuponspot1",
+   "T_target": 27,
+   "motion_sha256": "60b3b8464022c881b4938da644915666f67687724045234fddfc409612b0b7c6"
+  },
+  {
+   "clip_id": "62b9d75d8d6c08aa671a",
+   "rig_id": "PZ_Red_Kangaroo_Juvenile",
+   "source_action_name": "red_kangaroo_juvenile@climbdownonspot",
+   "T_target": 24,
+   "motion_sha256": "b4cdb62c076a57a208803e350848b8464f068feef0131ffe881dfc4385b00f0c"
+  },
+  {
+   "clip_id": "7c0b3423a2e32b7f3e02",
+   "rig_id": "PZ_Red_Kangaroo_Juvenile",
+   "source_action_name": "red_kangaroo_juvenile@standturnl089",
+   "T_target": 60,
+   "motion_sha256": "666b824565d96d6c22ddfd9e838384861172b0d18d9d325ed8ad04c3e48fff17"
+  },
+  {
+   "clip_id": "941f017dd48ce4bfd146",
+   "rig_id": "PZ_Red_Kangaroo_Juvenile",
+   "source_action_name": "red_kangaroo_juvenile@walktodrinktroughonspot",
+   "T_target": 110,
+   "motion_sha256": "cffdf75e5ca40fe1f9ffb2423dbc818f24892fee13d7c45dfda09957f9f0f53b"
+  },
+  {
+   "clip_id": "ba7e956362af113b784d",
+   "rig_id": "PZ_Red_Kangaroo_Juvenile",
+   "source_action_name": "red_kangaroo_juvenile@jumptoclimbbeamonspot2",
+   "T_target": 22,
+   "motion_sha256": "df0bbc06b056eed5dccc58f602fa1ab495ac27cfb6f8150bd10eb606f43d1e24"
+  },
+  {
+   "clip_id": "1999364d980876176b6b",
+   "rig_id": "PZ_Red_Panda_Juvenile",
+   "source_action_name": "red_panda_juvenile@walkbaseonspot",
+   "T_target": 31,
+   "motion_sha256": "092a999a44caa002a5f4712716e6b0302a1dca0d44b6eab26fa18ac672efb25c"
+  },
+  {
+   "clip_id": "8931541f1e34ba97f011",
+   "rig_id": "PZ_Red_Panda_Male",
+   "source_action_name": "red_panda_male@climbdownonspot",
+   "T_target": 50,
+   "motion_sha256": "29a5cae74d1035bfc36d133a87fa042d68c16699d0dab265aa7652b8bbc78873"
+  },
+  {
+   "clip_id": "adc076e5312a48485c55",
+   "rig_id": "PZ_Red_Panda_Male",
+   "source_action_name": "red_panda_male@standpreen01",
+   "T_target": 129,
+   "motion_sha256": "8ba4c29df0982cea9e77216c58522589932001353882a536fd322890dbd94752"
+  },
+  {
+   "clip_id": "aeb1e98ccd0502024888",
+   "rig_id": "PZ_Red_Panda_Male",
+   "source_action_name": "red_panda_male@walktodrinktroughturnl",
+   "T_target": 25,
+   "motion_sha256": "e1e09bc831ee5c10cb4be807621b874e22adb552ca530ec9be9c3a7d1f46c91f"
+  },
+  {
+   "clip_id": "34ac35d2fd65f42b8f2d",
+   "rig_id": "PZ_Red_River_Hog_Female",
+   "source_action_name": "red_river_hog_female@walktodrink",
+   "T_target": 76,
+   "motion_sha256": "9f4657c86fe1c7853bd35f1169f3051287e5939db6cf57cd5025f2eab6bd94a9"
+  },
+  {
+   "clip_id": "ea9540aaddf05a78b606",
+   "rig_id": "PZ_Red_River_Hog_Female",
+   "source_action_name": "red_river_hog_female@drinkloop01",
+   "T_target": 114,
+   "motion_sha256": "94f66c766d7cc5120d0ff94e09b780833f842ff0e905370be34914b9e40796b4"
+  },
+  {
+   "clip_id": "29d211f17098969c5c96",
+   "rig_id": "PZ_Red_River_Hog_Juvenile",
+   "source_action_name": "red_river_hog_juvenile@swimturnr000",
+   "T_target": 45,
+   "motion_sha256": "fb2f5964d57879e9acfb06d22dda6dbdbed115eeac454280402f2005f95e47a4"
+  },
+  {
+   "clip_id": "eec88c02805d39f1d446",
+   "rig_id": "PZ_Red_River_Hog_Juvenile",
+   "source_action_name": "red_river_hog_juvenile@runtostandturnl",
+   "T_target": 19,
+   "motion_sha256": "6f5deb1b18bac7fd4299c6baf30238b07a6071cc90ec414fbbbdcfc0a45635d3"
+  },
+  {
+   "clip_id": "16888cd5b516e4098837",
+   "rig_id": "PZ_Red_Ruffed_Lemur_Juvenile",
+   "source_action_name": "red_ruffed_lemur_juvenile@standturnr180",
+   "T_target": 72,
+   "motion_sha256": "6b19288dd12daa777d12cb84d67386302fe6aa516fc56e1dcfbdf22caf45c862"
+  },
+  {
+   "clip_id": "442b4d2b500fcea41a07",
+   "rig_id": "PZ_Red_Ruffed_Lemur_Juvenile",
+   "source_action_name": "red_ruffed_lemur_juvenile@drinkin_troughvariant",
+   "T_target": 46,
+   "motion_sha256": "3527fa314dfa74c1784ceeab7dab356c7024fb8a9834179ec59a458c460c421c"
+  },
+  {
+   "clip_id": "4ae2a0d9673a8d04a1a9",
+   "rig_id": "PZ_Red_Ruffed_Lemur_Juvenile",
+   "source_action_name": "red_ruffed_lemur_juvenile@standturnr180",
+   "T_target": 72,
+   "motion_sha256": "6b19288dd12daa777d12cb84d67386302fe6aa516fc56e1dcfbdf22caf45c862"
+  },
+  {
+   "clip_id": "630a739597b73e739e94",
+   "rig_id": "PZ_Red_Ruffed_Lemur_Juvenile",
+   "source_action_name": "red_ruffed_lemur_juvenile@walktoclimbdownonspot2",
+   "T_target": 31,
+   "motion_sha256": "db3eb2bb8e392d894d22f1d174138d9a7d2a9ff05fc6d66a259f6c292a3d0933"
+  },
+  {
+   "clip_id": "d81322a84c9636c8e106",
+   "rig_id": "PZ_Red_Ruffed_Lemur_Male",
+   "source_action_name": "red_ruffed_lemur_male@walktoclimbbeamonspot2",
+   "T_target": 29,
+   "motion_sha256": "c3d5cf648ce4231112441d645d6df2342839d743b384c3fa8c4089b0110215e1"
+  },
+  {
+   "clip_id": "17a3680b76fcfd5036da",
+   "rig_id": "PZ_Rednecked_Wallaby_Female",
+   "source_action_name": "rednecked_wallaby_female@standheroresponse",
+   "T_target": 115,
+   "motion_sha256": "cb6b61ac45fccbbf5885c4df0415d28aed6905ff7e99df119129b581f3c14368"
+  },
+  {
+   "clip_id": "ee1d9698b4b0b098d3ef",
+   "rig_id": "PZ_Rednecked_Wallaby_Female",
+   "source_action_name": "rednecked_wallaby_female@runtostandonspot",
+   "T_target": 57,
+   "motion_sha256": "a5bf4ef02d7fb261133cec43deea6123ff3eafbb0616b0b7ab66d1c8cb5c5e6e"
+  },
+  {
+   "clip_id": "f881fdda51524c90fd6c",
+   "rig_id": "PZ_Rednecked_Wallaby_Female",
+   "source_action_name": "rednecked_wallaby_female@standtowalkturnl",
+   "T_target": 21,
+   "motion_sha256": "cf6fb39fa18a77c4d6effd3923898c21b467bc24760ec0d9edb7d908279fad24"
+  },
+  {
+   "clip_id": "eca95dcca6c2f6d05de8",
+   "rig_id": "PZ_Rednecked_Wallaby_Juvenile",
+   "source_action_name": "rednecked_wallaby_juvenile@climbdowntowalkonspot2",
+   "T_target": 20,
+   "motion_sha256": "6be78d21a83713068fa5902ffd9090b8e0aa29f859fc07fda3b01460dee4745c"
+  },
+  {
+   "clip_id": "7768ebd78e093f8e0361",
+   "rig_id": "PZ_Reticulated_Giraffe_Female",
+   "source_action_name": "reticulated_giraffe_female@standtowalkturnl",
+   "T_target": 93,
+   "motion_sha256": "2823f7c274df40c26ed31bf2275535fd0570e9d4d2aa31e6c0da97404bfead7d"
+  },
+  {
+   "clip_id": "be8e86e72cbe6cc3abb7",
+   "rig_id": "PZ_Reticulated_Giraffe_Female",
+   "source_action_name": "reticulated_giraffe_female@runbase",
+   "T_target": 19,
+   "motion_sha256": "4ba712cf58627d342d761c2c3cc83f7603e2941b7d2905b5442ae9d33aa83c72"
+  },
+  {
+   "clip_id": "7c910136c2e78fad84ee",
+   "rig_id": "PZ_Reticulated_Giraffe_Juvenile",
+   "source_action_name": "reticulated_giraffe_juvenile@restdie",
+   "T_target": 147,
+   "motion_sha256": "fa089d8e58b6d4b3a38495ff09d7839ae077e25317dd1fc03404ca2ba1d3e6c0"
+  },
+  {
+   "clip_id": "5f6f5933206780b29f3f",
+   "rig_id": "PZ_Ring_Tailed_Lemur_Male",
+   "source_action_name": "ring_tailed_lemur_male@walktoclimb",
+   "T_target": 34,
+   "motion_sha256": "a3a9b4e84054db31565db57286d68e5dbc65a4c0d1089818e64f152dd6ee911a"
+  },
+  {
+   "clip_id": "31611ab1f8f57f5c3950",
+   "rig_id": "PZ_Sable_Antelope_Female",
+   "source_action_name": "sable_antelope_female@standtorunonspot",
+   "T_target": 63,
+   "motion_sha256": "941ae164f74d2c78bc29e9c7a0fbe55434e9262cd25b2f780b5c0266b399d7aa"
+  },
+  {
+   "clip_id": "ef4f57553411ffc82315",
+   "rig_id": "PZ_Sable_Antelope_Juvenile",
+   "source_action_name": "sable_antelope_juvenile@swimtreadwatertoswimbaseturnl",
+   "T_target": 58,
+   "motion_sha256": "1dd47eb56bb53f1b40687ef283f0f33c9c5e599baf9398a32a1916b4646b0e82"
+  },
+  {
+   "clip_id": "f97279b152b5f7afa96b",
+   "rig_id": "PZ_Sable_Antelope_Juvenile",
+   "source_action_name": "sable_antelope_juvenile@runtostandturnr",
+   "T_target": 68,
+   "motion_sha256": "967f64cb1277348115168f87c7ea37544db1bfce19d32252a4240493f63fbbad"
+  },
+  {
+   "clip_id": "002c44f46fe7a9069e05",
+   "rig_id": "PZ_Saiga_Juvenile",
+   "source_action_name": "saiga_juvenile@runtowalkonspot",
+   "T_target": 19,
+   "motion_sha256": "0ef7ea71fc60728b7e70db8569af6833f4a76ea4fb2e7da1a54ca85c9c243d7b"
+  },
+  {
+   "clip_id": "60001c95e7b9986f082d",
+   "rig_id": "PZ_Saiga_Juvenile",
+   "source_action_name": "saiga_juvenile@swimturnl000",
+   "T_target": 91,
+   "motion_sha256": "db294baa33aba51f7296541dfe67b59c4386c8ae9fef5200409a57dc46234f10"
+  },
+  {
+   "clip_id": "b9a4bcbbdf6823ce54e2",
+   "rig_id": "PZ_Saiga_Male",
+   "source_action_name": "saiga_male@walktodrinktroughonspot",
+   "T_target": 51,
+   "motion_sha256": "a5a9cd98f2ec228f25c6054c8b3f7a583eb76c92cbd35dbb267ce6602ba63f55"
+  },
+  {
+   "clip_id": "1fec3e20c7dd58cf6297",
+   "rig_id": "PZ_Saltwater_Crocodile_Juvenile",
+   "source_action_name": "saltwater_crocodile_juvenile@standtowalk",
+   "T_target": 76,
+   "motion_sha256": "25bf48a39bb2eb9e053973deaf7f749f8fd70ea373055d32ad41d5ff78358d50"
+  },
+  {
+   "clip_id": "4cc5787bd98ba62baba8",
+   "rig_id": "PZ_Saltwater_Crocodile_Juvenile",
+   "source_action_name": "saltwater_crocodile_juvenile@walktoeatturnr",
+   "T_target": 103,
+   "motion_sha256": "3a2d5375a75e2713e06b914835ce2a516386526fd1ff93a4ff948ab298640899"
+  },
+  {
+   "clip_id": "e20b31e6971cd154415b",
+   "rig_id": "PZ_Saltwater_Crocodile_Male",
+   "source_action_name": "saltwater_crocodile_male@walkbaseonspot",
+   "T_target": 48,
+   "motion_sha256": "4bc56b5206c8dda18a62cd600a457f1f4f16710c814e293616fa5e4ba1100361"
+  },
+  {
+   "clip_id": "89a86b284bc326646d6a",
+   "rig_id": "PZ_Sand_Cat_Juvenile",
+   "source_action_name": "sand_cat_juvenile@standdie",
+   "T_target": 88,
+   "motion_sha256": "fd1fdec6eba3696e135458d02fc64041ec6e9ab04f72b56d6a8f90d8ebd40188"
+  },
+  {
+   "clip_id": "ffdfe89838021fe68659",
+   "rig_id": "PZ_Scimitar_Horned_Oryx_Female",
+   "source_action_name": "scimitar_horned_oryx_female@standidle01",
+   "T_target": 190,
+   "motion_sha256": "30372989747a6c1340f4a6814a8c2674211a87602c1275d5222dc78e01db0d53"
+  },
+  {
+   "clip_id": "02243080c5f4a6b0591d",
+   "rig_id": "PZ_Scimitar_Horned_Oryx_Juvenile",
+   "source_action_name": "scimitar_horned_oryx_juvenile@jumpinonspot",
+   "T_target": 28,
+   "motion_sha256": "84d0bd72eb1b019860930662e028ac82830c6469ff9659a7ea3527ea3783fa85"
+  },
+  {
+   "clip_id": "ea752e9e8f527ec0ca79",
+   "rig_id": "PZ_Scimitar_Horned_Oryx_Juvenile",
+   "source_action_name": "scimitar_horned_oryx_juvenile@runtostandonspot",
+   "T_target": 64,
+   "motion_sha256": "2745ae73b802e412c227791066ba1ee7f7e9f5a822e471b7aff3cfe9dca91241"
+  },
+  {
+   "clip_id": "403667cf84af5902696b",
+   "rig_id": "PZ_Scimitar_Horned_Oryx_Male",
+   "source_action_name": "scimitar_horned_oryx_male@walkbaseonspot",
+   "T_target": 36,
+   "motion_sha256": "cc9f791feef4c8d2da3c2be4d0232b8e430ffcba08b8599185617a0495066420"
+  },
+  {
+   "clip_id": "65e27cfde0db4682d308",
+   "rig_id": "PZ_Siberian_Tiger_Female",
+   "source_action_name": "siberian_tiger_female@jumpinonspot",
+   "T_target": 53,
+   "motion_sha256": "10170fff9c83c98151abcca633cc5843bc555c87902ad577fb6351864651f7ae"
+  },
+  {
+   "clip_id": "93b6c8da7b06e63bef2b",
+   "rig_id": "PZ_Siberian_Tiger_Female",
+   "source_action_name": "siberian_tiger_female@resttostand",
+   "T_target": 83,
+   "motion_sha256": "07222c602870683a15e3953c46eca5d1f88355305fbc7aee125846d3abd65415"
+  },
+  {
+   "clip_id": "e097fa5b1704b0b7e6ca",
+   "rig_id": "PZ_Siberian_Tiger_Female",
+   "source_action_name": "siberian_tiger_female@swimtowalk",
+   "T_target": 34,
+   "motion_sha256": "ff2a658184bf85efd543f77e91b0e0a13d6136a85b36abb35f9e53c252140889"
+  },
+  {
+   "clip_id": "ed70d5f005541a5d6be5",
+   "rig_id": "PZ_Siberian_Tiger_Female",
+   "source_action_name": "siberian_tiger_female@walkbaseonspot",
+   "T_target": 46,
+   "motion_sha256": "98299ba2e9dcb732be67b8553932e04f7fa2a5d06c47a0a459d5812397f94f72"
+  },
+  {
+   "clip_id": "18c61fad114b94f90e19",
+   "rig_id": "PZ_Siberian_Tiger_Male",
+   "source_action_name": "siberian_tiger_male@walktoclimbdown2onspot",
+   "T_target": 25,
+   "motion_sha256": "b1596cb8cc2f1dbf290293be874a2fd87e7d29dd52857f696733d9e7f2258067"
+  },
+  {
+   "clip_id": "9829b035d23f82e09a87",
+   "rig_id": "PZ_Siberian_Tiger_Male",
+   "source_action_name": "siberian_tiger_male@drinktostand",
+   "T_target": 139,
+   "motion_sha256": "537a343a7f7ad4b4cd382488f2fecd61ed58dc71ba79edb80d71791effac9909"
+  },
+  {
+   "clip_id": "e272ffb3fa57d5a32efd",
+   "rig_id": "PZ_Siberian_Tiger_Male",
+   "source_action_name": "siberian_tiger_male@climbdowntoclimbbeam1onspot",
+   "T_target": 19,
+   "motion_sha256": "8e9c9e24f0a0a5672ca9014cf9daf9c69473c23a02ca7b0cfe9679d40388f482"
+  },
+  {
+   "clip_id": "10c33b8abc456c80bfec",
+   "rig_id": "PZ_Snow_Leopard_Juvenile",
+   "source_action_name": "snow_leopard_juvenile@walktostandonspot",
+   "T_target": 56,
+   "motion_sha256": "7a78c5235f70ed0f054abf62e9a25cf40884b8e8da1514dde6cf37d75fe17e9f"
+  },
+  {
+   "clip_id": "1dbe334a724a672ffdf4",
+   "rig_id": "PZ_Snow_Leopard_Juvenile",
+   "source_action_name": "snow_leopard_juvenile@drinktostand",
+   "T_target": 117,
+   "motion_sha256": "eff07a07c2d3636362d8e3ed6b222b5a760bf356917651296c196289b5be1f80"
+  },
+  {
+   "clip_id": "aae3d0b9cb4469fa1f25",
+   "rig_id": "PZ_Snow_Leopard_Male",
+   "source_action_name": "snow_leopard_male@walktoclimbbeamonspot1",
+   "T_target": 34,
+   "motion_sha256": "e9b880e1243e18a1292a6dce692fde2530c53b6c2b68d4f763722478dfabb5f3"
+  },
+  {
+   "clip_id": "e351cac302b9d6224e1c",
+   "rig_id": "PZ_Snow_Leopard_Male",
+   "source_action_name": "snow_leopard_male@climbdowntowalkonspot2",
+   "T_target": 20,
+   "motion_sha256": "6ccbbf5be79a5b94ed90b2c107183be0fd3b3d6cc014af720812667f57b43ac8"
+  },
+  {
+   "clip_id": "3c6143e14db006e592c0",
+   "rig_id": "PZ_Somali_Wild_Ass_Juvenile",
+   "source_action_name": "somali_wild_ass_juvenile@swimtreadwatertoswimbase",
+   "T_target": 66,
+   "motion_sha256": "ee535273d6425c3b525323a6d939d9dc1693b6c11ddcb8cfbe4b44b027dcdf90"
+  },
+  {
+   "clip_id": "7ed917e7f92e6ce79579",
+   "rig_id": "PZ_Somali_Wild_Ass_Juvenile",
+   "source_action_name": "somali_wild_ass_juvenile@swimbasetoswimtreadwateronspot",
+   "T_target": 95,
+   "motion_sha256": "88f417b540f20b07bcd9fd5852994bc2a58568b593b2d325727dd0c61dd4602f"
+  },
+  {
+   "clip_id": "e9c58062f24b6bffbfa1",
+   "rig_id": "PZ_Somali_Wild_Ass_Juvenile",
+   "source_action_name": "somali_wild_ass_juvenile@resttosleep",
+   "T_target": 163,
+   "motion_sha256": "4b66d9c627de1cf8289b13958ee949965a3eca224ab2e2b28dfedf0797de71ca"
+  },
+  {
+   "clip_id": "69b33f569aabc4ad6eb8",
+   "rig_id": "PZ_Southern_White_Rhinoceros_Juvenile",
+   "source_action_name": "southern_white_rhinoceros_juvenile@standturnl000",
+   "T_target": 90,
+   "motion_sha256": "3e790681894ce5ce2279b532a677a58c1b78353bb37b7644377827b422c1d522"
+  },
+  {
+   "clip_id": "b8ccbe797fe9dffca8fa",
+   "rig_id": "PZ_Southern_White_Rhinoceros_Juvenile",
+   "source_action_name": "southern_white_rhinoceros_juvenile@standtorunonspot",
+   "T_target": 36,
+   "motion_sha256": "cb15240d663e2865bec773e16c209c7af107998454041cb03f4930119a272bd9"
+  },
+  {
+   "clip_id": "610e17cda08bc67b7a71",
+   "rig_id": "PZ_Spotted_Hyena_Female",
+   "source_action_name": "spotted_hyena_female@walktoswimonspot",
+   "T_target": 32,
+   "motion_sha256": "1b234a187e168c4d254eed37039deb910f14b31c2c5cd61866e82e9481078a07"
+  },
+  {
+   "clip_id": "0a924f2605a28fed339c",
+   "rig_id": "PZ_Spotted_Hyena_Male",
+   "source_action_name": "spotted_hyena_male@swimturnl180",
+   "T_target": 78,
+   "motion_sha256": "ea9a90e2eeeebc9db9873c3f6435d3284d3c91af8d4782e3ae0d6d5184aeb513"
+  },
+  {
+   "clip_id": "6a8387a7cf23164d825c",
+   "rig_id": "PZ_Spotted_Hyena_Male",
+   "source_action_name": "spotted_hyena_male@jumpoutonspot",
+   "T_target": 49,
+   "motion_sha256": "37f6c646f2189b586d0d97ed403000012cb060dc825a7917ac65b9628d8d9d15"
+  },
+  {
+   "clip_id": "02ecdf2e2d4fc5ce5dac",
+   "rig_id": "PZ_Springbok_Female",
+   "source_action_name": "springbok_female@standherocall",
+   "T_target": 180,
+   "motion_sha256": "d62a2177d3b9da33497529ee0c5296b692eed10f945d3f9ecbf58cf52a22f3d0"
+  },
+  {
+   "clip_id": "54c834c405135a0113a6",
+   "rig_id": "PZ_Springbok_Female",
+   "source_action_name": "springbok_female@walkbaseonspot",
+   "T_target": 28,
+   "motion_sha256": "b5d1c3ec47ede5174b7148d19ef9d707fc1877efc34c6f129a6291b23b383b0c"
+  },
+  {
+   "clip_id": "75424de5fb1d035e7014",
+   "rig_id": "PZ_Springbok_Female",
+   "source_action_name": "springbok_female@standturnr000",
+   "T_target": 78,
+   "motion_sha256": "486fd1b83aecaded974d6cf9e630e594d000ebc922a5884ad56a38173b3fb76a"
+  },
+  {
+   "clip_id": "a32827811e18d3240833",
+   "rig_id": "PZ_Springbok_Female",
+   "source_action_name": "springbok_female@walktodrinkonspot",
+   "T_target": 70,
+   "motion_sha256": "ddd8a54b5a020f4714b6f5c7adc6a1ff27fc369da03beb477efce23a5d8bdd61"
+  },
+  {
+   "clip_id": "e0e9b820cbd9dab57861",
+   "rig_id": "PZ_Springbok_Male",
+   "source_action_name": "springbok_male@walktodrinkonspot",
+   "T_target": 70,
+   "motion_sha256": "f9cf1b2e6474a01b6f9528993c7ae7f8a6932b40829d737e7e68657c23a19e58"
+  },
+  {
+   "clip_id": "ca6d2a6e92d86810d85b",
+   "rig_id": "PZ_Standard_Donkey_Juvenile",
+   "source_action_name": "standard_donkey_juvenile@walktoeatturnr",
+   "T_target": 81,
+   "motion_sha256": "fdae041690879623b56bfc3e66fd9d470b500431cd3ac23b2e653711cc361494"
+  },
+  {
+   "clip_id": "1356e74301e9e91b2ed7",
+   "rig_id": "PZ_Striped_Skunk_Juvenile",
+   "source_action_name": "striped_skunk_juvenile@walktoclimbdownonspot2",
+   "T_target": 27,
+   "motion_sha256": "2d9f602c21c8d87c487eed1d27f1496af0ab3a5e4279c606c64846f1992d0a35"
+  },
+  {
+   "clip_id": "3633cc873690b345ab29",
+   "rig_id": "PZ_Striped_Skunk_Juvenile",
+   "source_action_name": "striped_skunk_juvenile@climbdowntoclimbuponspot2",
+   "T_target": 21,
+   "motion_sha256": "beb00ff1feedb537bb593c511880597bf99b9583b988661208f96036a08fcdd1"
+  },
+  {
+   "clip_id": "987b6f3641f61aa80482",
+   "rig_id": "PZ_Striped_Skunk_Juvenile",
+   "source_action_name": "striped_skunk_juvenile@walktodrinktrough",
+   "T_target": 49,
+   "motion_sha256": "9c2c7118d9c756c56291b39382342a023ac6426ac9a728e2d4077871ead93f27"
+  },
+  {
+   "clip_id": "d0c843c9044471caae90",
+   "rig_id": "PZ_Striped_Skunk_Juvenile",
+   "source_action_name": "striped_skunk_juvenile@swimbase",
+   "T_target": 23,
+   "motion_sha256": "0148215ab2fe638f411956aabeaed5f72290bb93a7355b3bb9d72cbc837d7b16"
+  },
+  {
+   "clip_id": "e9e4b39dd2bf04654a28",
+   "rig_id": "PZ_Striped_Skunk_Juvenile",
+   "source_action_name": "striped_skunk_juvenile@climbbeamtoclimbidleonspot",
+   "T_target": 24,
+   "motion_sha256": "46fa94e1315087fa8ed383320f679805e5c30dcd350de67fe1e771fd18b1a7ec"
+  },
+  {
+   "clip_id": "478a34333ad0e81916a0",
+   "rig_id": "PZ_Striped_Skunk_Male",
+   "source_action_name": "striped_skunk_male@walktoswimturnr",
+   "T_target": 20,
+   "motion_sha256": "4faefc6261684b9c5afd875cf0e68777e3924d6ffda03f2ceb095f163a7c5c92"
+  },
+  {
+   "clip_id": "ef824ef0b896577ef942",
+   "rig_id": "PZ_Striped_Skunk_Male",
+   "source_action_name": "striped_skunk_male@walktoswimturnr",
+   "T_target": 20,
+   "motion_sha256": "4faefc6261684b9c5afd875cf0e68777e3924d6ffda03f2ceb095f163a7c5c92"
+  },
+  {
+   "clip_id": "f16507b1efd7e6454ecb",
+   "rig_id": "PZ_Striped_Skunk_Male",
+   "source_action_name": "striped_skunk_male@walktodrinkturnr",
+   "T_target": 49,
+   "motion_sha256": "58e7931c21cc44ba96b5d0982e092d8663bf7cc60a63487cd73dde8a3f1742f9"
+  },
+  {
+   "clip_id": "e455f9329e28a0de2cd0",
+   "rig_id": "PZ_Takin_Juvenile",
+   "source_action_name": "takin_juvenile@drinktostand",
+   "T_target": 59,
+   "motion_sha256": "fbcf32a05e07b8e2980b43a9fb992856e5802a32d8734f6065e12a4094498bb3"
+  },
+  {
+   "clip_id": "4fea5092af95185f169b",
+   "rig_id": "PZ_Tamworth_Pig_Juvenile",
+   "source_action_name": "tamworth_pig_juvenile@swimbaseonspot",
+   "T_target": 30,
+   "motion_sha256": "1824fa60767f2eb48a59ba3393ebcc564806717d94e9a2e7d41917f895b64243"
+  },
+  {
+   "clip_id": "6c239178c3c7bd42031f",
+   "rig_id": "PZ_Tasmanian_Devil_Female",
+   "source_action_name": "tasmanian_devil_female@drinktroughloop",
+   "T_target": 121,
+   "motion_sha256": "6037aaa111af543e1c5f63590ae1f795f3570c74e40499a45b199e99af6c2dd2"
+  },
+  {
+   "clip_id": "c5d1156f72035334db68",
+   "rig_id": "PZ_Tasmanian_Devil_Female",
+   "source_action_name": "tasmanian_devil_female@walktorunonspot",
+   "T_target": 29,
+   "motion_sha256": "94bfefc9bc68cd67652fbb0953ff2db861f3dea8455166e0d4e49e8d9c692df7"
+  },
+  {
+   "clip_id": "0d36c245be23ba92e422",
+   "rig_id": "PZ_Tasmanian_Devil_Male",
+   "source_action_name": "tasmanian_devil_male@walktodrinkturnr",
+   "T_target": 60,
+   "motion_sha256": "e8a3f7087404ee6d7c380e22e682d5fc79843c9d2ae443d6f51fb8a53ed09345"
+  },
+  {
+   "clip_id": "90182b1b98165255ce02",
+   "rig_id": "PZ_Tasmanian_Devil_Male",
+   "source_action_name": "tasmanian_devil_male@climbuptoclimbbeamonspot2",
+   "T_target": 30,
+   "motion_sha256": "583031744c2afcb2a70b329e3d3bb1d9f1bd88ca4e34a408084aa3ae1c88a8bf"
+  },
+  {
+   "clip_id": "bc45d80220ed4f31bed3",
+   "rig_id": "PZ_Tasmanian_Devil_Male",
+   "source_action_name": "tasmanian_devil_male@climbbeamtojumponspot1",
+   "T_target": 27,
+   "motion_sha256": "7b698bbae85a74683b736c89e6b83e5f9ee972384cb706309cbfd68322fe1570"
+  },
+  {
+   "clip_id": "534f841991c7297281c3",
+   "rig_id": "PZ_Thomsons_Gazelle_Juvenile",
+   "source_action_name": "thomsons_gazelle_juvenile@walktoeat",
+   "T_target": 70,
+   "motion_sha256": "accb87db1357a1ff4cee09fa6e57f55b773a5fba2899ab5f3c2290774d4c6726"
+  },
+  {
+   "clip_id": "a39a4c1d93681963d52c",
+   "rig_id": "PZ_Thomsons_Gazelle_Juvenile",
+   "source_action_name": "thomsons_gazelle_juvenile@jumptoswim",
+   "T_target": 55,
+   "motion_sha256": "b9723a5ed8a9ef52863e7745cb2a22a703c3dd6ed4762fbb3f52942366182474"
+  },
+  {
+   "clip_id": "7901deba04ee65ecea6e",
+   "rig_id": "PZ_Thomsons_Gazelle_Male",
+   "source_action_name": "thomsons_gazelle_male@fightreact",
+   "T_target": 148,
+   "motion_sha256": "e81a207d842bc29624d65932f2959819a0c208ff197c8dc18f0391a3ecdafeec"
+  },
+  {
+   "clip_id": "9f51a0efc6159754e3ad",
+   "rig_id": "PZ_Thomsons_Gazelle_Male",
+   "source_action_name": "thomsons_gazelle_male@standturnr000",
+   "T_target": 78,
+   "motion_sha256": "4481aae8d2d028a2f564b5552c2e028acc3f02859c06999cab426710a971e646"
+  },
+  {
+   "clip_id": "9f1737e0a7887111817c",
+   "rig_id": "PZ_West_African_Lion_Female",
+   "source_action_name": "west_african_lion_female@climbbeamonspot",
+   "T_target": 38,
+   "motion_sha256": "3590454fc1437c47c22dac844c54135ee6a8e6508e686b801ca9ea1a279586e1"
+  },
+  {
+   "clip_id": "2ba060fed29672391961",
+   "rig_id": "PZ_West_African_Lion_Juvenile",
+   "source_action_name": "west_african_lion_juvenile@swimtreadwatertoswimbase",
+   "T_target": 37,
+   "motion_sha256": "87b8dd5bf2638b2db8dd4545f8625d079b77a5f6040d34bba45034da7832218d"
+  },
+  {
+   "clip_id": "b036c84cc3392b3ed61c",
+   "rig_id": "PZ_West_African_Lion_Juvenile",
+   "source_action_name": "west_african_lion_juvenile@swimtowalkonspot",
+   "T_target": 32,
+   "motion_sha256": "884d8c0efdf5171b8fa7b8e15ed17fc8eaa94bbaf2669af5ede5f4d6f7795d12"
+  },
+  {
+   "clip_id": "12efa86e939a64a593a6",
+   "rig_id": "PZ_Wild_Boar_Female",
+   "source_action_name": "wild_boar_female@swimtreadwatertoswimbaseonspot",
+   "T_target": 56,
+   "motion_sha256": "34a2c116fcfd05ab544d7dc8336eee61a9da5b9e60f39b145d5bc88a2b19fb86"
+  },
+  {
+   "clip_id": "acf9a906807f7cc09102",
+   "rig_id": "PZ_Wild_Boar_Female",
+   "source_action_name": "wild_boar_female@resttosleep",
+   "T_target": 124,
+   "motion_sha256": "510642f2172a787fe7cd6772d21630320f73b66f4579d3cefbd4f296c0f89a9b"
+  },
+  {
+   "clip_id": "ed2f3926f3b22c243ce0",
+   "rig_id": "PZ_Wild_Boar_Female",
+   "source_action_name": "wild_boar_female@swimbasetoswimtreadwateronspot",
+   "T_target": 37,
+   "motion_sha256": "3095847e6f3ca56582cf772e6c4127a01770cc3bddf6b01492f7fe5cb28ef116"
+  },
+  {
+   "clip_id": "c3ccab57f5845c30f1f0",
+   "rig_id": "PZ_Wild_Boar_Juvenile",
+   "source_action_name": "wild_boar_juvenile@walktoeatonspot",
+   "T_target": 55,
+   "motion_sha256": "21ae11b5c909b5f54fab2b94a34e9f771f4c22bd0b1f181254d0434c6b6d7e73"
+  },
+  {
+   "clip_id": "36c27fafde0e9d0b9888",
+   "rig_id": "PZ_Wild_Water_Buffalo_Juvenile",
+   "source_action_name": "wild_water_buffalo_juvenile@walktoeatonspot",
+   "T_target": 106,
+   "motion_sha256": "b5bce0b123c69ae5e63583f4d011578c73a968957cf17e17abd6313704e260e9"
+  },
+  {
+   "clip_id": "cc085ac4d9123f601d26",
+   "rig_id": "PZ_Wild_Water_Buffalo_Juvenile",
+   "source_action_name": "wild_water_buffalo_juvenile@swimtowalkonspot",
+   "T_target": 36,
+   "motion_sha256": "efcae80c5b34e60bf5648c14e96de844db7a1b225f18c715fb1256537c063cf1"
+  },
+  {
+   "clip_id": "1a81e49a43602fcab06a",
+   "rig_id": "PZ_Wisent_Juvenile",
+   "source_action_name": "wisent_juvenile@walktodrinkonspot",
+   "T_target": 53,
+   "motion_sha256": "50dd6c89bd9dfc2328c3c215a152c7ac0844e7123d883d7e9a8f7cb2cf4ce3b9"
+  },
+  {
+   "clip_id": "601ad9a1ff13905a4ce9",
+   "rig_id": "PZ_Wisent_Juvenile",
+   "source_action_name": "wisent_juvenile@swimturnr000",
+   "T_target": 170,
+   "motion_sha256": "2570fe82759f968df398f757f9c1c601f90e3dd1b240c673df3f89c5e94ad786"
+  },
+  {
+   "clip_id": "81c05dac9d615a1be05a",
+   "rig_id": "PZ_Wisent_Juvenile",
+   "source_action_name": "wisent_juvenile@swimbaseonspot",
+   "T_target": 33,
+   "motion_sha256": "bc0a58149bc21f6b4f3c52e07bc3081f1289235d85f1c316c4fd40e0c43191d5"
+  }
+ ],
+ "note": "counts are independent predicates over the active val set (exact / same-source / both); removed = exact OR same-source"
+}

@@ -245,9 +245,15 @@ class Ktjd17Base:
         rows = [json.loads(l) for l in open(manifest_p)]
         rows = [r for r in rows if r.get("status") == "accept"]
         _drop = load_exclusions(exclude_clips)
+        n0 = len(rows)
         if _drop:
-            n0 = len(rows)
             rows = [r for r in rows if str(r["clip_id"]) not in _drop]
+        # An artifact that excludes NOTHING is still the statement "this run was allowed to see the whole
+        # corpus", and this class promises that a checkpoint names the exact data it saw. Keying the
+        # provenance off the number of dropped clips instead of the artifact left a zero-clip cut recorded
+        # as no cut at all (codex 2026-09-10 r1 P2-3). Unchanged wherever a cut actually drops something,
+        # which is every arm measured so far.
+        if exclude_clips:
             self.provenance_exclusion = {
                 "path": str(exclude_clips),
                 "sha256": hashlib.sha256(Path(exclude_clips).read_bytes()).hexdigest(),

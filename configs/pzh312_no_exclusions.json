@@ -1,0 +1,6 @@
+{
+ "mode": "clip",
+ "note": "the empty cut: all 312 rigs of dataset/ktjd17_pzh312_noik_v2 (311 animal + HML3D_Human). Named rather than left blank so a checkpoint's pins record WHICH cut it trained under -- an absent --exclude_clips and this artifact serve the same clips, but only this one is hashable and appears in the run's provenance.",
+ "n_clips": 0,
+ "clips": {}
+}

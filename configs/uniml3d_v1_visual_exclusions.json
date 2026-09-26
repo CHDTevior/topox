@@ -1,0 +1,11 @@
+{
+  "generation_id": "20260915T174929822046Z-6c4c46786a1e",
+  "clips": {
+    "ed266322157b60527984": "all"
+  },
+  "reasons": {
+    "ed266322157b60527984": "Source-fidelity conversion is numerically valid, but the 25-frame motion rises about 66 rest-AABB scales and reaches 3.04 scales/frame. Exclude from ordinary motion training pending source-intent review."
+  },
+  "evidence": "dataset/ktjd17_uniml3d_v1/analysis/channel_visuals/OBJ_669a8e3557bbceb71e8f634b_glb__ed266322157b60527984_sequence.png",
+  "scope": "One visually inspected extreme clip, not a claim that every remaining source is clean. Original frozen corpus and all-accepted reporting statistics are retained. Apply with the existing loader exclude_clips argument."
+}

@@ -73,6 +73,14 @@ if RANDOM_CAPTION:
 # certifies a different model than the launch builds (codex baseline r2 #2)
 _EXTRA = os.environ.get("EXTRA", "").split()
 _EXTRA_KNOWN = {"--no_geo_bias", "--freeze_zero_joint_sem", "--require_uniform_gammas"}
+# --flat_joints takes a value; consume the pair before the whitelist sees it (codex 2026-09-10 #3)
+FLAT_JOINTS = 0
+if "--flat_joints" in _EXTRA:
+    _i = _EXTRA.index("--flat_joints")
+    if _i + 1 >= len(_EXTRA) or not _EXTRA[_i + 1].isdigit():
+        raise SystemExit(f"[gate] --flat_joints needs an integer, got {_EXTRA[_i + 1:_i + 2]}")
+    FLAT_JOINTS = int(_EXTRA[_i + 1])
+    _EXTRA = _EXTRA[:_i] + _EXTRA[_i + 2:]
 _unknown = [t for t in _EXTRA if t not in _EXTRA_KNOWN]
 if _unknown:
     raise SystemExit(f"[gate] EXTRA={_EXTRA} contains flags this gate does not exercise: {_unknown}")
@@ -134,9 +142,20 @@ if REQUIRE_UNIFORM_GAMMAS:                       # the same refusal the trainer 
     if _nonuni or str(_calib_json.get("protocol", {}).get("gamma_solve")) != "uniform":
         raise SystemExit(f"[gate] --require_uniform_gammas: {CALIB} has non-uniform weights {_nonuni} or gamma_solve="
                          f"{_calib_json.get('protocol', {}).get('gamma_solve')!r}")
-m = InContextMotionDiT(in_ch=17, dim=DIM, depth=DEPTH, n_heads=HEADS, d_text=4096,
-                       d_joint_sem=4096, use_struct_feats=STRUCT_FEATS, use_dir_bias=DIR_BIAS,
-                       grad_ckpt=GRAD_CKPT, qk_norm=QK_NORM, use_geo_bias=GEO_BIAS).to(dev)
+if FLAT_JOINTS:
+    # the adapted flat baseline: the gate must build the model the launch builds, or its PASS
+    # certifies a different denoiser (codex baseline r2 #2, restated 2026-09-10 #3)
+    if GEO_BIAS or FREEZE_ZERO_JOINT_SEM or STRUCT_FEATS or DIR_BIAS:
+        raise SystemExit(f"[gate] --flat_joints with geo_bias={GEO_BIAS} freeze_zero_joint_sem="
+                         f"{FREEZE_ZERO_JOINT_SEM} struct_feats={STRUCT_FEATS} dir_bias={DIR_BIAS}: "
+                         f"the flat baseline builds none of those")
+    from src.models.v2.dit_flat import FlatMotionDiT
+    m = FlatMotionDiT(in_ch=17, max_joints=FLAT_JOINTS, dim=DIM, depth=DEPTH, n_heads=HEADS,
+                      d_text=4096, grad_ckpt=GRAD_CKPT, qk_norm=QK_NORM).to(dev)
+else:
+    m = InContextMotionDiT(in_ch=17, dim=DIM, depth=DEPTH, n_heads=HEADS, d_text=4096,
+                           d_joint_sem=4096, use_struct_feats=STRUCT_FEATS, use_dir_bias=DIR_BIAS,
+                           grad_ckpt=GRAD_CKPT, qk_norm=QK_NORM, use_geo_bias=GEO_BIAS).to(dev)
 raw = m
 if FREEZE_ZERO_JOINT_SEM:                      # as the trainer does: zero + freeze, excluded from the optimiser below
     with torch.no_grad():
