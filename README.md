@@ -53,7 +53,45 @@ python scripts/v2_render_incontext.py --ckpt <ckpt> --out <dir> --corpus ktjd17 
 
 ## Generating on your own skeleton (deploy)
 
-`scripts/deploy_generate.py` — in progress on this branch: BVH skeleton (or a KTJD-17 skeleton `.npz`) + a text
-prompt → generated motion (positions `.npz`, GIF, BVH). It rebuilds every conditioning tensor from the skeleton file
-alone (graph features, spectral coordinates, joint-description embeddings) and encodes the prompt with LLM2Vec.
-A rig without motion statistics uses a documented fallback for the per-channel normalisation scale.
+`scripts/deploy_generate.py` needs only the checkpoint, a skeleton and a prompt -- no training corpus.
+
+```bash
+# 1. environment: Python 3.10+, PyTorch 2.x (CUDA), numpy, scipy, Pillow, and for text encoding
+pip install llm2vec transformers==4.44.2 peft
+huggingface-cli login            # needs access to meta-llama/Meta-Llama-3-8B-Instruct (gated) for LLM2Vec
+# 2. weights (private repo, ask the owner for access)
+huggingface-cli download Tevior/topox-h1-uniml3d-73m topox_h1_uniml3d73m_ep239_infer.pt --local-dir weights/
+# 3. check the rig first: prints the joint descriptions and writes out/my_rig_s7.rest.gif (the rest pose in the model's frame)
+python scripts/deploy_generate.py --ckpt weights/topox_h1_uniml3d73m_ep239_infer.pt \
+    --skeleton my_rig.bvh --up +Y --forward +Z --describe_only --out out/
+# 4. generate (4 s at 30 fps); writes out/my_rig_s7.{npz,gif,bvh}
+python scripts/deploy_generate.py --ckpt weights/topox_h1_uniml3d73m_ep239_infer.pt \
+    --skeleton my_rig.bvh --up +Y --forward +Z --text "An object walks forward." --frames 120 --seed 7 --out out/
+```
+
+- **Rest pose.** The BVH's frame `--rest_frame` (default 0) is the rest pose: export the rig with its T-pose / rest pose as
+  the first frame. `--rest_frame -1` uses the OFFSETs with zero rotations (the rest pose of a Blender export, but NOT of a
+  3ds Max Biped export, whose OFFSETs are not the rest pose). Look at `<name>.rest.gif` before generating.
+- **Axes.** `--up` is the BVH axis pointing up, `--forward` the axis the creature faces (Blender BVH exports are usually
+  `--up +Y`; the TrueBones animals are `--up +Y --forward +X`). The model's frame is +Y up, +Z forward, +X = the
+  creature's left. The script checks the axes against the joint names: joints named Left/Right (.L, _R, ...) must lie on
+  their named side; below 80% agreement it refuses and prints the `--forward` the names imply.
+- **Prompts.** Training captions are phrased "An object walks forward.", "An object flaps its wings." -- use that
+  phrasing ("An object ..."), short and about the motion. A prompt like "A chicken walks forward." is out of the training
+  distribution (measured on the TrueBones chicken: the position and rotation decodes disagreed by 0.60 x rig size with
+  "A chicken ...", 0.08 with "An object ...").
+- **Joint descriptions** come from the joint names (a lexicon learnt from the names of the corpus's 6,360 rig files --
+  training, validation and excluded rigs alike: on a held-out 10% of rigs, 95% of the names are covered and 99% of those
+  reproduce the corpus description) and, for names without anatomy, from the skeleton's
+  geometry. Override any of them with `--descriptions my.json` (`{"joint name": "Left Thigh joint."}`).
+- **Outputs** (`out/<skeleton>_s<seed>.*`; an existing output needs `--force`, the input skeleton is never overwritten).
+  `.bvh` = your hierarchy (same joints, offsets, End Sites, channel orders) animated with the generated
+  rotations and root path, in your axes and units, verified by reading it back. `.npz` = world positions from both
+  decodes (`positions_direct` from the position channels, `positions_fk` from the rotations -- the BVH plays the latter),
+  in the model's frame. `.gif` = rest | position decode | rotation decode.
+- **Validation** (`scripts/_aug_dev/_test_deploy_generate.py`): through this script the 4 zero-shot clips of the H1
+  close-out regenerate bit-for-bit; re-encoding captions / joint descriptions with LLM2Vec reproduces the training
+  embeddings (cos 1.0000 / >= 0.9999; generation moves 0.002-0.02 bone lengths vs 0.25-1.7 between seeds). Each joint's
+  rest frame is rebuilt in the training rigs' convention (local +Y along the bone to the primary child): on 24 training
+  rigs this keeps the generated motion 0.62 bone lengths from the rigs' own convention, where identity rest frames (a raw
+  BVH) end 1.64 away (seed-to-seed spread 1.06).
