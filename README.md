@@ -76,10 +76,19 @@ python scripts/deploy_generate.py --ckpt weights/topox_h1_uniml3d73m_ep239_infer
   `--up +Y`; the TrueBones animals are `--up +Y --forward +X`). The model's frame is +Y up, +Z forward, +X = the
   creature's left. The script checks the axes against the joint names: joints named Left/Right (.L, _R, ...) must lie on
   their named side; below 80% agreement it refuses and prints the `--forward` the names imply.
-- **Prompts.** Training captions are phrased "An object walks forward.", "An object flaps its wings." -- use that
-  phrasing ("An object ..."), short and about the motion. A prompt like "A chicken walks forward." is out of the training
-  distribution (measured on the TrueBones chicken: the position and rotation decodes disagreed by 0.60 x rig size with
-  "A chicken ...", 0.08 with "An object ...").
+- **Prompts: try both phrasings and several seeds.** Every training caption reads "An object <does something>.", so
+  that phrasing is in distribution, but on an unseen rig it can come out nearly frozen. Measured on the TrueBones
+  chicken (5 seeds, 120 frames; a real chicken walk moves its joints at 1.85 bone lengths/s and lifts its feet 1.09):
+
+  | prompt | guidance | joint motion (bl/s) | foot lift (bl) | position vs rotation decode gap (x rig size) |
+  |---|---|---|---|---|
+  | "An object walks forward." | 2.0 | 0.48 | 0.40 | 0.08 |
+  | "A chicken walks forward." | 2.0 | 1.82 | 0.72 | 0.55 |
+  | "A chicken walks forward." | 1.0 | 1.15 | 0.40 | 0.40 |
+
+  Naming the creature gave walk-level leg motion; the training phrasing kept the two decodes consistent but moved the
+  legs at about a quarter of a real walk. When the gap is large the BVH (which plays the rotation decode) can differ
+  from the position decode -- compare the two right-hand panels of the gif. Judge by the animation, not by this gap.
 - **Joint descriptions** come from the joint names (a lexicon learnt from the names of the corpus's 6,360 rig files --
   training, validation and excluded rigs alike: on a held-out 10% of rigs, 95% of the names are covered and 99% of those
   reproduce the corpus description) and, for names without anatomy, from the skeleton's

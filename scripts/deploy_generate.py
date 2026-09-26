@@ -19,8 +19,8 @@ Skeleton
   from its rest pose), which do not depend on that convention, so the BVH written back uses the input's own frames.
 
 Text
-  --text      the prompt -- phrase it like the training captions, which all read "An object <does something>." --
-              encoded here with LLM2Vec (McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp + -supervised on
+  --text      the prompt (training captions all read "An object <does something>."; on an unseen rig also try naming
+              the creature -- README, "Prompts"), encoded here with LLM2Vec (McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp + -supervised on
               meta-llama/Meta-Llama-3-8B-Instruct, gated on HuggingFace; ~16 GB in bf16) exactly as the training captions
               were: the mean of the sentence-span token states, one string per forward pass. --text_emb <.npy [4096]>
               skips the encoder.
@@ -794,9 +794,8 @@ def main():
     if not a.force and not a.describe_only and any(o.exists() for o in outs[:3]):
         raise SystemExit(f"[refuse] {out / name}.* exists: pass --force or another --name")
     if a.text is not None and not a.text.strip().lower().startswith("an object"):
-        print('[deploy] WARNING: every training caption reads "An object <does something>." -- a prompt phrased '
-              'otherwise is out of distribution (e.g. "An object walks forward." rather than "A dog walks forward.")',
-              flush=True)
+        print('[deploy] note: every training caption reads "An object <does something>." -- this prompt is phrased '
+              'otherwise; on an unseen rig compare it with the "An object ..." phrasing (see the README)', flush=True)
 
     if sk.suffix.lower() == ".bvh":
         rig = rig_from_bvh(sk, a.up, a.forward, a.rest_frame)
